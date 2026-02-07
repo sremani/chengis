@@ -23,4 +23,8 @@
   :target-path "target/%s"
   :profiles {:uberjar {:aot :all
                         :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}
-             :dev {:dependencies [[org.clojure/test.check "1.1.1"]]}})
+             :dev {:dependencies [[org.clojure/test.check "1.1.1"]]}
+             :bench {:source-paths ["benchmarks/src"]
+                     :main chengis.bench.runner
+                     :jvm-opts ["--enable-native-access=ALL-UNNAMED"
+                                "-Xmx2g" "-Xms512m" "-server"]}})

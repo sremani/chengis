@@ -1,0 +1,4 @@
+results/*.edn
+results/*.json
+results/*.txt
+!results/.gitkeep
