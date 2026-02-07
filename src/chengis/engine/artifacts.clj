@@ -11,11 +11,14 @@
   "Find all files in `dir` matching a glob pattern. Returns a seq of Path objects."
   [^String dir ^String pattern]
   (let [base-path (Paths/get dir (into-array String []))
-        ;; Normalize pattern: if it doesn't start with **, prepend **/
-        effective-pattern (if (or (.startsWith pattern "**/")
-                                   (.startsWith pattern "/"))
-                            pattern
-                            (str "**/" pattern))
+        ;; Normalize pattern:
+        ;; - Patterns with path separators (e.g., "target/foo/*.jar") are used as-is
+        ;; - Simple filename patterns (e.g., "*.jar") get **/ prepended to match anywhere
+        effective-pattern (cond
+                            (.startsWith pattern "**/") pattern
+                            (.startsWith pattern "/")   pattern
+                            (.contains pattern "/")     pattern
+                            :else                       (str "**/" pattern))
         matcher (.getPathMatcher (FileSystems/getDefault)
                                   (str "glob:" effective-pattern))
         result (atom [])]
