@@ -65,17 +65,28 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest auth-test
-  (testing "rejects unauthorized request when auth is configured"
+  ;; register-agent-handler relies on wrap-require-role at the route level,
+  ;; so handler-level auth is tested via heartbeat-handler instead.
+
+  (testing "rejects unauthorized heartbeat when auth is configured"
+    (let [agent (agent-reg/register-agent! {:name "auth-agent" :url "http://a:9090"})
+          system {:config {:distributed {:auth-token "secret123"}}}
+          handler (api/heartbeat-handler system)
+          resp (handler (make-req {} :path-params {:id (:id agent)}))]
+      (is (= 401 (:status resp)))))
+
+  (testing "accepts authorized heartbeat"
+    (let [agent (agent-reg/register-agent! {:name "auth-agent2" :url "http://a:9090"})
+          system {:config {:distributed {:auth-token "secret123"}}}
+          handler (api/heartbeat-handler system)
+          resp (handler (make-req {} :path-params {:id (:id agent)}
+                          :headers {"authorization" "Bearer secret123"}))]
+      (is (= 200 (:status resp)))))
+
+  (testing "register handler accepts any request (auth is at route level)"
     (let [system {:config {:distributed {:auth-token "secret123"}}}
           handler (api/register-agent-handler system)
           resp (handler (make-req {:name "agent" :url "http://a:9090"}))]
-      (is (= 401 (:status resp)))))
-
-  (testing "accepts authorized request"
-    (let [system {:config {:distributed {:auth-token "secret123"}}}
-          handler (api/register-agent-handler system)
-          resp (handler (make-req {:name "agent" :url "http://a:9090"}
-                          :headers {"authorization" "Bearer secret123"}))]
       (is (= 201 (:status resp))))))
 
 ;; ---------------------------------------------------------------------------

@@ -56,21 +56,21 @@
           (:name sanitized) (update :name #(subs (str %) 0 (min (count (str %)) 64))))))))
 
 (defn register-agent-handler
-  "POST /api/agents/register — Register a new agent."
+  "POST /api/agents/register — Register a new agent.
+   Auth is handled by wrap-require-role :admin at the route level,
+   so this handler does NOT do its own check-auth."
   [system]
   (fn [req]
-    (if-not (check-auth req system)
-      (json-response 401 {:error "Unauthorized"})
-      (let [body (parse-json-body req)]
-        (if-not body
-          (json-response 400 {:error "Invalid JSON body"})
-          (let [validated (validate-agent-registration body)]
-            (if-not validated
-              (json-response 400 {:error "Invalid registration: 'url' is required, only name/url/labels/max-builds/system-info allowed"})
-              (let [agent (agent-reg/register-agent! validated)]
-                (json-response 201 {:agent-id (:id agent)
-                                    :name (:name agent)
-                                    :status "registered"})))))))))
+    (let [body (parse-json-body req)]
+      (if-not body
+        (json-response 400 {:error "Invalid JSON body"})
+        (let [validated (validate-agent-registration body)]
+          (if-not validated
+            (json-response 400 {:error "Invalid registration: 'url' is required, only name/url/labels/max-builds/system-info allowed"})
+            (let [agent (agent-reg/register-agent! validated)]
+              (json-response 201 {:agent-id (:id agent)
+                                  :name (:name agent)
+                                  :status "registered"}))))))))
 
 (defn heartbeat-handler
   "POST /api/agents/:id/heartbeat — Agent heartbeat."

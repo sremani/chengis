@@ -63,7 +63,7 @@
       nil)))
 
 ;; ---------------------------------------------------------------------------
-;; HMAC signature verification
+;; Webhook signature / token verification (provider-aware)
 ;; ---------------------------------------------------------------------------
 
 (defn- hmac-sha256
@@ -75,18 +75,42 @@
     (let [hash (.doFinal mac body-bytes)]
       (str "sha256=" (apply str (map #(format "%02x" %) (seq hash)))))))
 
-(defn verify-signature
-  "Verify GitHub webhook HMAC-SHA256 signature.
+(defn- verify-github-signature
+  "Verify GitHub webhook HMAC-SHA256 signature via x-hub-signature-256 header.
    Returns true if valid, or if no secret is configured (skip verification)."
   [secret req body-bytes]
   (if-not secret
     true
     (let [signature (get-in req [:headers "x-hub-signature-256"])]
       (if-not signature
-        (do (log/warn "Webhook secret configured but no signature in request")
+        (do (log/warn "Webhook secret configured but no GitHub signature in request")
             false)
         (let [expected (hmac-sha256 secret body-bytes)]
           (= signature expected))))))
+
+(defn- verify-gitlab-token
+  "Verify GitLab webhook secret token via x-gitlab-token header.
+   GitLab uses plain token comparison (no HMAC).
+   Returns true if valid, or if no secret is configured (skip verification)."
+  [secret req]
+  (if-not secret
+    true
+    (let [token (get-in req [:headers "x-gitlab-token"])]
+      (if-not token
+        (do (log/warn "Webhook secret configured but no GitLab token in request")
+            false)
+        (= secret token)))))
+
+(defn verify-webhook-signature
+  "Verify webhook signature/token based on provider.
+   GitHub uses HMAC-SHA256 (x-hub-signature-256), GitLab uses plain token (x-gitlab-token).
+   Returns true if valid, or if no secret is configured (skip verification)."
+  [secret provider req body-bytes]
+  (case provider
+    :github (verify-github-signature secret req body-bytes)
+    :gitlab (verify-gitlab-token secret req)
+    (do (log/warn "Unknown webhook provider for signature verification")
+        false)))
 
 ;; ---------------------------------------------------------------------------
 ;; Job matching
@@ -110,34 +134,39 @@
 
 (defn webhook-handler
   "Ring handler for POST /api/webhook.
-   Parses the webhook, finds matching jobs, triggers builds."
+   Detects provider first (GitHub/GitLab), verifies signature/token,
+   then parses payload, matches to jobs, and triggers builds."
   [system build-executor]
   (fn [req]
     (let [body-str (slurp (:body req))
           body-bytes (.getBytes ^String body-str "UTF-8")
-          ;; Check webhook secret if configured
-          webhook-secret (get-in system [:config :webhook :secret])]
-      ;; Verify signature
-      (if-not (verify-signature webhook-secret req body-bytes)
-        (do (log/warn "Webhook signature verification failed")
-            {:status 401
-             :headers {"Content-Type" "application/json"}
-             :body "{\"error\":\"Invalid signature\"}"})
-        ;; Parse JSON
-        (let [parsed (try
-                       (json/read-str body-str)
-                       (catch Exception e
-                         (log/error "Failed to parse webhook payload:" (.getMessage e))
-                         nil))]
-          (if-not parsed
-            {:status 400
-             :headers {"Content-Type" "application/json"}
-             :body "{\"error\":\"Invalid JSON payload\"}"}
-            (let [webhook-data (parse-webhook-payload req parsed)]
-              (if-not webhook-data
-                {:status 400
-                 :headers {"Content-Type" "application/json"}
-                 :body "{\"error\":\"Unsupported webhook provider\"}"}
+          webhook-secret (get-in system [:config :webhook :secret])
+          ;; Detect provider FIRST — needed for provider-aware signature check
+          provider (detect-provider req)]
+      ;; Reject unknown provider early
+      (if-not provider
+        {:status 400
+         :headers {"Content-Type" "application/json"}
+         :body "{\"error\":\"Unsupported webhook provider\"}"}
+        ;; Verify signature/token with provider context
+        (if-not (verify-webhook-signature webhook-secret provider req body-bytes)
+          (do (log/warn "Webhook signature verification failed for" (name provider))
+              {:status 401
+               :headers {"Content-Type" "application/json"}
+               :body "{\"error\":\"Invalid signature\"}"})
+          ;; Parse JSON
+          (let [parsed (try
+                         (json/read-str body-str)
+                         (catch Exception e
+                           (log/error "Failed to parse webhook payload:" (.getMessage e))
+                           nil))]
+            (if-not parsed
+              {:status 400
+               :headers {"Content-Type" "application/json"}
+               :body "{\"error\":\"Invalid JSON payload\"}"}
+              (let [webhook-data (case provider
+                                   :github (parse-github-push parsed)
+                                   :gitlab (parse-gitlab-push parsed))]
                 (let [ds (:db system)
                       jobs (find-matching-jobs ds (:repo-url webhook-data))]
                   (log/info "Webhook received from" (name (:provider webhook-data))
@@ -179,3 +208,4 @@
                       {:status 200
                        :headers {"Content-Type" "application/json"}
                        :body (str "{\"triggered\":" @triggered "}")})))))))))))
+

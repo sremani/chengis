@@ -269,10 +269,17 @@
           secret-name (get params "secret-name")
           secret-value (get params "secret-value")
           scope (get params "scope" "global")]
-      (if (or (str/blank? secret-name) (str/blank? secret-value))
+      (cond
+        (or (str/blank? secret-name) (str/blank? secret-value))
         {:status 400
          :headers {"Content-Type" "text/html; charset=utf-8"}
          :body "<p>Secret name and value are required.</p>"}
+
+        ;; Validate that job exists when creating a job-scoped secret
+        (and (= scope "job") (nil? job))
+        (not-found (str "Job not found: " job-name))
+
+        :else
         (let [effective-scope (if (= scope "job")
                                 (:id job)
                                 "global")]

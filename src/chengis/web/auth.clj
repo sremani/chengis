@@ -137,18 +137,46 @@
 ;; ---------------------------------------------------------------------------
 
 (def ^:private public-paths
-  "Paths that don't require authentication."
-  #{"/login" "/health" "/ready" "/metrics"})
+  "Paths that always bypass authentication."
+  #{"/login" "/health" "/ready"})
 
 (def ^:private public-prefixes
   "Path prefixes that don't require authentication."
   ["/health" "/ready"])
 
 (defn- public-path?
-  "Check if the request path is a public (no-auth) path."
-  [uri]
+  "Check if the request path is a public (no-auth) path.
+   /metrics is conditionally public based on :metrics :auth-required config."
+  [uri config]
   (or (contains? public-paths uri)
-      (some #(str/starts-with? uri %) public-prefixes)))
+      (some #(str/starts-with? uri %) public-prefixes)
+      ;; /metrics is public unless :metrics :auth-required is true
+      (and (= uri "/metrics")
+           (not (get-in config [:metrics :auth-required] false)))))
+
+;; ---------------------------------------------------------------------------
+;; Distributed agent endpoint exemption
+;; ---------------------------------------------------------------------------
+
+(def ^:private distributed-api-prefixes
+  "API path prefixes for distributed agent-to-master communication.
+   These endpoints use their own auth (shared secret) via check-auth in
+   master_api.clj and artifact_transfer.clj, not JWT/API-token auth."
+  ["/api/agents/" "/api/builds/"])
+
+(def ^:private distributed-api-exempt-exact
+  "Exact distributed API paths that should NOT be exempted from global auth.
+   These use RBAC (wrap-require-role) and need the global auth user."
+  #{"/api/agents/register"})
+
+(defn- distributed-api-path?
+  "Check if the request path is a distributed agent endpoint that should
+   bypass global auth (handled by handler-level check-auth instead).
+   Returns true for agent communication paths, false for registration
+   (which uses RBAC) and other API paths."
+  [uri]
+  (and (some #(str/starts-with? uri %) distributed-api-prefixes)
+       (not (contains? distributed-api-exempt-exact uri))))
 
 ;; ---------------------------------------------------------------------------
 ;; Auth response helpers
@@ -209,41 +237,50 @@
   "Ring middleware: authenticate the request.
    When auth is disabled: attach admin user to every request (backward compat).
    When auth is enabled: check session -> JWT -> API token -> reject.
+   Distributed agent endpoints bypass global auth when distributed mode is on
+   (they use handler-level check-auth with a shared secret instead).
    Uses a flat cond structure for readability."
   [handler system]
   (let [config (:config system)
         ds (:db system)
         registry (:metrics system)
-        auth-enabled? (get-in config [:auth :enabled] false)]
+        auth-enabled? (get-in config [:auth :enabled] false)
+        distributed-enabled? (get-in config [:distributed :enabled] false)]
     (fn [req]
-      (cond
-        ;; Auth disabled — backward compatible: everyone is admin
-        (not auth-enabled?)
-        (handler (attach-user req {:username "anonymous" :role :admin :id nil}))
+      (let [uri (or (:uri req) "")]
+        (cond
+          ;; Auth disabled — backward compatible: everyone is admin
+          (not auth-enabled?)
+          (handler (attach-user req {:username "anonymous" :role :admin :id nil}))
 
-        ;; Public path — no auth needed
-        (public-path? (or (:uri req) ""))
-        (handler req)
+          ;; Public path — no auth needed (config-aware for /metrics)
+          (public-path? uri config)
+          (handler req)
 
-        ;; Session auth
-        (try-session-auth req)
-        (handler (attach-user req (try-session-auth req)))
+          ;; Distributed agent endpoint — bypass global auth, let handler check-auth
+          ;; validate the shared secret. Only when distributed mode is enabled.
+          (and distributed-enabled? (distributed-api-path? uri))
+          (handler req)
 
-        ;; Bearer token present — try JWT, then API token
-        (extract-bearer-token req)
-        (let [token (extract-bearer-token req)]
-          (if-let [user (or (try-jwt-auth token config)
-                            (try-api-token-auth ds token))]
-            (do
-              (try (metrics/record-token-auth! registry :success) (catch Exception _))
-              (handler (attach-user req user)))
-            (do
-              (try (metrics/record-token-auth! registry :failure) (catch Exception _))
-              (unauthorized-response req "Invalid or expired token"))))
+          ;; Session auth
+          (try-session-auth req)
+          (handler (attach-user req (try-session-auth req)))
 
-        ;; No credentials at all
-        :else
-        (unauthorized-response req "Authentication required")))))
+          ;; Bearer token present — try JWT, then API token
+          (extract-bearer-token req)
+          (let [token (extract-bearer-token req)]
+            (if-let [user (or (try-jwt-auth token config)
+                              (try-api-token-auth ds token))]
+              (do
+                (try (metrics/record-token-auth! registry :success) (catch Exception _))
+                (handler (attach-user req user)))
+              (do
+                (try (metrics/record-token-auth! registry :failure) (catch Exception _))
+                (unauthorized-response req "Invalid or expired token"))))
+
+          ;; No credentials at all
+          :else
+          (unauthorized-response req "Authentication required"))))))
 
 ;; ---------------------------------------------------------------------------
 ;; RBAC middleware
