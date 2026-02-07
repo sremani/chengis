@@ -52,4 +52,4 @@
         ;; Footer
         [:footer {:class "border-t mt-auto"}
          [:div {:class "max-w-7xl mx-auto px-4 py-4 text-center text-gray-400 text-xs"}
-          "Chengis CI v0.1.0"]]]])))
+          "Chengis CI v0.2.0"]]]])))

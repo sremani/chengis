@@ -81,8 +81,8 @@
                                     :jvm (System/getProperty "java.version")}}
                      config)]
       (when-not agent-id
-        (log/error "Failed to register with master at" master-url)
-        (System/exit 1))
+        (throw (ex-info "Failed to register with master"
+                        {:master-url master-url})))
 
       (let [agent-config (assoc config :agent-id agent-id)]
         ;; Start heartbeat

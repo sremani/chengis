@@ -17,20 +17,30 @@
          "X-Frame-Options" "DENY"
          "Referrer-Policy" "strict-origin-when-cross-origin"}))))
 
-(defn- wrap-skip-csrf-for-webhook
-  "Middleware that skips CSRF validation for the webhook endpoint.
-   Works by temporarily overriding the request method to GET for webhook paths,
-   which Ring anti-forgery ignores."
+(def ^:private csrf-exempt-paths
+  "Exact API paths that should skip CSRF validation.
+   These are machine-to-machine endpoints (webhooks, agent communication)."
+  #{"/api/webhook"
+    "/api/agents/register"})
+
+(def ^:private csrf-exempt-prefixes
+  "API path prefixes for CSRF exemption (parameterized routes)."
+  ["/api/agents/"          ;; heartbeat: /api/agents/:id/heartbeat
+   "/api/builds/"])        ;; agent events/results: /api/builds/:id/agent-events, /api/builds/:id/result
+
+(defn- wrap-skip-csrf-for-api
+  "Middleware that skips CSRF validation for API endpoints used by agents/webhooks.
+   Uses exact matches and specific prefixes to avoid over-broad exemptions."
   [handler]
   (fn [req]
-    (if (and (= :post (:request-method req))
-             (or (str/starts-with? (or (:uri req) "") "/api/webhook")
-                 (str/starts-with? (or (:uri req) "") "/api/agents")
-                 (str/starts-with? (or (:uri req) "") "/api/builds")))
-      ;; Temporarily mark as GET so anti-forgery skips it, then restore
-      (handler (assoc req :request-method :get
-                          :original-method :post))
-      (handler req))))
+    (let [uri (or (:uri req) "")]
+      (if (and (= :post (:request-method req))
+               (or (contains? csrf-exempt-paths uri)
+                   (some #(str/starts-with? uri %) csrf-exempt-prefixes)))
+        ;; Temporarily mark as GET so anti-forgery skips it, then restore
+        (handler (assoc req :request-method :get
+                            :original-method :post))
+        (handler req)))))
 
 (defn- wrap-restore-method
   "Restore the original method after CSRF check for webhook requests."
@@ -78,7 +88,7 @@
                                :headers {"Content-Type" "text/html"}
                                :body "<h1>404 - Page Not Found</h1>"})})
     {:middleware [[wrap-security-headers]
-                  [wrap-skip-csrf-for-webhook]
+                  [wrap-skip-csrf-for-api]
                   [wrap-defaults
                    (-> site-defaults
                        (assoc-in [:security :anti-forgery]

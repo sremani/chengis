@@ -43,9 +43,26 @@ All notable changes to Chengis are documented in this file.
 - Shared-secret auth for agent↔master communication
 - Migration 010: agents table, agent_id/dispatched_at on builds
 
+### Security Hardening (Code Review Refactor)
+- Docker command injection protection: input validation for image names, service names, network names
+- Shell quoting for all Docker command interpolated values (env vars, volumes, paths, commands)
+- Agent registration field validation and sanitization (whitelist allowed keys)
+- Auth check added to GET /api/agents endpoint
+- CSRF exemption narrowed from broad prefix matching to specific API paths
+- Race condition fixes in agent registry using atomic swap operations
+- Agent heartbeat timestamps stored as strings for JSON serialization safety
+- Worker thread pool made configurable and restartable
+- Heartbeat scheduler stops existing schedule before starting new one
+- Agent core uses exceptions instead of System/exit for testability
+- YAML parser refactored: shared build-pipeline-from-data eliminates code duplication
+- convert-yaml-to-pipeline now carries over all pipeline fields (env, post-actions, artifacts, etc.)
+- Config EDN reader restricted with {:readers {}} for safety
+- External plugin loader logs security warning when loading untrusted code
+
 ### Test Suite
-- 100 tests, 487 assertions — all passing
+- 100 tests, 493 assertions — all passing
 - New test suites: plugin registry, plugin loader, Docker command generation, Docker plugin, YAML parsing, YAML expressions, agent registry, dispatcher, master API, agent worker
+- Added: Docker injection protection tests, image validation tests, agent timestamp serialization tests
 
 ---
 

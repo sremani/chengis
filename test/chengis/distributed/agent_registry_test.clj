@@ -39,6 +39,12 @@
       (is (true? (agent-reg/heartbeat! (:id agent))))
       (is (= :online (:status (agent-reg/get-agent (:id agent)))))))
 
+  (testing "heartbeat stores string timestamps (JSON-safe)"
+    (let [agent (agent-reg/register-agent! {:name "ts-test" :url "http://ts:9090"})]
+      (agent-reg/heartbeat! (:id agent))
+      (is (string? (:last-heartbeat (agent-reg/get-agent (:id agent)))))
+      (is (string? (:registered-at (agent-reg/get-agent (:id agent)))))))
+
   (testing "heartbeat for unknown agent returns false"
     (is (false? (agent-reg/heartbeat! "nonexistent")))))
 

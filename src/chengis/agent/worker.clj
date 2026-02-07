@@ -6,14 +6,24 @@
             [chengis.engine.executor :as executor]
             [chengis.plugin.loader :as plugin-loader]
             [taoensso.timbre :as log])
-  (:import [java.util.concurrent Executors]))
+  (:import [java.util.concurrent Executors ExecutorService]))
 
 ;; ---------------------------------------------------------------------------
 ;; Worker state
 ;; ---------------------------------------------------------------------------
 
-(defonce ^:private worker-executor (Executors/newFixedThreadPool 2))
+(defonce ^:private worker-executor (atom nil))
 (defonce ^:private active-builds (atom 0))
+
+(defn- ensure-executor!
+  "Ensure the worker executor is initialized. Creates a new one if needed.
+   Pool size is configurable via max-builds parameter."
+  [max-builds]
+  (when (or (nil? @worker-executor)
+            (.isShutdown ^ExecutorService @worker-executor))
+    (let [pool-size (max 1 (or max-builds 2))]
+      (reset! worker-executor (Executors/newFixedThreadPool pool-size))
+      (log/info "Worker executor initialized with" pool-size "threads"))))
 
 (defn current-build-count
   "Return the number of currently active builds on this agent."
@@ -38,15 +48,17 @@
    Runs in a thread pool, streams events back, sends final result.
 
    Arguments:
-     agent-config - {:master-url :agent-id :auth-token ...}
+     agent-config - {:master-url :agent-id :auth-token :max-builds ...}
      build-payload - {:pipeline :build-id :job-id :parameters :env ...}"
   [agent-config build-payload]
+  (ensure-executor! (:max-builds agent-config))
   (let [master-url (:master-url agent-config)
         agent-id (:agent-id agent-config)
         config agent-config
         build-id (:build-id build-payload)
         pipeline (:pipeline build-payload)]
-    (.submit worker-executor
+    (.submit ^ExecutorService @worker-executor
+      ^Callable
       (fn []
         (swap! active-builds inc)
         (try
@@ -84,7 +96,9 @@
 ;; ---------------------------------------------------------------------------
 
 (defn shutdown-worker!
-  "Shut down the worker executor."
+  "Shut down the worker executor. Can be re-initialized by calling execute-dispatched-build!."
   []
-  (.shutdown worker-executor)
-  (log/info "Worker executor shut down"))
+  (when-let [exec @worker-executor]
+    (.shutdown ^ExecutorService exec)
+    (reset! worker-executor nil)
+    (log/info "Worker executor shut down")))

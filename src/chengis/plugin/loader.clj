@@ -37,13 +37,19 @@
 
 (defn- load-external-plugins!
   "Load external plugins from the plugins directory.
-   Each plugin is a .clj file with a namespace that has an init! function."
+   Each plugin is a .clj file with a namespace that has an init! function.
+
+   SECURITY NOTE: External plugins execute arbitrary Clojure code.
+   Only place trusted .clj files in the plugins directory."
   [plugins-dir]
   (let [dir (clojure.java.io/file plugins-dir)]
     (when (.isDirectory dir)
       (let [plugin-files (filter #(and (.isFile %)
                                        (.endsWith (.getName %) ".clj"))
                                  (.listFiles dir))]
+        (when (seq plugin-files)
+          (log/warn "Loading" (count plugin-files) "external plugin(s) from" plugins-dir
+                    "— external plugins execute arbitrary code. Ensure you trust all files."))
         (doseq [f plugin-files]
           (try
             (load-file (.getAbsolutePath f))

@@ -39,6 +39,18 @@
 ;; Handlers
 ;; ---------------------------------------------------------------------------
 
+(defn- validate-agent-registration
+  "Validate and sanitize agent registration body. Returns sanitized map or nil."
+  [body]
+  (when (map? body)
+    (let [allowed-keys #{:name :url :labels :max-builds :system-info}
+          sanitized (select-keys body allowed-keys)]
+      (when (:url sanitized) ;; url is required
+        (cond-> sanitized
+          (:labels sanitized) (update :labels #(set (map str %)))
+          (:max-builds sanitized) (update :max-builds #(min (max (int %) 1) 100))
+          (:name sanitized) (update :name #(subs (str %) 0 (min (count (str %)) 64))))))))
+
 (defn register-agent-handler
   "POST /api/agents/register — Register a new agent."
   [system]
@@ -48,10 +60,13 @@
       (let [body (parse-json-body req)]
         (if-not body
           (json-response 400 {:error "Invalid JSON body"})
-          (let [agent (agent-reg/register-agent! body)]
-            (json-response 201 {:agent-id (:id agent)
-                                :name (:name agent)
-                                :status "registered"})))))))
+          (let [validated (validate-agent-registration body)]
+            (if-not validated
+              (json-response 400 {:error "Invalid registration: 'url' is required, only name/url/labels/max-builds/system-info allowed"})
+              (let [agent (agent-reg/register-agent! validated)]
+                (json-response 201 {:agent-id (:id agent)
+                                    :name (:name agent)
+                                    :status "registered"})))))))))
 
 (defn heartbeat-handler
   "POST /api/agents/:id/heartbeat — Agent heartbeat."
@@ -73,10 +88,12 @@
       (json-response 401 {:error "Unauthorized"})
       (let [build-id (get-in req [:path-params :id])
             body (parse-json-body req)]
-        (when body
-          ;; Feed event into the SSE event bus
-          (events/publish! build-id body))
-        (json-response 200 {:status "ok"})))))
+        (if-not body
+          (json-response 400 {:error "Invalid or missing JSON body"})
+          (do
+            ;; Feed event into the SSE event bus
+            (events/publish! build-id body)
+            (json-response 200 {:status "ok"})))))))
 
 (defn ingest-result-handler
   "POST /api/builds/:id/result — Receive final build result from agents."
@@ -109,7 +126,9 @@
 
 (defn list-agents-handler
   "GET /api/agents — List all registered agents."
-  [_system]
-  (fn [_req]
-    (json-response 200 {:agents (agent-reg/list-agents)
-                        :summary (agent-reg/registry-summary)})))
+  [system]
+  (fn [req]
+    (if-not (check-auth req system)
+      (json-response 401 {:error "Unauthorized"})
+      (json-response 200 {:agents (agent-reg/list-agents)
+                          :summary (agent-reg/registry-summary)}))))

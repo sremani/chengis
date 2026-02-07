@@ -225,7 +225,51 @@
      :errors @errors}))
 
 ;; ---------------------------------------------------------------------------
-;; Main entry point
+;; Pipeline construction (shared between file and string parsing)
+;; ---------------------------------------------------------------------------
+
+(defn- build-pipeline-from-data
+  "Shared conversion logic: YAML parsed data → internal pipeline map.
+   Used by both parse-yaml-workflow and convert-yaml-to-pipeline."
+  [data]
+  (let [stages (mapv convert-yaml-stage (:stages data))
+        post-actions (when-let [post (:post data)]
+                       (cond-> {}
+                         (or (:always post) (get post "always"))
+                         (assoc :always (convert-yaml-post-steps (or (:always post) (get post "always"))))
+                         (or (:on-success post) (:on_success post))
+                         (assoc :on-success (convert-yaml-post-steps (or (:on-success post) (:on_success post))))
+                         (or (:on-failure post) (:on_failure post))
+                         (assoc :on-failure (convert-yaml-post-steps (or (:on-failure post) (:on_failure post))))))
+        artifact-patterns (when-let [arts (:artifacts data)]
+                            (vec (map str arts)))
+        notify-configs (when-let [notifs (:notify data)]
+                         (vec (map (fn [n]
+                                     (let [base (reduce-kv (fn [m k v]
+                                                             (assoc m (keyword k) v))
+                                                           {} n)]
+                                       (cond-> base
+                                         (string? (:type base))
+                                         (update :type keyword))))
+                                   notifs)))
+        env-map (when (:env data)
+                  (reduce-kv (fn [m k v] (assoc m (name k) (str v)))
+                             {} (:env data)))
+        parameters (convert-yaml-parameters (:parameters data))
+        triggers (convert-yaml-triggers (:on data))]
+    (cond-> {:stages stages}
+      (:name data)            (assoc :pipeline-name (str (:name data)))
+      (:description data)     (assoc :description (str (:description data)))
+      (:container data)       (assoc :container (:container data))
+      (seq env-map)            (assoc :env env-map)
+      (seq post-actions)       (assoc :post-actions post-actions)
+      (seq artifact-patterns)  (assoc :artifacts artifact-patterns)
+      (seq notify-configs)     (assoc :notify notify-configs)
+      (seq parameters)         (assoc :parameters parameters)
+      triggers                 (assoc :triggers triggers))))
+
+;; ---------------------------------------------------------------------------
+;; Main entry points
 ;; ---------------------------------------------------------------------------
 
 (defn parse-yaml-workflow
@@ -251,66 +295,24 @@
         (let [{:keys [valid? errors]} (validate-yaml-workflow data)]
           (if-not valid?
             {:error (str "Validation failed: " (str/join "; " errors))}
-            ;; Convert to internal format
-            (let [stages (mapv convert-yaml-stage (:stages data))
-                  post-actions (when-let [post (:post data)]
-                                 (cond-> {}
-                                   (:always post)
-                                   (assoc :always (convert-yaml-post-steps (:always post)))
-                                   (:on-success post)
-                                   (assoc :on-success (convert-yaml-post-steps (or (:on-success post)
-                                                                                    (get post :on_success))))
-                                   (:on-failure post)
-                                   (assoc :on-failure (convert-yaml-post-steps (or (:on-failure post)
-                                                                                    (get post :on_failure))))))
-                  artifact-patterns (when-let [arts (:artifacts data)]
-                                     (vec (map str arts)))
-                  notify-configs (when-let [notifs (:notify data)]
-                                   (vec (map (fn [n]
-                                               (let [base (reduce-kv (fn [m k v]
-                                                                       (assoc m (keyword k) v))
-                                                                     {} n)]
-                                                 ;; Ensure :type is a keyword
-                                                 (cond-> base
-                                                   (string? (:type base))
-                                                   (update :type keyword))))
-                                             notifs)))
-                  env-map (when (:env data)
-                            (reduce-kv (fn [m k v] (assoc m (name k) (str v)))
-                                       {} (:env data)))
-                  parameters (convert-yaml-parameters (:parameters data))
-                  triggers (convert-yaml-triggers (:on data))
-                  pipeline (cond-> {:stages stages
-                                    :pipeline-source "yaml"}
-                             (:name data)          (assoc :pipeline-name (str (:name data)))
-                             (:description data)   (assoc :description (str (:description data)))
-                             (:container data)     (assoc :container (:container data))
-                             (seq env-map)          (assoc :env env-map)
-                             (seq post-actions)     (assoc :post-actions post-actions)
-                             (seq artifact-patterns)(assoc :artifacts artifact-patterns)
-                             (seq notify-configs)   (assoc :notify notify-configs)
-                             (seq parameters)       (assoc :parameters parameters)
-                             triggers               (assoc :triggers triggers))]
+            (let [pipeline (assoc (build-pipeline-from-data data)
+                                  :pipeline-source "yaml")]
               (log/info "YAML workflow parsed successfully:"
-                        (count stages) "stages from" file-path)
+                        (count (:stages pipeline)) "stages from" file-path)
               {:pipeline pipeline})))))
     (catch Exception e
       {:error (str "Failed to parse YAML workflow: " (.getMessage e))})))
 
 (defn convert-yaml-to-pipeline
   "Parse a YAML string (not file) into a pipeline map.
-   Useful for testing and programmatic usage."
+   Useful for testing and programmatic usage.
+   Carries over all pipeline fields (env, post-actions, artifacts, notify, etc.)."
   [yaml-string]
   (try
     (let [data (yaml/parse-string yaml-string)
           {:keys [valid? errors]} (validate-yaml-workflow data)]
       (if-not valid?
         {:error (str "Validation failed: " (str/join "; " errors))}
-        (let [stages (mapv convert-yaml-stage (:stages data))
-              pipeline (cond-> {:stages stages}
-                         (:name data)        (assoc :pipeline-name (str (:name data)))
-                         (:description data) (assoc :description (str (:description data)))
-                         (:container data)   (assoc :container (:container data)))]
-          {:pipeline pipeline})))
+        {:pipeline (build-pipeline-from-data data)}))
     (catch Exception e
       {:error (str "Failed to parse YAML: " (.getMessage e))})))

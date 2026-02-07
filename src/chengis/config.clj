@@ -29,10 +29,10 @@
    Optionally accepts a path to an external config file."
   ([]
    (if-let [resource (io/resource "config.edn")]
-     (merge default-config (edn/read-string (slurp resource)))
+     (merge default-config (edn/read-string {:readers {}} (slurp resource)))
      default-config))
   ([path]
-   (merge default-config (edn/read-string (slurp path)))))
+   (merge default-config (edn/read-string {:readers {}} (slurp path)))))
 
 (defn resolve-path
   "Resolve a potentially relative path against a base directory."

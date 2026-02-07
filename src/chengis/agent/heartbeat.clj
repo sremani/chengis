@@ -19,8 +19,14 @@
 
 (defn start-heartbeat!
   "Start the periodic heartbeat to the master.
-   Returns a function to stop the heartbeat."
+   Stops any existing heartbeat scheduler first to prevent orphan schedules.
+   Returns the chime schedule."
   [{:keys [master-url agent-id interval-ms config status-fn]}]
+  ;; Stop any existing scheduler to prevent orphan heartbeats (M6 fix)
+  (when-let [existing @heartbeat-scheduler]
+    (try (.close existing) (catch Exception _))
+    (reset! heartbeat-scheduler nil)
+    (log/debug "Stopped previous heartbeat scheduler"))
   (let [interval (or interval-ms 30000)
         sched (chime/chime-at
                 (heartbeat-times interval)
