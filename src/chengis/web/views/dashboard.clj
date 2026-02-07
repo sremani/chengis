@@ -2,11 +2,32 @@
   (:require [chengis.web.views.layout :as layout]
             [chengis.web.views.components :as c]))
 
+(defn- alerts-panel
+  "Alerts panel with htmx polling for live updates."
+  [initial-alerts]
+  [:div {:class "mb-6"}
+   [:div {:id "alerts-panel"
+          :hx-get "/api/alerts/fragment"
+          :hx-trigger "every 15s"
+          :hx-swap "innerHTML"}
+    ;; Initial render of alerts (if any)
+    (when (seq initial-alerts)
+      (for [{:keys [level message]} initial-alerts]
+        (let [color (if (= :critical level) "red" "yellow")]
+          [:div {:class (str "flex items-center gap-2 px-4 py-2 rounded-lg bg-"
+                             color "-50 border border-" color "-200 mb-2")}
+           [:span {:class (str "inline-block w-2 h-2 rounded-full bg-" color "-500")}]
+           [:span {:class (str "text-sm text-" color "-800")} message]])))]])
+
 (defn render
-  "Dashboard page: stats overview + build trends + recent builds."
-  [{:keys [jobs builds running-count queued-count stats recent-history csrf-token]}]
+  "Dashboard page: stats overview + build trends + recent builds + alerts."
+  [{:keys [jobs builds running-count queued-count stats recent-history alerts csrf-token]}]
   (layout/base-layout
     {:title "Dashboard" :csrf-token csrf-token}
+
+    ;; Alerts panel (htmx auto-refreshing)
+    (alerts-panel alerts)
+
     ;; Stats row
     [:div {:class "grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"}
      (c/stat-card (count jobs) "Jobs")

@@ -2,9 +2,21 @@
   (:require [hiccup2.core :as h]
             [hiccup.util :refer [raw-string escape-html]]))
 
+(defn- role-badge
+  "Render a small role badge."
+  [role]
+  (let [colors (case (keyword role)
+                 :admin "bg-red-500"
+                 :developer "bg-blue-500"
+                 :viewer "bg-gray-500"
+                 "bg-gray-500")]
+    [:span {:class (str "ml-1 px-1.5 py-0.5 text-xs rounded " colors " text-white")}
+     (name (or role :viewer))]))
+
 (defn base-layout
-  "Wrap page content in a full HTML document with Tailwind CSS and htmx."
-  [{:keys [title csrf-token]} & body]
+  "Wrap page content in a full HTML document with Tailwind CSS and htmx.
+   Options: :title, :csrf-token, :user (from auth middleware), :auth-enabled."
+  [{:keys [title csrf-token user auth-enabled]} & body]
   (str
     (h/html
       (raw-string "<!DOCTYPE html>")
@@ -41,11 +53,27 @@
          [:div {:class "max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between"}
           [:a {:href "/" :class "text-xl font-bold tracking-wide hover:text-blue-300 transition"}
            "Chengis CI"]
-          [:div {:class "flex gap-6 text-sm font-medium"}
+          [:div {:class "flex items-center gap-6 text-sm font-medium"}
            [:a {:href "/" :class "hover:text-blue-300 transition"} "Dashboard"]
            [:a {:href "/jobs" :class "hover:text-blue-300 transition"} "Jobs"]
            [:a {:href "/agents" :class "hover:text-blue-300 transition"} "Agents"]
-           [:a {:href "/admin" :class "hover:text-blue-300 transition"} "Admin"]]]]
+           (when (or (not auth-enabled)
+                     (and user (= (keyword (:role user)) :admin)))
+             [:a {:href "/admin" :class "hover:text-blue-300 transition"} "Admin"])
+           ;; User info / login-logout
+           (if (and auth-enabled user)
+             [:div {:class "flex items-center gap-2 ml-4 pl-4 border-l border-gray-600"}
+              [:span {:class "text-gray-300"} (:username user)]
+              (role-badge (:role user))
+              [:form {:method "POST" :action "/logout" :class "inline"}
+               (when csrf-token
+                 [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}])
+               [:button {:type "submit"
+                         :class "text-gray-400 hover:text-red-300 transition text-xs"}
+                "Logout"]]]
+             (when auth-enabled
+               [:a {:href "/login" :class "ml-4 pl-4 border-l border-gray-600 hover:text-blue-300 transition"}
+                "Login"]))]]]
         ;; Content
         [:main {:class "max-w-7xl mx-auto px-4 sm:px-6 py-8 flex-1 w-full"}
          body]

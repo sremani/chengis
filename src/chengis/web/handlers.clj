@@ -4,19 +4,27 @@
             [chengis.db.artifact-store :as artifact-store]
             [chengis.db.notification-store :as notification-store]
             [chengis.db.secret-store :as secret-store]
+            [chengis.db.user-store :as user-store]
             [chengis.engine.build-runner :as build-runner]
             [chengis.engine.cleanup :as cleanup]
             [chengis.engine.events :as events]
+            [chengis.web.auth :as auth]
             [chengis.web.views.dashboard :as v-dashboard]
             [chengis.web.views.jobs :as v-jobs]
             [chengis.web.views.admin :as v-admin]
             [chengis.web.views.builds :as v-builds]
             [chengis.web.views.trigger-form :as v-trigger-form]
             [chengis.web.views.agents :as v-agents]
+            [chengis.web.views.login :as v-login]
+            [chengis.web.views.audit :as v-audit]
+            [chengis.web.views.users :as v-users]
+            [chengis.web.alerts :as alerts]
+            [chengis.db.audit-store :as audit-store]
             [chengis.distributed.agent-registry :as agent-reg]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [clojure.data.json :as json]
             [hiccup2.core :as h]
             [hiccup.util :refer [escape-html]]
             [ring.middleware.anti-forgery :as anti-forgery]
@@ -46,7 +54,11 @@
           running (count (filter #(= :running (:status %)) builds))
           queued (count (filter #(= :queued (:status %)) builds))
           stats (build-store/get-build-stats ds)
-          recent-history (build-store/get-recent-build-history ds 30)]
+          recent-history (build-store/get-recent-build-history ds 30)
+          current-alerts (try (alerts/check-alerts system)
+                              (catch Exception e
+                                (log/warn "Failed to check alerts for dashboard:" (.getMessage e))
+                                []))]
       (html-response
         (v-dashboard/render {:jobs jobs
                              :builds builds
@@ -54,6 +66,7 @@
                              :queued-count queued
                              :stats stats
                              :recent-history recent-history
+                             :alerts current-alerts
                              :csrf-token (csrf-token req)})))))
 
 (defn jobs-list-page [system]
@@ -342,3 +355,229 @@
         (v-agents/render {:agents agents
                           :summary summary
                           :csrf-token (csrf-token req)})))))
+
+;; ---------------------------------------------------------------------------
+;; Auth handlers
+;; ---------------------------------------------------------------------------
+
+(defn login-page [_system]
+  (fn [req]
+    (html-response
+      (v-login/render {:csrf-token (csrf-token req)}))))
+
+(defn login-submit [system]
+  (fn [req]
+    (let [ds (:db system)
+          params (:form-params req)
+          username (get params "username")
+          password (get params "password")
+          result (auth/login! ds username password (:metrics system))]
+      (if (:success result)
+        ;; Set session and redirect to dashboard
+        {:status 303
+         :headers {"Location" "/"}
+         :session {:user (:user result)}}
+        ;; Re-render login with error
+        (html-response
+          (v-login/render {:error (:error result)
+                           :csrf-token (csrf-token req)}))))))
+
+(defn logout-submit [_system]
+  (fn [_req]
+    {:status 303
+     :headers {"Location" "/login"}
+     :session nil}))
+
+;; ---------------------------------------------------------------------------
+;; Health & Readiness endpoints
+;; ---------------------------------------------------------------------------
+
+(def ^:private start-time (System/currentTimeMillis))
+
+(defn health-check [_system]
+  (fn [_req]
+    (let [uptime-ms (- (System/currentTimeMillis) start-time)
+          uptime-s (quot uptime-ms 1000)]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:status "ok"
+                              :version "0.2.0"
+                              :uptime-seconds uptime-s})})))
+
+(defn readiness-check [system]
+  (fn [_req]
+    (try
+      (let [ds (:db system)]
+        ;; Try a simple query to verify DB is accessible
+        (chengis.db.user-store/count-users ds)
+        {:status 200
+         :headers {"Content-Type" "application/json"}
+         :body (json/write-str {:status "ready"
+                                :database "connected"})})
+      (catch Exception e
+        {:status 503
+         :headers {"Content-Type" "application/json"}
+         :body (json/write-str {:status "not-ready"
+                                :database "unavailable"
+                                :error (.getMessage e)})}))))
+
+;; ---------------------------------------------------------------------------
+;; API Auth token generation
+;; ---------------------------------------------------------------------------
+
+(defn api-generate-token [system]
+  (fn [req]
+    (let [ds (:db system)
+          user (auth/current-user req)
+          params (or (:body-params req) (:form-params req) {})
+          token-name (or (get params "name") (get params :name) "API Token")]
+      (if-not user
+        {:status 401
+         :headers {"Content-Type" "application/json"}
+         :body "{\"error\":\"Authentication required\"}"}
+        (let [result (user-store/create-api-token! ds {:user-id (:id user)
+                                                       :name token-name})]
+          {:status 201
+           :headers {"Content-Type" "application/json"}
+           :body (json/write-str {:token (:token result)
+                                  :name (:name result)
+                                  :id (:id result)
+                                  :message "Save this token — it won't be shown again"})})))))
+
+;; ---------------------------------------------------------------------------
+;; Audit log page (admin only)
+;; ---------------------------------------------------------------------------
+
+(defn audit-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          params (or (:query-params req) (:params req) {})
+          page (max 1 (Integer/parseInt (or (get params "page") "1")))
+          page-size 50
+          ;; Build filter map: resolve username to user-id for proper filtering
+          username-filter (get params "username")
+          user-for-filter (when (seq username-filter)
+                            (user-store/get-user-by-username ds username-filter))
+          filters (cond-> {}
+                    (seq (get params "action"))   (assoc :action (get params "action"))
+                    user-for-filter               (assoc :user-id (:id user-for-filter))
+                    ;; If username given but user not found, use impossible filter to return no results
+                    (and (seq username-filter) (nil? user-for-filter)) (assoc :user-id "__nonexistent__"))
+          query-opts (merge filters {:limit page-size :offset (* (dec page) page-size)})
+          audits (audit-store/query-audits ds query-opts)
+          total (audit-store/count-audits ds filters)]
+      (html-response
+        (v-audit/render {:audits audits
+                         :total-count total
+                         :page page
+                         :page-size page-size
+                         :filters params
+                         :csrf-token (csrf-token req)
+                         :user (auth/current-user req)
+                         :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+;; ---------------------------------------------------------------------------
+;; User management (admin only)
+;; ---------------------------------------------------------------------------
+
+(defn- render-users-page [system req & {:keys [message error]}]
+  (let [ds (:db system)
+        config (:config system)
+        users (user-store/list-users ds)]
+    (html-response
+      (v-users/render {:users users
+                       :message message
+                       :error error
+                       :csrf-token (csrf-token req)
+                       :user (auth/current-user req)
+                       :auth-enabled (get-in config [:auth :enabled] false)}))))
+
+(defn users-page [system]
+  (fn [req]
+    (render-users-page system req)))
+
+(defn create-user-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          params (:form-params req)
+          username (get params "username")
+          password (get params "password")
+          role (get params "role" "viewer")]
+      (cond
+        ;; Validate required fields
+        (or (str/blank? username) (str/blank? password))
+        (render-users-page system req :error "Username and password are required")
+
+        ;; Validate username format
+        (not (auth/valid-username? username))
+        (render-users-page system req :error "Username must be 2-64 chars: letters, numbers, hyphens, underscores")
+
+        ;; Validate password strength
+        (not (auth/valid-password? password))
+        (render-users-page system req :error (str "Password must be at least " auth/min-password-length " characters"))
+
+        ;; Validate role is allowed
+        (not (auth/valid-role? role))
+        (render-users-page system req :error (str "Invalid role: " (escape-html role) ". Must be admin, developer, or viewer"))
+
+        ;; All valid — create user
+        :else
+        (try
+          (user-store/create-user! ds {:username username :password password :role role})
+          (log/info "User created:" username "role:" role "by:" (:username (auth/current-user req)))
+          (render-users-page system req :message (str "User '" (escape-html username) "' created"))
+          (catch Exception e
+            (render-users-page system req :error (str "Failed to create user: " (.getMessage e)))))))))
+
+(defn update-user-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          user-id (get-in req [:path-params :id])
+          params (:form-params req)
+          new-role (get params "role")]
+      (cond
+        (nil? new-role)
+        (render-users-page system req :error "No role specified")
+
+        (not (auth/valid-role? new-role))
+        (render-users-page system req :error (str "Invalid role: " (escape-html new-role)))
+
+        :else
+        (do
+          (user-store/update-user! ds user-id {:role new-role})
+          (log/info "User" user-id "role changed to" new-role "by:" (:username (auth/current-user req)))
+          (render-users-page system req :message "User updated"))))))
+
+(defn toggle-user-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          user-id (get-in req [:path-params :id])
+          target-user (user-store/get-user ds user-id)
+          currently-active? (pos? (or (:active target-user) 1))]
+      (if currently-active?
+        (do (user-store/delete-user! ds user-id)
+            (log/info "User" user-id "deactivated by:" (:username (auth/current-user req)))
+            (render-users-page system req :message (str "User '" (:username target-user) "' deactivated")))
+        (do (user-store/update-user! ds user-id {:active true})
+            (log/info "User" user-id "reactivated by:" (:username (auth/current-user req)))
+            (render-users-page system req :message (str "User '" (:username target-user) "' reactivated")))))))
+
+(defn reset-password-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          user-id (get-in req [:path-params :id])
+          params (:form-params req)
+          new-password (get params "new-password")]
+      (cond
+        (str/blank? new-password)
+        (render-users-page system req :error "Password cannot be empty")
+
+        (not (auth/valid-password? new-password))
+        (render-users-page system req :error (str "Password must be at least " auth/min-password-length " characters"))
+
+        :else
+        (do
+          (user-store/update-password! ds user-id new-password)
+          (log/info "Password reset for user" user-id "by:" (:username (auth/current-user req)))
+          (render-users-page system req :message "Password updated"))))))

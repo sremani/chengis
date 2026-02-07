@@ -81,6 +81,46 @@
                               efficiency)))))
     (str sb)))
 
+(defn- format-auth-section [auth-data]
+  (let [sb (StringBuilder.)]
+    (.append sb "\n=== AUTH OVERHEAD BENCHMARK ===\n")
+    ;; bcrypt
+    (when-let [bc (:bcrypt auth-data)]
+      (.append sb "  bcrypt:\n")
+      (.append sb (str (format-summary-line "    hash:" (:hash bc)) "\n"))
+      (.append sb (str (format-summary-line "    verify:" (:verify bc)) "\n")))
+    ;; JWT
+    (when-let [jwt (:jwt auth-data)]
+      (.append sb "  JWT:\n")
+      (.append sb (str (format-summary-line "    sign:" (:sign jwt)) "\n"))
+      (.append sb (str (format-summary-line "    verify:" (:verify jwt)) "\n")))
+    ;; Role check
+    (when-let [rc (:role-check auth-data)]
+      (.append sb "  Role hierarchy:\n")
+      (.append sb (str (format-summary-line "    3x check:" (:role-check rc)) "\n")))
+    ;; Validation
+    (when-let [v (:validation auth-data)]
+      (.append sb "  Input validation:\n")
+      (.append sb (str (format-summary-line "    username:" (:username-validation v)) "\n"))
+      (.append sb (str (format-summary-line "    password:" (:password-validation v)) "\n"))
+      (.append sb (str (format-summary-line "    role:" (:role-validation v)) "\n")))
+    ;; Middleware chain
+    (when-let [mw (:middleware auth-data)]
+      (.append sb "  Middleware chain:\n")
+      (.append sb (str (format-summary-line "    auth disabled:" (:auth-disabled mw)) "\n"))
+      (.append sb (str (format-summary-line "    public path:" (:public-path mw)) "\n"))
+      (.append sb (str (format-summary-line "    session auth:" (:session-auth mw)) "\n"))
+      (.append sb (str (format-summary-line "    JWT auth:" (:jwt-auth mw)) "\n"))
+      (.append sb (str (format-summary-line "    API token auth:" (:api-token-auth mw)) "\n")))
+    ;; Audit
+    (when-let [a (:audit auth-data)]
+      (.append sb "  Audit middleware:\n")
+      (.append sb (str (format-summary-line "    POST no audit:" (:post-without-audit a)) "\n"))
+      (.append sb (str (format-summary-line "    POST with audit:" (:post-with-audit a)) "\n"))
+      (.append sb (str (format-summary-line "    GET no audit:" (:get-without-audit a)) "\n"))
+      (.append sb (str (format-summary-line "    GET with audit:" (:get-with-audit a)) "\n")))
+    (str sb)))
+
 (defn- format-resource-section [resources]
   (let [sb (StringBuilder.)
         summary (:summary resources)]
@@ -111,6 +151,8 @@
     (print (format-realistic-section (:realistic results))))
   (when (:throughput results)
     (print (format-throughput-section (:throughput results))))
+  (when (:auth-overhead results)
+    (print (format-auth-section (:auth-overhead results))))
   ;; Show resource summary from whichever benchmark ran last
   (let [res (or (get-in results [:throughput :resources])
                 (get-in results [:realistic :resources])

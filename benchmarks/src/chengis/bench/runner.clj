@@ -5,6 +5,7 @@
             [chengis.bench.overhead :as overhead]
             [chengis.bench.realistic :as realistic]
             [chengis.bench.throughput :as throughput]
+            [chengis.bench.auth-overhead :as auth-overhead]
             [chengis.bench.report :as report]
             [chengis.bench.system :as bench-system]
             [clojure.tools.cli :refer [parse-opts]]
@@ -12,10 +13,10 @@
   (:gen-class))
 
 (def cli-options
-  [["-b" "--benchmark NAME" "Benchmark to run: overhead, realistic, throughput, all"
+  [["-b" "--benchmark NAME" "Benchmark to run: overhead, realistic, throughput, auth, all"
     :default "all"
-    :validate [#(contains? #{"all" "overhead" "realistic" "throughput"} %)
-               "Must be: all, overhead, realistic, or throughput"]]
+    :validate [#(contains? #{"all" "overhead" "realistic" "throughput" "auth"} %)
+               "Must be: all, overhead, realistic, throughput, or auth"]]
    ["-i" "--iterations N" "Override iteration count"
     :parse-fn #(Integer/parseInt %)]
    ["-o" "--output DIR" "Output directory"
@@ -86,7 +87,12 @@
               (contains? #{"all" "throughput"} benchmark)
               (assoc :throughput
                 (do (log/info "=== Starting throughput benchmark ===")
-                    (throughput/run-throughput-benchmark config))))]
+                    (throughput/run-throughput-benchmark config)))
+
+              (contains? #{"all" "auth"} benchmark)
+              (assoc :auth-overhead
+                (do (log/info "=== Starting auth overhead benchmark ===")
+                    (auth-overhead/run-auth-overhead-benchmark config))))]
 
         ;; Print summary
         (report/print-summary results)

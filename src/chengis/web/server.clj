@@ -3,29 +3,104 @@
             [chengis.config :as config]
             [chengis.db.connection :as conn]
             [chengis.db.migrate :as migrate]
+            [chengis.db.user-store :as user-store]
+            [chengis.logging :as logging]
+            [chengis.metrics :as metrics]
+            [chengis.engine.events :as events]
             [chengis.plugin.loader :as plugin-loader]
+            [chengis.web.audit :as audit]
             [chengis.web.routes :as routes]
             [taoensso.timbre :as log]))
 
 (defonce server-instance (atom nil))
+(defonce https-instance (atom nil))
+
+(defn- redirect-handler
+  "Create a handler that redirects all HTTP requests to HTTPS."
+  [https-port]
+  (fn [req]
+    (let [host (get-in req [:headers "host"] "localhost")
+          host-no-port (first (clojure.string/split host #":"))
+          target-url (str "https://" host-no-port
+                          (when (not= https-port 443) (str ":" https-port))
+                          (:uri req)
+                          (when (:query-string req) (str "?" (:query-string req))))]
+      {:status 301
+       :headers {"Location" target-url}
+       :body ""})))
 
 (defn start!
   "Start the Chengis web server."
   [& _args]
   (let [cfg (config/load-config)
+        ;; Configure logging first (before any log calls)
+        _ (logging/configure-logging! cfg)
         db-path (get-in cfg [:database :path])
         _ (migrate/migrate! db-path)
         ds (conn/create-datasource db-path)
-        system {:config cfg :db ds :db-path db-path}
+        ;; Initialize metrics registry (nil when disabled — all record-* fns no-op)
+        metrics-registry (when (get-in cfg [:metrics :enabled])
+                           (try
+                             (metrics/init-registry)
+                             (catch Exception e
+                               (log/error "Failed to initialize metrics registry — metrics disabled:" (.getMessage e))
+                               nil)))
+        ;; Set metrics registry on event bus
+        _ (events/set-metrics-registry! metrics-registry)
+        ;; Start audit writer
+        audit-writer (when (get-in cfg [:audit :enabled] true)
+                       (audit/start-audit-writer! ds cfg))
+        system {:config cfg :db ds :db-path db-path
+                :audit-writer audit-writer :metrics metrics-registry}
         _ (plugin-loader/load-plugins! system)
+        ;; Seed admin user when auth is enabled
+        _ (when (get-in cfg [:auth :enabled])
+            (user-store/seed-admin! ds (get-in cfg [:auth :seed-admin-password] "admin")))
         port (get-in cfg [:server :port] 8080)
         host (get-in cfg [:server :host] "0.0.0.0")
         app (routes/app-routes system)
-        stop-fn (http/run-server app {:port port :ip host})]
-    (reset! server-instance stop-fn)
-    (log/info (str "Chengis web UI started on http://" host ":" port))
+        ;; HTTPS configuration
+        https-enabled? (get-in cfg [:https :enabled] false)
+        https-port (get-in cfg [:https :port] 8443)
+        keystore (get-in cfg [:https :keystore])
+        keystore-pw (get-in cfg [:https :keystore-password])]
+
+    ;; Start HTTPS server if configured
+    (when (and https-enabled? keystore)
+      (let [https-stop-fn (http/run-server app
+                            {:port https-port
+                             :ip host
+                             :ssl? true
+                             :ssl-port https-port
+                             :keystore keystore
+                             :key-password keystore-pw})]
+        (reset! https-instance https-stop-fn)
+        (log/info (str "HTTPS server started on https://" host ":" https-port))))
+
+    ;; Start HTTP server
+    (let [http-handler (if (and https-enabled? (get-in cfg [:https :redirect-http] true))
+                         (redirect-handler https-port)
+                         app)
+          stop-fn (http/run-server http-handler {:port port :ip host})]
+      (reset! server-instance stop-fn)
+      (if (and https-enabled? keystore)
+        (log/info (str "HTTP→HTTPS redirect on http://" host ":" port))
+        (log/info (str "Chengis web UI started on http://" host ":" port))))
+
+    (when metrics-registry
+      (log/info (str "Prometheus metrics enabled at " (get-in cfg [:metrics :path] "/metrics"))))
+    (when (get-in cfg [:auth :enabled])
+      (log/info "Authentication is ENABLED — login required"))
+    (when (get-in cfg [:audit :enabled] true)
+      (log/info "Audit logging is ENABLED"))
     (println)
-    (println (str "  Chengis CI is running at http://localhost:" port))
+    (if (and https-enabled? keystore)
+      (do
+        (println (str "  Chengis CI is running at https://localhost:" https-port))
+        (println (str "  HTTP redirect active on port " port)))
+      (println (str "  Chengis CI is running at http://localhost:" port)))
+    (when (get-in cfg [:auth :enabled])
+      (println "  Authentication enabled — default: admin/admin"))
     (println "  Press Ctrl+C to stop.")
     (println)
     ;; Block main thread
@@ -36,5 +111,8 @@
   []
   (when-let [stop-fn @server-instance]
     (stop-fn :timeout 5000)
-    (reset! server-instance nil)
-    (log/info "Chengis web UI stopped")))
+    (reset! server-instance nil))
+  (when-let [stop-fn @https-instance]
+    (stop-fn :timeout 5000)
+    (reset! https-instance nil))
+  (log/info "Chengis web UI stopped"))

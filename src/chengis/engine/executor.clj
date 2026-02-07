@@ -12,6 +12,7 @@
             [chengis.engine.git :as git]
             [chengis.engine.process :as process]
             [chengis.engine.workspace :as workspace]
+            [chengis.metrics :as metrics]
             [chengis.plugin.protocol :as proto]
             [chengis.plugin.registry :as plugin-reg]
             [chengis.util :as util]
@@ -109,6 +110,13 @@
                                :completed-at (now)}]
               (emit build-ctx :step-completed
                     (merge {:stage-name stage-name} step-result))
+              ;; Record step duration metric (try/catch to never break builds)
+              (when-let [ms (:duration-ms result)]
+                (try
+                  (metrics/record-step-duration!
+                    (:metrics-registry build-ctx) step-name status (/ (double ms) 1000.0))
+                  (catch Exception e
+                    (log/debug "Failed to record step metric:" (.getMessage e)))))
               step-result)))))))
 
 (defn- run-steps-sequential
@@ -164,6 +172,7 @@
   [build-ctx stage-def]
   (let [stage-name (:stage-name stage-def)
         started-at (now)
+        start-ns (System/nanoTime)
         ;; Add current stage name to context so steps can reference it
         build-ctx (assoc build-ctx :current-stage stage-name)]
     ;; Check cancellation before running stage
@@ -204,6 +213,13 @@
                                :else        :success)]
             (log/info "Stage" stage-name "completed with status:" stage-status)
             (emit build-ctx :stage-completed {:stage-name stage-name :stage-status stage-status})
+            ;; Record stage duration metric (try/catch to never break builds)
+            (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
+              (try
+                (metrics/record-stage-duration!
+                  (:metrics-registry build-ctx) stage-name stage-status duration-s)
+                (catch Exception e
+                  (log/debug "Failed to record stage metric:" (.getMessage e)))))
             {:stage-name stage-name
              :stage-status stage-status
              :step-results step-results
@@ -396,7 +412,8 @@
                            :event-fn (:event-fn params)
                            :cancelled? (:cancelled? params)
                            :mask-values secret-values
-                           :docker-config (get-in system [:config :docker])}
+                           :docker-config (get-in system [:config :docker])
+                           :metrics-registry (:metrics system)}
                 ;; Propagate pipeline-level :container to stages that don't have their own
                 pipeline-container (:container effective-pipeline)
                 effective-stages (if pipeline-container

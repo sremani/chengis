@@ -17,7 +17,12 @@
                  [ring/ring-defaults "0.5.0"]
                  [hiccup/hiccup "2.0.0-RC3"]
                  [org.clojure/data.json "2.5.0"]
-                 [clj-commons/clj-yaml "1.0.29"]]
+                 [clj-commons/clj-yaml "1.0.29"]
+                 [buddy/buddy-hashers "2.0.167"]
+                 [buddy/buddy-sign "3.5.351"]
+                 [clj-commons/iapetos "0.1.14"]
+                 [io.prometheus/simpleclient_hotspot "0.16.0"]
+                 [viesti/timbre-json-appender "0.2.14"]]
   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
   :main chengis.core
   :target-path "target/%s"

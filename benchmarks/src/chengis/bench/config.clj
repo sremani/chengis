@@ -16,6 +16,8 @@
    :system      {:workspace-root "/tmp/chengis-bench-workspaces"
                  :db-path        "/tmp/chengis-bench.db"
                  :results-dir    "benchmarks/results"}
+   :auth-overhead {:iterations 500
+                    :warm-up    50}
    :resource-monitor {:sample-interval-ms 500}})
 
 (defn merge-config

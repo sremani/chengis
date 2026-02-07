@@ -53,7 +53,7 @@
                                                      (.listFiles job-dir)))}])))}
        :artifacts
        {:total-bytes art-bytes
-        :total (format-size art-bytes)}}))))
+        :total (format-size art-bytes)}})))
 
 ;; ---------------------------------------------------------------------------
 ;; Workspace cleanup

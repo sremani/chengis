@@ -1,8 +1,12 @@
 pipeline {
     agent any
+    options {
+        cleanWs()
+    }
     stages {
         stage('Checkout') {
             steps {
+                sh 'rm -rf * .git .* 2>/dev/null || true'
                 sh 'git clone --depth 1 --branch master https://github.com/clojure/tools.cli.git .'
             }
         }

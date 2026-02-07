@@ -5,7 +5,6 @@
 (def default-config
   {:database {:path "chengis.db"}
    :workspace {:root "workspaces"}
-   :log {:level :info}
    :scheduler {:enabled false}
    :server {:port 8080 :host "0.0.0.0"}
    :secrets {:master-key nil}
@@ -22,7 +21,28 @@
                  :agent {:port 9090
                          :labels #{}
                          :max-builds 2}
-                 :dispatch {:fallback-local true}}})
+                 :dispatch {:fallback-local true}}
+   :auth {:enabled false
+          :session-secret nil
+          :jwt-secret nil
+          :jwt-expiry-hours 24
+          :seed-admin-password "admin"
+          :session-max-age 86400}
+   :https {:enabled false
+           :port 8443
+           :keystore nil
+           :keystore-password nil
+           :hsts true
+           :redirect-http true}
+   :audit {:enabled true
+           :retention-days 90
+           :buffer-size 1024}
+   :metrics {:enabled false
+             :path "/metrics"
+             :auth-required false}
+   :log {:level :info
+         :format :text
+         :file nil}})
 
 (defn load-config
   "Load configuration from config.edn on the classpath, merged with defaults.

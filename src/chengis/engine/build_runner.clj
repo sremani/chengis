@@ -6,6 +6,7 @@
   (:require [chengis.db.build-store :as build-store]
             [chengis.engine.executor :as executor]
             [chengis.engine.events :as events]
+            [chengis.metrics :as metrics]
             [taoensso.timbre :as log])
   (:import [java.time Instant]
            [java.util.concurrent Executors]))
@@ -73,6 +74,7 @@
    Returns the build result map (augmented with :build-id and :build-number)."
   [system job trigger-type & [{:keys [event-fn parameters]}]]
   (let [ds (:db system)
+        registry (:metrics system)
         pipeline (:pipeline job)
         build-record (build-store/create-build! ds
                        {:job-id (:id job)
@@ -80,9 +82,12 @@
                         :parameters parameters})
         build-id (:id build-record)
         build-number (:build-number build-record)
-        cancelled-atom (atom false)]
+        cancelled-atom (atom false)
+        start-ns (System/nanoTime)]
     (log/info "Build #" build-number "triggered for" (:name job)
               "(id:" build-id "trigger:" (name trigger-type) ")")
+    (try (metrics/record-build-start! registry)
+         (catch Exception e (log/debug "Failed to record build-start metric:" (.getMessage e))))
     (register-build! build-id cancelled-atom)
     (try
       (let [result (executor/run-build system pipeline
@@ -92,6 +97,9 @@
                        event-fn   (assoc :event-fn event-fn)
                        parameters (assoc :parameters parameters)))]
         (persist-result! ds build-id result)
+        (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
+          (try (metrics/record-build-end! registry (:build-status result) duration-s)
+               (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
         (log/info "Build #" build-number "for" (:name job)
                   "completed:" (name (:build-status result)))
         (assoc result :build-id build-id :build-number build-number))
@@ -114,10 +122,14 @@
    Returns the build result map."
   [system job build-record & [{:keys [event-fn parameters]}]]
   (let [ds (:db system)
+        registry (:metrics system)
         pipeline (:pipeline job)
         build-id (:id build-record)
         build-number (:build-number build-record)
-        cancelled-atom (atom false)]
+        cancelled-atom (atom false)
+        start-ns (System/nanoTime)]
+    (try (metrics/record-build-start! registry)
+         (catch Exception e (log/debug "Failed to record build-start metric:" (.getMessage e))))
     (register-build! build-id cancelled-atom)
     (try
       (let [result (executor/run-build system pipeline
@@ -127,6 +139,9 @@
                        event-fn   (assoc :event-fn event-fn)
                        parameters (assoc :parameters parameters)))]
         (persist-result! ds build-id result)
+        (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
+          (try (metrics/record-build-end! registry (:build-status result) duration-s)
+               (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
         (assoc result :build-id build-id :build-number build-number))
       (finally
         (deregister-build! build-id)))))
