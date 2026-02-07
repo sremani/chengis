@@ -65,6 +65,31 @@
         (prometheus/counter :events/overflow-total
                             {:description "Events dropped due to channel overflow"}))
 
+      ;; Dispatch metrics (Phase 3 — distributed queue)
+      (prometheus/register
+        (prometheus/gauge :queue/depth
+                          {:description "Pending builds in dispatch queue"}))
+      (prometheus/register
+        (prometheus/gauge :queue/oldest-pending-seconds
+                          {:description "Age of oldest pending queue item in seconds"}))
+      (prometheus/register
+        (prometheus/counter :dispatch/total
+                            {:description "Build dispatch attempts"
+                             :labels [:result]}))
+      (prometheus/register
+        (prometheus/counter :dispatch/orphans-recovered-total
+                            {:description "Orphaned builds recovered from dead agents"}))
+      (prometheus/register
+        (prometheus/gauge :agents/circuit-breaker-open
+                          {:description "Number of agents with open circuit breakers"}))
+      (prometheus/register
+        (prometheus/counter :artifacts/transferred-total
+                            {:description "Artifact transfers from agents"
+                             :labels [:result]}))
+      (prometheus/register
+        (prometheus/gauge :agents/utilization-ratio
+                          {:description "Active builds / total capacity across all agents"}))
+
       ;; Auth metrics
       (prometheus/register
         (prometheus/counter :auth/login-total
@@ -143,6 +168,53 @@
   [registry result]
   (when registry
     (prometheus/inc (registry :auth/token-auth-total {:result (name result)}))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 3: Dispatch & queue metrics — all no-op when registry is nil
+;; ---------------------------------------------------------------------------
+
+(defn record-dispatch!
+  "Record a build dispatch attempt with result (:success, :failure, :no-agent, :retry)."
+  [registry result]
+  (when registry
+    (prometheus/inc (registry :dispatch/total {:result (name result)}))))
+
+(defn record-queue-depth!
+  "Set the current queue depth gauge."
+  [registry depth]
+  (when registry
+    (prometheus/set (registry :queue/depth) (double depth))))
+
+(defn record-queue-oldest-pending!
+  "Set the age of the oldest pending queue item in seconds."
+  [registry age-seconds]
+  (when registry
+    (prometheus/set (registry :queue/oldest-pending-seconds) (double age-seconds))))
+
+(defn record-orphan-recovery!
+  "Increment the orphan recovery counter."
+  [registry count]
+  (when registry
+    (dotimes [_ count]
+      (prometheus/inc (registry :dispatch/orphans-recovered-total)))))
+
+(defn record-circuit-breaker-open!
+  "Set the count of agents with open circuit breakers."
+  [registry count]
+  (when registry
+    (prometheus/set (registry :agents/circuit-breaker-open) (double count))))
+
+(defn record-artifact-transfer!
+  "Record an artifact transfer result (:success or :failure)."
+  [registry result]
+  (when registry
+    (prometheus/inc (registry :artifacts/transferred-total {:result (name result)}))))
+
+(defn record-agent-utilization!
+  "Set the agent utilization ratio (active-builds / total-capacity)."
+  [registry ratio]
+  (when registry
+    (prometheus/set (registry :agents/utilization-ratio) (double ratio))))
 
 ;; ---------------------------------------------------------------------------
 ;; Metrics endpoint handler

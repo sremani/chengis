@@ -6,9 +6,13 @@
      POST /api/builds/:id/events   — ingest build events from agents
      POST /api/builds/:id/result   — ingest build result from agents"
   (:require [chengis.distributed.agent-registry :as agent-reg]
+            [chengis.distributed.build-queue :as bq]
+            [chengis.distributed.artifact-transfer :as artifact-transfer]
+            [chengis.distributed.circuit-breaker :as cb]
             [chengis.db.build-store :as build-store]
             [chengis.engine.events :as events]
             [clojure.data.json :as json]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
@@ -20,7 +24,7 @@
   [req system]
   (let [expected (get-in system [:config :distributed :auth-token])
         provided (some-> (get-in req [:headers "authorization"])
-                         (clojure.string/replace #"^Bearer " ""))]
+                         (str/replace #"^Bearer " ""))]
     (or (nil? expected) ;; No auth required if no token configured
         (= expected provided))))
 
@@ -92,7 +96,7 @@
           (json-response 400 {:error "Invalid or missing JSON body"})
           (do
             ;; Feed event into the SSE event bus
-            (events/publish! build-id body)
+            (events/publish! (assoc body :build-id build-id))
             (json-response 200 {:status "ok"})))))))
 
 (defn ingest-result-handler
@@ -114,11 +118,18 @@
                 (build-store/save-build-result! ds (assoc body :build-id build-id))
                 (catch Exception e
                   (log/error "Failed to persist agent build result:" (.getMessage e)))))
-            ;; Decrement agent build count
+            ;; Decrement agent build count + update circuit breaker
             (when-let [agent-id (:agent-id body)]
-              (agent-reg/decrement-builds! agent-id))
+              (agent-reg/decrement-builds! agent-id)
+              (cb/record-success! agent-id))
+            ;; Mark queue item completed (Phase 3: persistent queue)
+            (when-let [ds (:db system)]
+              (try
+                (bq/mark-completed-by-build-id! ds build-id)
+                (catch Exception e
+                  (log/warn "Failed to mark queue item completed:" (.getMessage e)))))
             ;; Publish completion event
-            (events/publish! build-id
+            (events/publish!
               {:event-type :build-completed
                :build-id build-id
                :data {:build-status (:build-status body)}})

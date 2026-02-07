@@ -85,14 +85,23 @@
                         {:master-url master-url})))
 
       (let [agent-config (assoc config :agent-id agent-id)]
-        ;; Start heartbeat
+        ;; Start heartbeat with system resource reporting
         (heartbeat/start-heartbeat!
           {:master-url master-url
            :agent-id agent-id
            :interval-ms 30000
            :config config
            :status-fn (fn []
-                        {:current-builds (worker/current-build-count)})})
+                        (let [runtime (Runtime/getRuntime)
+                              os-bean (java.lang.management.ManagementFactory/getOperatingSystemMXBean)]
+                          {:current-builds (worker/current-build-count)
+                           :system-info
+                           {:heap-used-mb (int (/ (- (.totalMemory runtime) (.freeMemory runtime))
+                                                  1048576))
+                            :heap-max-mb (int (/ (.maxMemory runtime) 1048576))
+                            :cpu-load (.getSystemLoadAverage os-bean)
+                            :available-processors (.availableProcessors runtime)
+                            :disk-free-mb (int (/ (.getFreeSpace (java.io.File. ".")) 1048576))}}))})
 
         ;; Start HTTP server
         (let [server (http-server/run-server

@@ -1,14 +1,19 @@
 (ns chengis.distributed.dispatcher
   "Build dispatch for distributed execution.
-   Determines whether a build should run locally or on a remote agent,
-   then dispatches accordingly."
+   Determines whether a build should run locally, be queued for async dispatch,
+   or dispatched directly to a remote agent.
+
+   Phase 3: When queue-enabled is true, builds are enqueued to the persistent
+   build queue instead of dispatched directly. The queue processor handles
+   actual dispatch with circuit breaker protection and retry logic."
   (:require [chengis.distributed.agent-registry :as agent-reg]
+            [chengis.distributed.build-queue :as bq]
             [clojure.data.json :as json]
             [org.httpkit.client :as http]
             [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
-;; Remote dispatch
+;; Remote dispatch (direct mode — used when queue is disabled)
 ;; ---------------------------------------------------------------------------
 
 (defn- dispatch-to-agent!
@@ -21,15 +26,16 @@
                   {:headers (cond-> {"Content-Type" "application/json"}
                               auth-token (assoc "Authorization" (str "Bearer " auth-token)))
                    :body (json/write-str build-payload)
-                   :timeout 30000})]
-      (if (< (:status resp 500) 300)
+                   :timeout 30000})
+          status (or (:status resp) 500)]
+      (if (< status 300)
         (do
           (log/info "Build dispatched to agent" (:name agent) "(" (:id agent) ")")
           (agent-reg/increment-builds! (:id agent))
           {:dispatched? true :agent-id (:id agent)})
         (do
-          (log/warn "Agent" (:name agent) "rejected build:" (:status resp))
-          {:dispatched? false :error (str "Agent returned HTTP " (:status resp))})))
+          (log/warn "Agent" (:name agent) "rejected build: HTTP" status)
+          {:dispatched? false :error (str "Agent returned HTTP " status)})))
     (catch Exception e
       (log/error "Failed to dispatch to agent" (:name agent) ":" (.getMessage e))
       {:dispatched? false :error (.getMessage e)})))
@@ -42,23 +48,41 @@
   "Decide where to run a build and dispatch it.
 
    Arguments:
-     system        - system map with :config
+     system        - system map with :config and :db
      build-payload - map with :pipeline, :build-id, :job-id, :parameters, etc.
      labels        - set of required agent labels (from pipeline or job config)
 
    Returns:
      {:mode :local}  — run locally (no agent found or distributed disabled)
-     {:mode :remote :agent-id \"...\"}  — dispatched to agent
+     {:mode :remote :agent-id \"...\"}  — dispatched to agent (direct mode)
+     {:mode :queued :queue-id \"...\"}  — enqueued for async dispatch (queue mode)
 
+   When queue-enabled is true, builds are enqueued rather than dispatched directly.
+   The queue processor handles actual dispatch with retry and circuit breaker.
    If distributed is disabled or no agent matches, falls back to local."
   [system build-payload labels]
   (let [dist-config (get-in system [:config :distributed])
         enabled? (:enabled dist-config)
+        queue-enabled? (get-in dist-config [:dispatch :queue-enabled] false)
         fallback-local? (get-in dist-config [:dispatch :fallback-local] true)
-        auth-token (get-in dist-config [:auth-token])]
-    (if-not enabled?
+        auth-token (get-in dist-config [:auth-token])
+        max-retries (get-in dist-config [:dispatch :max-retries] 3)]
+    (cond
+      ;; Distributed disabled — local execution
+      (not enabled?)
       {:mode :local}
-      ;; Try to find an available agent
+
+      ;; Queue mode — enqueue for async dispatch
+      (and queue-enabled? (:db system))
+      (let [build-id (:build-id build-payload)
+            job-id (:job-id build-payload)
+            item (bq/enqueue! (:db system) build-id job-id
+                              build-payload labels
+                              {:max-retries max-retries})]
+        {:mode :queued :queue-id (:id item)})
+
+      ;; Direct dispatch mode (legacy — no queue)
+      :else
       (let [agent (agent-reg/find-available-agent labels)]
         (if agent
           (let [result (dispatch-to-agent! agent build-payload auth-token)]

@@ -21,7 +21,14 @@
                  :agent {:port 9090
                          :labels #{}
                          :max-builds 2}
-                 :dispatch {:fallback-local true}}
+                 :dispatch {:fallback-local true
+                            :queue-enabled false
+                            :max-retries 3
+                            :retry-backoff-ms 1000
+                            :circuit-breaker-threshold 5
+                            :circuit-breaker-reset-ms 60000
+                            :orphan-check-interval-ms 120000
+                            :artifact-transfer true}}
    :auth {:enabled false
           :session-secret nil
           :jwt-secret nil

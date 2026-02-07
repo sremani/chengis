@@ -55,20 +55,20 @@
 
 (defn heartbeat!
   "Update an agent's last heartbeat timestamp atomically.
-   Returns true if the agent existed, false otherwise."
+   Returns true if the agent existed, false otherwise.
+   Uses swap-vals! to avoid side effects inside swap!."
   [agent-id & [{:keys [current-builds system-info]}]]
-  (let [existed? (atom false)]
-    (swap! agents
-           (fn [state]
-             (if (contains? state agent-id)
-               (do (reset! existed? true)
-                   (update state agent-id merge
-                           {:last-heartbeat (str (now-instant))
-                            :status :online}
-                           (when current-builds {:current-builds current-builds})
-                           (when system-info {:system-info system-info})))
-               state)))
-    @existed?))
+  (let [[old-state _new-state]
+        (swap-vals! agents
+                    (fn [state]
+                      (if (contains? state agent-id)
+                        (update state agent-id merge
+                                {:last-heartbeat (str (now-instant))
+                                 :status :online}
+                                (when current-builds {:current-builds current-builds})
+                                (when system-info {:system-info system-info}))
+                        state)))]
+    (contains? old-state agent-id)))
 
 (defn deregister-agent!
   "Remove an agent from the registry."
@@ -158,6 +158,31 @@
     (when (pos? went-offline)
       (log/warn went-offline "agent(s) went offline"))
     went-offline))
+
+;; ---------------------------------------------------------------------------
+;; Draining & offline queries (Phase 3)
+;; ---------------------------------------------------------------------------
+
+(defn get-offline-agent-ids
+  "Return IDs of all agents currently in :offline status (heartbeat timed out).
+   Used by the orphan monitor to find builds that may be stranded."
+  []
+  (->> (list-agents)
+       (filter #(= :offline (:status %)))
+       (mapv :id)))
+
+(defn set-agent-draining!
+  "Mark an agent as :draining — it won't receive new builds but finishes
+   current ones. Returns true if agent existed.
+   Uses swap-vals! to avoid side effects inside swap!."
+  [agent-id]
+  (let [[old-state _new-state]
+        (swap-vals! agents
+                    (fn [state]
+                      (if (contains? state agent-id)
+                        (assoc-in state [agent-id :status] :draining)
+                        state)))]
+    (contains? old-state agent-id)))
 
 ;; ---------------------------------------------------------------------------
 ;; Summary & reset

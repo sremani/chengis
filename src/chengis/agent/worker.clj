@@ -3,6 +3,7 @@
    Receives build dispatches from the master, executes them locally,
    and streams events/results back to the master."
   (:require [chengis.agent.client :as client]
+            [chengis.agent.artifact-uploader :as artifact-uploader]
             [chengis.engine.executor :as executor]
             [chengis.plugin.loader :as plugin-loader]
             [taoensso.timbre :as log])
@@ -76,6 +77,14 @@
                                  :event-fn event-fn}
                                 (when (:parameters build-payload)
                                   {:parameters (:parameters build-payload)})))]
+            ;; Upload artifacts to master before sending result
+            (when (get-in config [:artifact-transfer] true)
+              (try
+                (let [artifact-root (get-in system [:config :artifacts :root] "agent-artifacts")
+                      artifact-dir (str artifact-root "/" (:job-id build-payload) "/" build-id)]
+                  (artifact-uploader/upload-artifacts! master-url build-id artifact-dir config))
+                (catch Exception e
+                  (log/warn "Artifact upload failed (non-fatal):" (.getMessage e)))))
             ;; Send result back to master
             (client/send-build-result! master-url build-id result agent-id config)
             (log/info "Build" build-id "completed:" (:build-status result))

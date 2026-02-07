@@ -7,6 +7,8 @@
             [chengis.logging :as logging]
             [chengis.metrics :as metrics]
             [chengis.engine.events :as events]
+            [chengis.distributed.queue-processor :as queue-processor]
+            [chengis.distributed.orphan-monitor :as orphan-monitor]
             [chengis.plugin.loader :as plugin-loader]
             [chengis.web.audit :as audit]
             [chengis.web.routes :as routes]
@@ -53,6 +55,15 @@
         system {:config cfg :db ds :db-path db-path
                 :audit-writer audit-writer :metrics metrics-registry}
         _ (plugin-loader/load-plugins! system)
+        ;; Start queue processor when distributed + queue enabled
+        _ (when (and (get-in cfg [:distributed :enabled])
+                     (get-in cfg [:distributed :dispatch :queue-enabled]))
+            (log/info "Starting distributed build queue processor")
+            (queue-processor/start-processor! system))
+        ;; Start orphan monitor when distributed enabled
+        _ (when (get-in cfg [:distributed :enabled])
+            (log/info "Starting orphan build monitor")
+            (orphan-monitor/start-monitor! system))
         ;; Seed admin user when auth is enabled
         _ (when (get-in cfg [:auth :enabled])
             (user-store/seed-admin! ds (get-in cfg [:auth :seed-admin-password] "admin")))
@@ -109,6 +120,12 @@
 (defn stop!
   "Stop the running web server."
   []
+  ;; Stop orphan monitor if running
+  (when (orphan-monitor/running?*)
+    (orphan-monitor/stop-monitor!))
+  ;; Stop queue processor if running
+  (when (queue-processor/running?*)
+    (queue-processor/stop-processor!))
   (when-let [stop-fn @server-instance]
     (stop-fn :timeout 5000)
     (reset! server-instance nil))

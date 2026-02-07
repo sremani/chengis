@@ -21,6 +21,8 @@
             [chengis.web.alerts :as alerts]
             [chengis.db.audit-store :as audit-store]
             [chengis.distributed.agent-registry :as agent-reg]
+            [chengis.distributed.circuit-breaker :as cb]
+            [chengis.distributed.build-queue :as bq]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -347,13 +349,20 @@
 ;; Agents page
 ;; ---------------------------------------------------------------------------
 
-(defn agents-page [_system]
+(defn agents-page [system]
   (fn [req]
     (let [agents (agent-reg/list-agents)
-          summary (agent-reg/registry-summary)]
+          summary (agent-reg/registry-summary)
+          cb-states (cb/get-all-states)
+          queue-enabled? (get-in system [:config :distributed :dispatch :queue-enabled] false)
+          queue-depth (when (and queue-enabled? (:db system))
+                        (try (bq/get-queue-depth (:db system))
+                             (catch Exception _ nil)))]
       (html-response
         (v-agents/render {:agents agents
                           :summary summary
+                          :circuit-breakers cb-states
+                          :queue-depth queue-depth
                           :csrf-token (csrf-token req)})))))
 
 ;; ---------------------------------------------------------------------------

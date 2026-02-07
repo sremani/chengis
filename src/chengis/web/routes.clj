@@ -7,6 +7,7 @@
             [chengis.web.alerts :as alerts]
             [chengis.web.metrics-middleware :as metrics-mw]
             [chengis.distributed.master-api :as master-api]
+            [chengis.distributed.artifact-transfer :as artifact-transfer]
             [chengis.engine.build-runner :as build-runner]
             [clojure.string :as str]
             [reitit.ring :as ring]
@@ -121,6 +122,7 @@
         ;; Agent communication — developer+
         ["/builds/:id/agent-events" {:post {:handler (master-api/ingest-event-handler system)}}]
         ["/builds/:id/result" {:post {:handler (master-api/ingest-result-handler system)}}]
+        ["/builds/:id/artifacts" {:post {:handler (artifact-transfer/artifact-upload-handler system)}}]
         ["/agents"
          ["" {:get {:handler (master-api/list-agents-handler system)}}]
          ["/register" {:post {:handler (auth/wrap-require-role :admin (master-api/register-agent-handler system))}}]
