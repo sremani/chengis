@@ -5,6 +5,7 @@
             [chengis.db.migrate :as migrate]
             [chengis.db.job-store :as job-store]
             [chengis.db.build-store :as build-store]
+            [chengis.db.secret-store :as secret-store]
             [chengis.dsl.core :as dsl]
             [chengis.dsl.chengisfile :as chengisfile]
             [chengis.engine.build-runner :as build-runner]
@@ -268,6 +269,53 @@
                               (when (:parallel? stage) " [parallel]")))))))
         (catch Exception e
           (out/print-error (str "Failed to read file: " (.getMessage e))))))))
+
+;; --- secret commands ---
+
+(defn cmd-secret-set
+  "Set a secret (global or job-scoped)."
+  [args]
+  (let [secret-name (first args)
+        secret-value (second args)]
+    (if (or (nil? secret-name) (nil? secret-value))
+      (out/print-error "Usage: chengis secret set <name> <value> [--scope <job-id>]")
+      (let [{:keys [config db]} (load-system)
+            scope (let [idx (.indexOf (vec args) "--scope")]
+                    (when (and (>= idx 0) (< (inc idx) (count args)))
+                      (nth args (inc idx))))]
+        (secret-store/set-secret! db config secret-name secret-value
+                                  :scope (or scope "global"))
+        (out/print-success (str "Secret '" secret-name "' set ("
+                                (if scope (str "scope: " scope) "global") ")"))))))
+
+(defn cmd-secret-list
+  "List secret names."
+  [args]
+  (let [{:keys [db]} (load-system)
+        scope (let [idx (.indexOf (vec args) "--scope")]
+                (when (and (>= idx 0) (< (inc idx) (count args)))
+                  (nth args (inc idx))))
+        names (secret-store/list-secret-names db :scope (or scope "global"))]
+    (if (empty? names)
+      (println "No secrets found.")
+      (do
+        (out/print-header (str "Secrets (" (or scope "global") ")"))
+        (doseq [n names]
+          (println "  " n))))))
+
+(defn cmd-secret-delete
+  "Delete a secret."
+  [args]
+  (let [secret-name (first args)]
+    (if-not secret-name
+      (out/print-error "Usage: chengis secret delete <name> [--scope <job-id>]")
+      (let [{:keys [db]} (load-system)
+            scope (let [idx (.indexOf (vec args) "--scope")]
+                    (when (and (>= idx 0) (< (inc idx) (count args)))
+                      (nth args (inc idx))))]
+        (if (secret-store/delete-secret! db secret-name :scope (or scope "global"))
+          (out/print-success (str "Secret '" secret-name "' deleted."))
+          (out/print-error (str "Secret not found: " secret-name)))))))
 
 ;; --- status ---
 

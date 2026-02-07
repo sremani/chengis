@@ -76,10 +76,67 @@
        (when (seq (:stderr step))
          [:pre {:class "whitespace-pre-wrap text-red-400"} (escape-html (:stderr step))])])]])
 
+(defn- render-artifacts-section
+  "Render the artifacts table if artifacts exist."
+  [build-id artifacts]
+  (when (seq artifacts)
+    [:div {:class "bg-white rounded-lg shadow-sm border mb-6"}
+     [:div {:class "px-5 py-4 border-b flex items-center justify-between"}
+      [:h2 {:class "text-lg font-semibold text-gray-900"} "Artifacts"]
+      [:span {:class "text-xs text-gray-400"} (str (count artifacts) " files")]]
+     [:div {:class "p-0"}
+      [:table {:class "w-full text-sm"}
+       [:thead
+        [:tr {:class "text-left text-gray-500 border-b bg-gray-50"}
+         [:th {:class "px-5 py-2 font-medium"} "Filename"]
+         [:th {:class "px-5 py-2 font-medium"} "Size"]
+         [:th {:class "px-5 py-2 font-medium"} "Type"]
+         [:th {:class "px-5 py-2 font-medium"} ""]]]
+       [:tbody {:class "divide-y"}
+        (for [art artifacts]
+          [:tr {:class "hover:bg-gray-50"}
+           [:td {:class "px-5 py-3 font-mono text-sm"}
+            (:filename art)]
+           [:td {:class "px-5 py-3 text-gray-500"}
+            (let [bytes (:size-bytes art)]
+              (cond
+                (nil? bytes) "—"
+                (< bytes 1024) (str bytes " B")
+                (< bytes (* 1024 1024)) (format "%.1f KB" (/ bytes 1024.0))
+                :else (format "%.1f MB" (/ bytes (* 1024.0 1024.0)))))]
+           [:td {:class "px-5 py-3 text-gray-400 text-xs"}
+            (or (:content-type art) "—")]
+           [:td {:class "px-5 py-3 text-right"}
+            [:a {:href (str "/builds/" build-id "/artifacts/" (:filename art))
+                 :class "text-blue-600 hover:text-blue-800 hover:underline text-sm"}
+             "Download"]]])]]]]))
+
+(defn- render-notifications-section
+  "Render the notifications section if any notifications exist."
+  [notifications]
+  (when (seq notifications)
+    [:div {:class "bg-white rounded-lg shadow-sm border mb-6"}
+     [:div {:class "px-5 py-4 border-b"}
+      [:h2 {:class "text-lg font-semibold text-gray-900"} "Notifications"]]
+     [:div {:class "p-5"}
+      [:div {:class "space-y-2"}
+       (for [notif notifications]
+         [:div {:class "flex items-center gap-3 text-sm"}
+          (case (:status notif)
+            "sent"    [:span {:class "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                                     bg-green-100 text-green-700"} "sent"]
+            "failed"  [:span {:class "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                                     bg-red-100 text-red-700"} "failed"]
+            [:span {:class "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                            bg-gray-100 text-gray-700"} (or (:status notif) "pending")])
+          [:span {:class "text-gray-700 capitalize"} (:type notif)]
+          (when (:details notif)
+            [:span {:class "text-gray-400 text-xs truncate max-w-xs"} (:details notif)])])]]]))
+
 (defn render-detail
   "Build detail page with stages, steps, and log output.
    For running builds, includes SSE connection for live updates."
-  [{:keys [build stages steps job csrf-token]}]
+  [{:keys [build stages steps job artifacts notifications csrf-token]}]
   (let [build-id (:id build)
         running? (= :running (:status build))]
     (layout/base-layout
@@ -150,6 +207,18 @@
           [:span {:class "text-gray-500 block"} "Workspace"]
           [:span {:class "font-mono text-xs"} (or (:workspace build) "-")]]]]
 
+       ;; Build parameters (if any)
+       (when-let [params (:parameters build)]
+         (when (and (map? params) (seq params))
+           [:div {:class "bg-white rounded-lg shadow-sm border mb-6"}
+            [:div {:class "px-5 py-4 border-b"}
+             [:h2 {:class "text-lg font-semibold text-gray-900"} "Parameters"]]
+            [:div {:class "grid grid-cols-2 md:grid-cols-4 gap-4 p-5 text-sm"}
+             (for [[k v] (sort-by key params)]
+               [:div
+                [:span {:class "text-gray-500 block font-mono text-xs"} (name k)]
+                [:span {:class "font-medium"} (str v)]])]]))
+
        ;; Pipeline visualization (with live status)
        (when (seq stages)
          (let [stage-defs (mapv (fn [s] {:stage-name (:stage-name s)
@@ -162,6 +231,12 @@
 
        ;; Git info (only for git-sourced builds)
        (render-git-info-section build)
+
+       ;; Artifacts (if any)
+       (render-artifacts-section (:id build) artifacts)
+
+       ;; Notifications (if any)
+       (render-notifications-section notifications)
 
        ;; Stages & Steps
        (render-stages-section stages steps)

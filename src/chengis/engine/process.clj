@@ -1,5 +1,6 @@
 (ns chengis.engine.process
   (:require [babashka.process :as bp]
+            [chengis.engine.log-masker :as masker]
             [taoensso.timbre :as log])
   (:import [java.util.concurrent TimeUnit]))
 
@@ -13,7 +14,7 @@
 
    Returns:
      {:exit-code int, :stdout string, :stderr string, :duration-ms long, :timed-out? bool}"
-  [{:keys [command dir env timeout]
+  [{:keys [command dir env timeout mask-values]
     :or {timeout 300000}}]
   (log/info "Executing command:" command (when dir (str "(in " dir ")")))
   (let [start-time (System/currentTimeMillis)
@@ -49,7 +50,10 @@
                         :stderr (:err completed)
                         :timed-out? false}))
             end-time (System/currentTimeMillis)
-            final-result (assoc result :duration-ms (- end-time start-time))]
+            final-result (cond-> (assoc result :duration-ms (- end-time start-time))
+                           (seq mask-values)
+                           (-> (update :stdout masker/mask-secrets mask-values)
+                               (update :stderr masker/mask-secrets mask-values)))]
         (if (zero? (:exit-code final-result))
           (log/info "Command succeeded in" (:duration-ms final-result) "ms")
           (log/warn "Command failed with exit code" (:exit-code final-result)))

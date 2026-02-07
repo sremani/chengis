@@ -25,14 +25,28 @@
    [:div {:class "text-gray-500 text-sm mt-1"} label]])
 
 (defn trigger-button
-  "Button that triggers a build via htmx POST."
-  [job-name]
-  [:button {:hx-post (str "/jobs/" (URLEncoder/encode (str job-name) "UTF-8") "/trigger")
-            :hx-swap "none"
-            :class "bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium
-                    hover:bg-blue-700 active:bg-blue-800 transition-colors
-                    focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"}
-   "Trigger Build"])
+  "Button that triggers a build. If the job has parameters, loads a form first.
+   Otherwise triggers directly via htmx POST."
+  ([job-name] (trigger-button job-name nil))
+  ([job-name {:keys [has-params?]}]
+   (let [encoded (URLEncoder/encode (str job-name) "UTF-8")]
+     (if has-params?
+       ;; Parameter form trigger: GET the form, inject it below
+       [:div {:id "trigger-container"}
+        [:button {:hx-get (str "/jobs/" encoded "/trigger-form")
+                  :hx-target "#trigger-container"
+                  :hx-swap "beforeend"
+                  :class "bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium
+                          hover:bg-blue-700 active:bg-blue-800 transition-colors
+                          focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"}
+         "Trigger Build ▼"]]
+       ;; Direct trigger (no params)
+       [:button {:hx-post (str "/jobs/" encoded "/trigger")
+                 :hx-swap "none"
+                 :class "bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium
+                         hover:bg-blue-700 active:bg-blue-800 transition-colors
+                         focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"}
+        "Trigger Build"]))))
 
 (def ^:private th-class
   "Standard Tailwind class for table header cells."

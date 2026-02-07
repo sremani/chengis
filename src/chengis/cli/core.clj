@@ -28,6 +28,9 @@ Commands:
   build list [job]         List builds (optionally by job)
   build show <build-id>    Show build details
   build log <build-id>     Show build step output
+  secret set <name> <val>  Set a secret (--scope <job-id> for job-scoped)
+  secret list              List secret names (--scope <job-id>)
+  secret delete <name>     Delete a secret (--scope <job-id>)
   pipeline validate <file> Validate a pipeline file (.clj)
   pipeline validate-edn <file>  Validate a Chengisfile (EDN)
   status                   Show system status
@@ -68,6 +71,12 @@ Options:
                        "show"    (cmd/cmd-build-show rest-args)
                        "log"     (cmd/cmd-build-log rest-args)
                        (do (println (str "Unknown build command: " sub-command))
+                           (usage)))
+          "secret"   (case sub-command
+                       "set"    (cmd/cmd-secret-set rest-args)
+                       "list"   (cmd/cmd-secret-list rest-args)
+                       "delete" (cmd/cmd-secret-delete rest-args)
+                       (do (println (str "Unknown secret command: " sub-command))
                            (usage)))
           "pipeline" (case sub-command
                        "validate"     (cmd/cmd-pipeline-validate rest-args)

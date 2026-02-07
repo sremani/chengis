@@ -7,7 +7,11 @@
    :workspace {:root "workspaces"}
    :log {:level :info}
    :scheduler {:enabled false}
-   :server {:port 8080 :host "0.0.0.0"}})
+   :server {:port 8080 :host "0.0.0.0"}
+   :secrets {:master-key nil}
+   :artifacts {:root "artifacts" :retention-builds 10}
+   :notifications {:slack {:default-webhook nil}}
+   :cleanup {:enabled false :interval-hours 24 :retention-builds 10}})
 
 (defn load-config
   "Load configuration from config.edn on the classpath, merged with defaults.

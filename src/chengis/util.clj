@@ -25,3 +25,13 @@
     (keyword? s) s
     (string? s)  (keyword s)
     :else        s))
+
+(defn format-size
+  "Format a byte count as a human-readable size string."
+  [bytes]
+  (cond
+    (nil? bytes) "—"
+    (< bytes 1024) (str bytes " B")
+    (< bytes (* 1024 1024)) (format "%.1f KB" (/ bytes 1024.0))
+    (< bytes (* 1024 1024 1024)) (format "%.1f MB" (/ bytes (* 1024.0 1024.0)))
+    :else (format "%.2f GB" (/ bytes (* 1024.0 1024.0 1024.0)))))

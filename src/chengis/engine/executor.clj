@@ -2,7 +2,12 @@
   "Pipeline execution engine. Runs stages sequentially, steps within a stage
    either sequentially or in parallel, handles failures and abort signals."
   (:require [clojure.core.async :refer [<!! thread]]
+            [clojure.string :as str]
+            [chengis.db.artifact-store :as artifact-store]
+            [chengis.db.secret-store :as secret-store]
             [chengis.dsl.chengisfile :as chengisfile]
+            [chengis.engine.artifacts :as artifacts]
+            [chengis.engine.notify :as notify]
             [chengis.engine.git :as git]
             [chengis.engine.process :as process]
             [chengis.engine.workspace :as workspace]
@@ -72,10 +77,12 @@
                   (merge {:stage-name stage-name} result))
             result)
           (let [result (process/execute-command
-                         {:command (:command step-def)
-                          :dir (:workspace build-ctx)
-                          :env (merge (:env build-ctx) (:env step-def))
-                          :timeout (:timeout step-def)})
+                         (cond-> {:command (:command step-def)
+                                  :dir (:workspace build-ctx)
+                                  :env (merge (:env build-ctx) (:env step-def))
+                                  :timeout (:timeout step-def)}
+                           (seq (:mask-values build-ctx))
+                           (assoc :mask-values (:mask-values build-ctx))))
                 status (cond
                          (:cancelled? result) :aborted
                          (zero? (:exit-code result)) :success
@@ -291,11 +298,30 @@
                            "GIT_COMMIT_SHORT" (:commit-short git-info)
                            "GIT_AUTHOR"       (:author git-info)
                            "GIT_MESSAGE"      (:message git-info)})
+                ;; --- Secrets injection ---
+                secrets-map (when (:db system)
+                              (try
+                                (secret-store/get-secrets-for-build
+                                  (:db system) (:config system) job-id)
+                                (catch Exception e
+                                  (log/warn "Failed to load secrets:" (.getMessage e))
+                                  {})))
+                secret-values (when (seq secrets-map) (set (vals secrets-map)))
+                ;; --- Parameter env vars ---
+                param-env (when-let [p (:parameters params)]
+                            (reduce-kv (fn [m k v]
+                                         (assoc m
+                                           (str "PARAM_" (str/upper-case
+                                                           (str/replace (name k) "-" "_")))
+                                           (str v)))
+                                       {} p))
                 build-env (merge {"BUILD_ID" build-id
                                   "BUILD_NUMBER" (str build-number)
                                   "JOB_NAME" job-id
                                   "WORKSPACE" ws}
                                  git-env
+                                 secrets-map
+                                 param-env
                                  (:env params))
                 build-ctx {:build-id build-id
                            :job-id job-id
@@ -306,7 +332,8 @@
                                                 {:branch (:branch git-info)}))
                            :env build-env
                            :event-fn (:event-fn params)
-                           :cancelled? (:cancelled? params)}]
+                           :cancelled? (:cancelled? params)
+                           :mask-values secret-values}]
             (emit build-ctx :build-started {:job-id job-id :build-number build-number})
             (let [stage-results
                   (reduce (fn [results stage-def]
@@ -333,18 +360,49 @@
                   post-actions (:post-actions effective-pipeline)
                   post-results (run-post-actions build-ctx build-status post-actions)
                   all-stage-results (into stage-results post-results)
-                  completed-at (now)]
+                  ;; --- Artifact collection ---
+                  artifact-patterns (:artifacts effective-pipeline)
+                  collected-artifacts
+                  (when (seq artifact-patterns)
+                    (try
+                      (let [artifact-root (get-in system [:config :artifacts :root] "artifacts")
+                            artifact-dir (str artifact-root "/" job-id "/" build-number)]
+                        (artifacts/collect-artifacts! ws artifact-dir artifact-patterns))
+                      (catch Exception e
+                        (log/warn "Artifact collection failed:" (.getMessage e))
+                        nil)))
+                  ;; Persist artifact metadata to DB
+                  _ (when (and (seq collected-artifacts) (:db system))
+                      (doseq [art collected-artifacts]
+                        (artifact-store/save-artifact! (:db system)
+                          {:build-id build-id
+                           :filename (:filename art)
+                           :path (:path art)
+                           :size-bytes (:size-bytes art)
+                           :content-type (:content-type art)})))
+                  completed-at (now)
+                  ;; Build result map (constructed before notifications so they can use it)
+                  build-result (cond-> {:build-id build-id
+                                        :job-id job-id
+                                        :build-number build-number
+                                        :build-status build-status
+                                        :stage-results all-stage-results
+                                        :workspace ws
+                                        :started-at started-at
+                                        :completed-at completed-at
+                                        :pipeline-source pipeline-source
+                                        :artifacts collected-artifacts}
+                                 git-info (assoc :git-info git-info))
+                  ;; --- Notifications ---
+                  _ (try
+                      (notify/dispatch-notifications!
+                        (:db system) build-result
+                        (:notify effective-pipeline)
+                        (:config system))
+                      (catch Exception e
+                        (log/warn "Notification dispatch failed:" (.getMessage e))))]
               (log/info "========================================")
               (log/info "Build" build-id "completed with status:" build-status)
               (log/info "========================================")
               (emit build-ctx :build-completed {:build-status build-status})
-              (cond-> {:build-id build-id
-                       :job-id job-id
-                       :build-number build-number
-                       :build-status build-status
-                       :stage-results all-stage-results
-                       :workspace ws
-                       :started-at started-at
-                       :completed-at completed-at
-                       :pipeline-source pipeline-source}
-                git-info (assoc :git-info git-info)))))))))
+              build-result)))))))

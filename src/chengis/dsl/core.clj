@@ -98,21 +98,40 @@
   [& groups]
   {:post-actions (apply merge groups)})
 
+(defn artifacts
+  "Declare artifact glob patterns to collect after build.
+   Returns an artifact declaration map."
+  [& patterns]
+  {:artifacts (vec patterns)})
+
+(defn notify
+  "Declare a notification target for the pipeline.
+   Returns a notification declaration map.
+   Usage: (notify :slack {:webhook-url \"https://...\" :channel \"#builds\"})"
+  [type config]
+  {:notify [(assoc config :type type)]})
+
 (defn build-pipeline
   "Construct a pipeline map from opts and stages.
-   Filters out post-action maps from stages and merges them into :post-actions."
+   Filters out post-action, artifact, and notify maps from stages and merges them."
   [pipeline-name opts stages]
   (let [post-maps (filter :post-actions stages)
-        real-stages (remove :post-actions stages)
+        artifact-maps (filter :artifacts stages)
+        notify-maps (filter :notify stages)
+        real-stages (remove #(or (:post-actions %) (:artifacts %) (:notify %)) stages)
         merged-post (apply merge (map :post-actions post-maps))
+        merged-artifacts (vec (mapcat :artifacts artifact-maps))
+        merged-notify (vec (mapcat :notify notify-maps))
         base {:pipeline-name (clojure.core/name pipeline-name)
               :stages (vec real-stages)}]
     (cond-> base
-      (:description opts)  (assoc :description (:description opts))
-      (:parameters opts)   (assoc :parameters (:parameters opts))
-      (:triggers opts)     (assoc :triggers (:triggers opts))
-      (:source opts)       (assoc :source (:source opts))
-      (seq merged-post)    (assoc :post-actions merged-post))))
+      (:description opts)    (assoc :description (:description opts))
+      (:parameters opts)     (assoc :parameters (:parameters opts))
+      (:triggers opts)       (assoc :triggers (:triggers opts))
+      (:source opts)         (assoc :source (:source opts))
+      (seq merged-post)      (assoc :post-actions merged-post)
+      (seq merged-artifacts) (assoc :artifacts merged-artifacts)
+      (seq merged-notify)    (assoc :notify merged-notify))))
 
 (defn register-pipeline!
   "Register a pipeline in the global registry. Returns the pipeline."

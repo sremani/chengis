@@ -216,9 +216,15 @@
                                      (:always post)     (assoc :always (convert-post-steps (:always post)))
                                      (:on-success post) (assoc :on-success (convert-post-steps (:on-success post)))
                                      (:on-failure post) (assoc :on-failure (convert-post-steps (:on-failure post))))))
+                  artifact-patterns (when-let [arts (:artifacts data)]
+                                     (vec arts))
+                  notify-configs (when-let [notifs (:notify data)]
+                                   (vec notifs))
                   pipeline (cond-> {:stages stages}
-                             (:description data) (assoc :description (:description data))
-                             (seq post-actions) (assoc :post-actions post-actions))]
+                             (:description data)    (assoc :description (:description data))
+                             (seq post-actions)      (assoc :post-actions post-actions)
+                             (seq artifact-patterns) (assoc :artifacts artifact-patterns)
+                             (seq notify-configs)    (assoc :notify notify-configs))]
               (log/info "Chengisfile parsed successfully:"
                         (count stages) "stages")
               {:pipeline pipeline})))))
