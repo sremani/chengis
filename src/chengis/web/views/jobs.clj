@@ -35,36 +35,32 @@
 
 (defn render-detail
   "Job detail page: pipeline info + build history."
-  [{:keys [job builds csrf-token]}]
+  [{:keys [job builds stats recent-history csrf-token]}]
   (let [pipeline (:pipeline job)]
     (layout/base-layout
       {:title (:name job) :csrf-token csrf-token}
       (c/page-header (:name job) (c/trigger-button (:name job)))
 
-      ;; Pipeline stages
-      [:div {:class "bg-white rounded-lg shadow-sm border mb-6"}
-       [:div {:class "px-5 py-4 border-b flex items-center justify-between"}
-        [:h2 {:class "text-lg font-semibold text-gray-900"} "Pipeline"]
-        (when (get-in pipeline [:source :url])
-          [:span {:class "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                          bg-purple-100 text-purple-800 border border-purple-200"}
-           "Pipeline as Code"])]
-       [:div {:class "p-5"}
-        (when (:description pipeline)
-          [:p {:class "text-gray-600 mb-4"} (:description pipeline)])
-        [:div {:class "flex items-center gap-2 flex-wrap"}
-         (for [stage (:stages pipeline)]
-           (list
-             [:div {:class "bg-gray-50 border rounded-lg px-4 py-2 text-sm"}
-              [:span {:class "font-medium"} (:stage-name stage)]
-              [:span {:class "text-gray-400 ml-2"}
-               (str "(" (count (:steps stage)) " step"
-                    (when (> (count (:steps stage)) 1) "s") ")")
-               (when (:parallel? stage)
-                 [:span {:class "ml-1 text-blue-500"} " parallel"])]]
-             [:span {:class "text-gray-300 text-lg"} "\u2192"]))]]]
+      ;; Pipeline description + source badge
+      (when (or (:description pipeline) (get-in pipeline [:source :url]))
+        [:div {:class "bg-white rounded-lg shadow-sm border mb-6 p-5"}
+         (when (:description pipeline)
+           [:p {:class "text-gray-600"} (:description pipeline)])
+         (when (get-in pipeline [:source :url])
+           [:span {:class "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                           bg-purple-100 text-purple-800 border border-purple-200 mt-2"}
+            "Pipeline as Code"])])
 
-      ;; Build history
+      ;; Pipeline visualization graph (structural — no status colors)
+      (c/pipeline-graph (:stages pipeline))
+
+      ;; Build stats + history chart
+      (when (and stats (pos? (:total stats)))
+        (list
+          (c/build-stats-row stats)
+          (c/build-history-chart recent-history)))
+
+      ;; Build history table
       [:div {:class "bg-white rounded-lg shadow-sm border"}
        [:div {:class "px-5 py-4 border-b"}
         [:h2 {:class "text-lg font-semibold text-gray-900"} "Build History"]]

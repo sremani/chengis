@@ -29,16 +29,17 @@
 
 (defn create-build!
   "Create a new build record. Returns the build map."
-  [ds {:keys [job-id trigger-type parameters workspace]}]
+  [ds {:keys [job-id trigger-type parameters workspace parent-build-id]}]
   (let [id (util/generate-id)
         build-number (next-build-number ds job-id)
-        row {:id id
-             :job-id job-id
-             :build-number build-number
-             :status "queued"
-             :trigger-type (when trigger-type (name trigger-type))
-             :parameters (util/serialize-edn parameters)
-             :workspace workspace}]
+        row (cond-> {:id id
+                     :job-id job-id
+                     :build-number build-number
+                     :status "queued"
+                     :trigger-type (when trigger-type (name trigger-type))
+                     :parameters (util/serialize-edn parameters)
+                     :workspace workspace}
+              parent-build-id (assoc :parent-build-id parent-build-id))]
     (jdbc/execute-one! ds
       (sql/format {:insert-into :builds
                    :values [row]}))
@@ -209,3 +210,42 @@
                  :where [:= :build-id build-id]
                  :order-by [[:id :asc]]})
     {:builder-fn rs/as-unqualified-kebab-maps}))
+
+;; --- Statistics & History ---
+
+(defn get-build-stats
+  "Get build statistics for a job (or all jobs if job-id is nil).
+   Returns {:total N :success N :failure N :aborted N :success-rate 0.85 :avg-duration-ms N}"
+  ([ds] (get-build-stats ds nil))
+  ([ds job-id]
+   (let [builds (if job-id
+                  (list-builds ds job-id)
+                  (list-builds ds))
+         total (count builds)
+         success (count (filter #(= :success (:status %)) builds))
+         failure (count (filter #(= :failure (:status %)) builds))
+         aborted (count (filter #(= :aborted (:status %)) builds))
+         ;; Calculate average duration for completed builds with timestamps
+         completed-builds (filter #(and (:started-at %) (:completed-at %)) builds)
+         success-rate (if (pos? total) (double (/ success total)) 0.0)]
+     {:total total
+      :success success
+      :failure failure
+      :aborted aborted
+      :success-rate success-rate})))
+
+(defn get-recent-build-history
+  "Get the last N builds for a job (or all jobs), for chart rendering.
+   Returns a seq of {:id :build-number :status :started-at :completed-at}."
+  ([ds limit] (get-recent-build-history ds nil limit))
+  ([ds job-id limit]
+   (let [base-query (cond-> {:select [:id :build-number :status :started-at :completed-at :job-id]
+                              :from :builds
+                              :order-by [[:created-at :desc]]
+                              :limit limit}
+                      job-id (assoc :where [:= :job-id job-id]))]
+     (mapv (fn [row]
+             (update row :status util/ensure-keyword))
+       (jdbc/execute! ds
+         (sql/format base-query)
+         {:builder-fn rs/as-unqualified-kebab-maps})))))

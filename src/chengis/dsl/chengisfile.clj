@@ -143,7 +143,7 @@
                             (swap! errors conj (str step-prefix " (" (or (:name step) "?") "): :env must be a map")))
 
                           (when (and (:timeout step) (not (pos-int? (:timeout step))))
-                            (swap! errors conj (str step-prefix " (" (or (:name step) "?") "): :timeout must be a positive integer"))))))))
+                            (swap! errors conj (str step-prefix " (" (or (:name step) "?") "): :timeout must be a positive integer")))))))
 
                 ;; Validate :when clause if present
                 (when (:when stage)
@@ -153,6 +153,26 @@
                     (when (map? w)
                       (when-not (or (:branch w) (:param w))
                         (swap! errors conj (str prefix " (" (or (:name stage) "?") "): :when must have :branch or :param"))))))))))))
+
+      ;; Validate :post section if present
+      (when-let [post (:post data)]
+        (when-not (map? post)
+          (swap! errors conj ":post must be a map"))
+        (when (map? post)
+          (doseq [group-key [:always :on-success :on-failure]]
+            (when-let [steps (get post group-key)]
+              (when-not (vector? steps)
+                (swap! errors conj (str ":post " (name group-key) " must be a vector")))
+              (when (vector? steps)
+                (doseq [[idx step] (map-indexed vector steps)]
+                  (let [prefix (str ":post " (name group-key) " step " (inc idx))]
+                    (when-not (map? step)
+                      (swap! errors conj (str prefix ": must be a map")))
+                    (when (map? step)
+                      (when (str/blank? (:name step))
+                        (swap! errors conj (str prefix ": missing :name")))
+                      (when (str/blank? (:run step))
+                        (swap! errors conj (str prefix ": missing :run"))))))))))))
 
     {:valid? (empty? @errors)
      :errors @errors}))
@@ -188,8 +208,17 @@
             {:error (str "Validation failed: " (str/join "; " errors))}
             ;; Convert to internal format
             (let [stages (mapv convert-stage (:stages data))
+                  post-actions (when-let [post (:post data)]
+                                 (let [convert-post-steps (fn [steps]
+                                                           (when (seq steps)
+                                                             (mapv convert-step steps)))]
+                                   (cond-> {}
+                                     (:always post)     (assoc :always (convert-post-steps (:always post)))
+                                     (:on-success post) (assoc :on-success (convert-post-steps (:on-success post)))
+                                     (:on-failure post) (assoc :on-failure (convert-post-steps (:on-failure post))))))
                   pipeline (cond-> {:stages stages}
-                             (:description data) (assoc :description (:description data)))]
+                             (:description data) (assoc :description (:description data))
+                             (seq post-actions) (assoc :post-actions post-actions))]
               (log/info "Chengisfile parsed successfully:"
                         (count stages) "stages")
               {:pipeline pipeline})))))

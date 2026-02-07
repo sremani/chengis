@@ -197,6 +197,34 @@
               (println "No logs available for this build.")
               (out/print-build-log steps))))))))
 
+(defn cmd-build-cancel
+  "Cancel a running build."
+  [args]
+  (let [build-id (first args)]
+    (if-not build-id
+      (out/print-error "Usage: chengis build cancel <build-id>")
+      (if (build-runner/cancel-build! build-id)
+        (out/print-success (str "Build " build-id " cancelled."))
+        (out/print-error (str "Build not found or not running: " build-id))))))
+
+(defn cmd-build-retry
+  "Retry a completed build."
+  [args]
+  (let [build-id (first args)]
+    (if-not build-id
+      (out/print-error "Usage: chengis build retry <build-id>")
+      (let [system (load-system)
+            {:keys [db]} system
+            build (build-store/get-build db build-id)]
+        (if-not build
+          (out/print-error (str "Build not found: " build-id))
+          (let [job (job-store/get-job-by-id db (:job-id build))
+                result (build-runner/execute-build! system job :retry
+                         {:parameters (:parameters build)})]
+            (println)
+            (println (str "Retry Build #" (:build-number result) " completed: "
+                          (name (:build-status result))))))))))
+
 ;; --- pipeline commands ---
 
 (defn cmd-pipeline-validate

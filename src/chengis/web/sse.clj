@@ -37,6 +37,12 @@
               "Build completed: "
               (c/status-badge build-status)])))
 
+    :build-cancelled
+    (str (h/html
+           [:div {:class "text-center py-4 text-orange-400 border-t border-gray-700 mt-4"}
+            "Build cancelled "
+            (c/status-badge :aborted)]))
+
     ;; Default: empty
     ""))
 

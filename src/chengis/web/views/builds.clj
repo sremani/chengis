@@ -97,8 +97,33 @@
           (str "Job: ")
           [:a {:href (str "/jobs/" (or (:name job) ""))
                :class "text-blue-600 hover:underline"}
-           (or (:name job) (:job-id build))]]]
-        [:div {:id "build-status"}
+           (or (:name job) (:job-id build))]
+          ;; Retry lineage
+          (when-let [parent-id (:parent-build-id build)]
+            [:span {:class "ml-2 text-gray-400"}
+             "Retried from "
+             [:a {:href (str "/builds/" parent-id)
+                  :class "text-blue-500 hover:underline"} "parent build"]])]]
+        [:div {:class "flex items-center gap-3" :id "build-status"}
+         ;; Cancel button (only for running/queued builds)
+         (when (#{:running :queued} (:status build))
+           [:form {:method "post" :action (str "/builds/" build-id "/cancel")}
+            [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
+            [:button {:type "submit"
+                      :class "bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-medium
+                              hover:bg-red-700 active:bg-red-800 transition-colors
+                              focus:outline-none focus:ring-2 focus:ring-red-500"
+                      :onclick "return confirm('Cancel this build?')"}
+             "Cancel Build"]])
+         ;; Retry button (only for completed builds)
+         (when (#{:success :failure :aborted} (:status build))
+           [:form {:method "post" :action (str "/builds/" build-id "/retry")}
+            [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
+            [:button {:type "submit"
+                      :class "bg-yellow-600 text-white px-3 py-1.5 rounded-md text-sm font-medium
+                              hover:bg-yellow-700 active:bg-yellow-800 transition-colors
+                              focus:outline-none focus:ring-2 focus:ring-yellow-500"}
+             "Retry"]])
          (c/status-badge (:status build))]]
 
        ;; Build info
@@ -124,6 +149,16 @@
          [:div
           [:span {:class "text-gray-500 block"} "Workspace"]
           [:span {:class "font-mono text-xs"} (or (:workspace build) "-")]]]]
+
+       ;; Pipeline visualization (with live status)
+       (when (seq stages)
+         (let [stage-defs (mapv (fn [s] {:stage-name (:stage-name s)
+                                          :steps (filter #(= (:stage-name %) (:stage-name s)) steps)
+                                          :parallel? false})
+                                stages)]
+           (c/pipeline-graph stage-defs
+                             {:stage-results stages
+                              :step-results steps})))
 
        ;; Git info (only for git-sourced builds)
        (render-git-info-section build)

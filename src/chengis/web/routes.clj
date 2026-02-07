@@ -49,7 +49,9 @@
         ["/:name/trigger" {:post {:handler (h/trigger-build system)}}]]
        ["/builds"
         ["/:id" {:get {:handler (h/build-detail-page system)}}]
-        ["/:id/log" {:get {:handler (h/build-log-page system)}}]]
+        ["/:id/log" {:get {:handler (h/build-log-page system)}}]
+        ["/:id/cancel" {:post {:handler (h/cancel-build system)}}]
+        ["/:id/retry" {:post {:handler (h/retry-build system)}}]]
        ["/api"
         ["/builds/:id/events" {:get {:handler (h/build-events-sse system)}}]
         ["/webhook" {:post {:handler (webhook/webhook-handler system build-runner/build-executor)}}]]])

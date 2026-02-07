@@ -23,6 +23,8 @@ Commands:
   job show <name>          Show job details
   job delete <name>        Delete a job
   build trigger <job>      Trigger a build for a job
+  build cancel <build-id>  Cancel a running build
+  build retry <build-id>   Retry a completed build
   build list [job]         List builds (optionally by job)
   build show <build-id>    Show build details
   build log <build-id>     Show build step output
@@ -60,6 +62,8 @@ Options:
                            (usage)))
           "build"    (case sub-command
                        "trigger" (cmd/cmd-build-trigger rest-args)
+                       "cancel"  (cmd/cmd-build-cancel rest-args)
+                       "retry"   (cmd/cmd-build-retry rest-args)
                        "list"    (cmd/cmd-build-list rest-args)
                        "show"    (cmd/cmd-build-show rest-args)
                        "log"     (cmd/cmd-build-log rest-args)

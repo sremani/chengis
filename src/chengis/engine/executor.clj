@@ -22,6 +22,12 @@
         :timestamp (now)
         :data data})))
 
+(defn- cancelled?
+  "Check if the build has been cancelled."
+  [build-ctx]
+  (when-let [flag (:cancelled? build-ctx)]
+    @flag))
+
 (defn- evaluate-condition
   "Check whether a step/stage condition is met given the build context."
   [condition build-ctx]
@@ -39,49 +45,68 @@
   (let [step-name (:step-name step-def)
         stage-name (:current-stage build-ctx)
         started-at (now)]
-    (log/info "Running step:" step-name)
-    (emit build-ctx :step-started {:stage-name stage-name :step-name step-name})
-    (if-not (evaluate-condition (:condition step-def) build-ctx)
-      (let [result {:step-name step-name
-                    :step-status :skipped
-                    :exit-code 0
-                    :started-at started-at
-                    :completed-at (now)}]
-        (log/info "Skipping step (condition not met):" step-name)
+    ;; Check cancellation before running
+    (if (cancelled? build-ctx)
+      (do
+        (log/info "Step aborted (build cancelled):" step-name)
         (emit build-ctx :step-completed
-              (merge {:stage-name stage-name} result))
-        result)
-      (let [result (process/execute-command
-                     {:command (:command step-def)
-                      :dir (:workspace build-ctx)
-                      :env (merge (:env build-ctx) (:env step-def))
-                      :timeout (:timeout step-def)})
-            status (if (zero? (:exit-code result)) :success :failure)]
-        (when (= status :failure)
-          (log/error "Step failed:" step-name "exit code:" (:exit-code result))
-          (when (seq (:stderr result))
-            (log/error "stderr:" (:stderr result))))
-        (let [step-result {:step-name step-name
-                           :step-status status
-                           :exit-code (:exit-code result)
-                           :stdout (:stdout result)
-                           :stderr (:stderr result)
-                           :duration-ms (:duration-ms result)
-                           :started-at started-at
-                           :completed-at (now)}]
-          (emit build-ctx :step-completed
-                (merge {:stage-name stage-name} step-result))
-          step-result)))))
+              {:stage-name stage-name :step-name step-name :step-status :aborted})
+        {:step-name step-name
+         :step-status :aborted
+         :exit-code -2
+         :stdout ""
+         :stderr "Build cancelled"
+         :started-at started-at
+         :completed-at (now)})
+      (do
+        (log/info "Running step:" step-name)
+        (emit build-ctx :step-started {:stage-name stage-name :step-name step-name})
+        (if-not (evaluate-condition (:condition step-def) build-ctx)
+          (let [result {:step-name step-name
+                        :step-status :skipped
+                        :exit-code 0
+                        :started-at started-at
+                        :completed-at (now)}]
+            (log/info "Skipping step (condition not met):" step-name)
+            (emit build-ctx :step-completed
+                  (merge {:stage-name stage-name} result))
+            result)
+          (let [result (process/execute-command
+                         {:command (:command step-def)
+                          :dir (:workspace build-ctx)
+                          :env (merge (:env build-ctx) (:env step-def))
+                          :timeout (:timeout step-def)})
+                status (cond
+                         (:cancelled? result) :aborted
+                         (zero? (:exit-code result)) :success
+                         :else :failure)]
+            (when (= status :failure)
+              (log/error "Step failed:" step-name "exit code:" (:exit-code result))
+              (when (seq (:stderr result))
+                (log/error "stderr:" (:stderr result))))
+            (let [step-result {:step-name step-name
+                               :step-status status
+                               :exit-code (:exit-code result)
+                               :stdout (:stdout result)
+                               :stderr (:stderr result)
+                               :duration-ms (:duration-ms result)
+                               :started-at started-at
+                               :completed-at (now)}]
+              (emit build-ctx :step-completed
+                    (merge {:stage-name stage-name} step-result))
+              step-result)))))))
 
 (defn- run-steps-sequential
-  "Run steps one by one. Stops on first failure."
+  "Run steps one by one. Stops on first failure or cancellation."
   [build-ctx steps]
   (reduce (fn [results step-def]
-            (let [result (run-step build-ctx step-def)]
-              (let [updated (conj results result)]
-                (if (= :failure (:step-status result))
-                  (reduced updated)
-                  updated))))
+            (if (cancelled? build-ctx)
+              (reduced results)
+              (let [result (run-step build-ctx step-def)]
+                (let [updated (conj results result)]
+                  (if (#{:failure :aborted} (:step-status result))
+                    (reduced updated)
+                    updated)))))
           []
           steps))
 
@@ -101,33 +126,80 @@
         started-at (now)
         ;; Add current stage name to context so steps can reference it
         build-ctx (assoc build-ctx :current-stage stage-name)]
-    (log/info "=== Stage:" stage-name "===")
-    (emit build-ctx :stage-started {:stage-name stage-name})
-    (if-not (evaluate-condition (:condition stage-def) build-ctx)
-      (let [result {:stage-name stage-name
-                    :stage-status :skipped
-                    :step-results []
-                    :started-at started-at
-                    :completed-at (now)}]
-        (log/info "Skipping stage (condition not met):" stage-name)
-        (emit build-ctx :stage-completed {:stage-name stage-name :stage-status :skipped})
-        result)
-      (let [step-results (if (:parallel? stage-def)
-                           (run-steps-parallel build-ctx (:steps stage-def))
-                           (run-steps-sequential build-ctx (:steps stage-def)))
-            any-failed? (some #(= :failure (:step-status %)) step-results)
-            all-skipped? (every? #(= :skipped (:step-status %)) step-results)
-            stage-status (cond
-                           any-failed?  :failure
-                           all-skipped? :skipped
-                           :else        :success)]
-        (log/info "Stage" stage-name "completed with status:" stage-status)
-        (emit build-ctx :stage-completed {:stage-name stage-name :stage-status stage-status})
+    ;; Check cancellation before running stage
+    (if (cancelled? build-ctx)
+      (do
+        (log/info "Stage aborted (build cancelled):" stage-name)
+        (emit build-ctx :stage-completed {:stage-name stage-name :stage-status :aborted})
         {:stage-name stage-name
-         :stage-status stage-status
-         :step-results step-results
+         :stage-status :aborted
+         :step-results []
          :started-at started-at
-         :completed-at (now)}))))
+         :completed-at (now)})
+      (do
+        (log/info "=== Stage:" stage-name "===")
+        (emit build-ctx :stage-started {:stage-name stage-name})
+        (if-not (evaluate-condition (:condition stage-def) build-ctx)
+          (let [result {:stage-name stage-name
+                        :stage-status :skipped
+                        :step-results []
+                        :started-at started-at
+                        :completed-at (now)}]
+            (log/info "Skipping stage (condition not met):" stage-name)
+            (emit build-ctx :stage-completed {:stage-name stage-name :stage-status :skipped})
+            result)
+          (let [step-results (if (:parallel? stage-def)
+                               (run-steps-parallel build-ctx (:steps stage-def))
+                               (run-steps-sequential build-ctx (:steps stage-def)))
+                any-failed? (some #(= :failure (:step-status %)) step-results)
+                any-aborted? (some #(= :aborted (:step-status %)) step-results)
+                all-skipped? (every? #(= :skipped (:step-status %)) step-results)
+                stage-status (cond
+                               any-aborted? :aborted
+                               any-failed?  :failure
+                               all-skipped? :skipped
+                               :else        :success)]
+            (log/info "Stage" stage-name "completed with status:" stage-status)
+            (emit build-ctx :stage-completed {:stage-name stage-name :stage-status stage-status})
+            {:stage-name stage-name
+             :stage-status stage-status
+             :step-results step-results
+             :started-at started-at
+             :completed-at (now)}))))))
+
+(defn- run-post-action-group
+  "Run a group of post-action steps as an implicit stage.
+   Post-action failures are logged but do NOT affect build status."
+  [build-ctx stage-name steps]
+  (when (seq steps)
+    (let [stage-def {:stage-name stage-name
+                     :parallel? false
+                     :steps steps}]
+      (log/info "--- Post-action:" stage-name "---")
+      (run-stage build-ctx stage-def))))
+
+(defn- run-post-actions
+  "Execute post-build action groups based on build status.
+   Runs :always regardless, :on-success for successful builds,
+   :on-failure for failed/aborted builds.
+   Returns a vector of stage results for all executed post-action groups."
+  [build-ctx build-status post-actions]
+  (when (seq post-actions)
+    (log/info "--- Running post-build actions ---")
+    (let [results (atom [])]
+      ;; Always runs regardless of build status
+      (when-let [always-steps (:always post-actions)]
+        (when-let [result (run-post-action-group build-ctx "post:always" always-steps)]
+          (swap! results conj result)))
+      ;; On success
+      (when (and (= :success build-status) (:on-success post-actions))
+        (when-let [result (run-post-action-group build-ctx "post:on-success" (:on-success post-actions))]
+          (swap! results conj result)))
+      ;; On failure (failure or aborted)
+      (when (and (#{:failure :aborted} build-status) (:on-failure post-actions))
+        (when-let [result (run-post-action-group build-ctx "post:on-failure" (:on-failure post-actions))]
+          (swap! results conj result)))
+      @results)))
 
 (defn run-build
   "Execute a complete build for a pipeline definition.
@@ -135,7 +207,8 @@
    Arguments:
      system      - system map containing :config and optionally :db
      pipeline    - pipeline definition map (from DSL)
-     params      - build parameters map (supports optional :event-fn for live updates)
+     params      - build parameters map (supports optional :event-fn for live updates
+                   and :cancelled? atom for cancellation)
 
    Returns a build result map with status, stage results, and timing info."
   [system pipeline params]
@@ -146,7 +219,9 @@
         ws (workspace/create-workspace workspace-root job-id build-number)
         started-at (now)
         ;; Minimal build-ctx for emitting early events
-        early-ctx {:build-id build-id :event-fn (:event-fn params)}]
+        early-ctx {:build-id build-id
+                   :event-fn (:event-fn params)
+                   :cancelled? (:cancelled? params)}]
     (log/info "========================================")
     (log/info "Starting build" build-id "for" (:pipeline-name pipeline))
     (log/info "Workspace:" ws)
@@ -230,22 +305,34 @@
                                               (when git-info
                                                 {:branch (:branch git-info)}))
                            :env build-env
-                           :event-fn (:event-fn params)}]
+                           :event-fn (:event-fn params)
+                           :cancelled? (:cancelled? params)}]
             (emit build-ctx :build-started {:job-id job-id :build-number build-number})
             (let [stage-results
                   (reduce (fn [results stage-def]
-                            (let [result (run-stage build-ctx stage-def)]
-                              (let [updated (conj results result)]
-                                (if (= :failure (:stage-status result))
-                                  (do
-                                    (log/error "Pipeline stopped: stage"
-                                               (:stage-name stage-def) "failed")
-                                    (reduced updated))
-                                  updated))))
+                            (if (cancelled? build-ctx)
+                              (reduced results)
+                              (let [result (run-stage build-ctx stage-def)]
+                                (let [updated (conj results result)]
+                                  (if (#{:failure :aborted} (:stage-status result))
+                                    (do
+                                      (log/error "Pipeline stopped: stage"
+                                                 (:stage-name stage-def)
+                                                 (name (:stage-status result)))
+                                      (reduced updated))
+                                    updated)))))
                           []
                           (:stages effective-pipeline))
                   any-failed? (some #(= :failure (:stage-status %)) stage-results)
-                  build-status (if any-failed? :failure :success)
+                  any-aborted? (some #(= :aborted (:stage-status %)) stage-results)
+                  build-status (cond
+                                 any-aborted? :aborted
+                                 any-failed?  :failure
+                                 :else        :success)
+                  ;; --- Post-build actions ---
+                  post-actions (:post-actions effective-pipeline)
+                  post-results (run-post-actions build-ctx build-status post-actions)
+                  all-stage-results (into stage-results post-results)
                   completed-at (now)]
               (log/info "========================================")
               (log/info "Build" build-id "completed with status:" build-status)
@@ -255,7 +342,7 @@
                        :job-id job-id
                        :build-number build-number
                        :build-status build-status
-                       :stage-results stage-results
+                       :stage-results all-stage-results
                        :workspace ws
                        :started-at started-at
                        :completed-at completed-at

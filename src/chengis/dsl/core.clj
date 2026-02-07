@@ -75,16 +75,44 @@
                       body)]
     items))
 
+;; --- Post-build actions ---
+
+(defn always
+  "Define steps that run after every build, regardless of outcome."
+  [& steps]
+  {:always (vec (flatten steps))})
+
+(defn on-success
+  "Define steps that run only after a successful build."
+  [& steps]
+  {:on-success (vec (flatten steps))})
+
+(defn on-failure
+  "Define steps that run only after a failed or aborted build."
+  [& steps]
+  {:on-failure (vec (flatten steps))})
+
+(defn post
+  "Define post-build action groups: always, on-success, on-failure.
+   Post-action failures do NOT change build status."
+  [& groups]
+  {:post-actions (apply merge groups)})
+
 (defn build-pipeline
-  "Construct a pipeline map from opts and stages."
+  "Construct a pipeline map from opts and stages.
+   Filters out post-action maps from stages and merges them into :post-actions."
   [pipeline-name opts stages]
-  (let [base {:pipeline-name (clojure.core/name pipeline-name)
-              :stages (vec stages)}]
+  (let [post-maps (filter :post-actions stages)
+        real-stages (remove :post-actions stages)
+        merged-post (apply merge (map :post-actions post-maps))
+        base {:pipeline-name (clojure.core/name pipeline-name)
+              :stages (vec real-stages)}]
     (cond-> base
       (:description opts)  (assoc :description (:description opts))
       (:parameters opts)   (assoc :parameters (:parameters opts))
       (:triggers opts)     (assoc :triggers (:triggers opts))
-      (:source opts)       (assoc :source (:source opts)))))
+      (:source opts)       (assoc :source (:source opts))
+      (seq merged-post)    (assoc :post-actions merged-post))))
 
 (defn register-pipeline!
   "Register a pipeline in the global registry. Returns the pipeline."

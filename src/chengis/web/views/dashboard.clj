@@ -3,8 +3,8 @@
             [chengis.web.views.components :as c]))
 
 (defn render
-  "Dashboard page: stats overview + recent builds."
-  [{:keys [jobs builds running-count queued-count csrf-token]}]
+  "Dashboard page: stats overview + build trends + recent builds."
+  [{:keys [jobs builds running-count queued-count stats recent-history csrf-token]}]
   (layout/base-layout
     {:title "Dashboard" :csrf-token csrf-token}
     ;; Stats row
@@ -13,6 +13,13 @@
      (c/stat-card (count builds) "Total Builds")
      (c/stat-card running-count "Running" {:color "text-blue-600"})
      (c/stat-card queued-count "Queued" {:color "text-yellow-600"})]
+
+    ;; Build stats & history chart
+    (when (and stats (pos? (:total stats)))
+      (list
+        (c/build-stats-row stats)
+        (c/build-history-chart recent-history)))
+
     ;; Recent builds
     [:div {:class "bg-white rounded-lg shadow-sm border"}
      [:div {:class "px-5 py-4 border-b flex items-center justify-between"}

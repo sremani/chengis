@@ -5,4 +5,7 @@
           {:name "Test"
            :parallel true
            :steps [{:name "Unit Tests" :run "echo Running unit tests..."}
-                   {:name "Lint" :run "echo Linting..."}]}]}
+                   {:name "Lint" :run "echo Linting..."}]}]
+ :post {:always [{:name "Cleanup" :run "echo Cleaning up temp files..."}]
+        :on-success [{:name "Notify Success" :run "echo Build succeeded!"}]
+        :on-failure [{:name "Alert" :run "echo Build FAILED - sending alert"}]}}
