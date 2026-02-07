@@ -11,7 +11,18 @@
    :secrets {:master-key nil}
    :artifacts {:root "artifacts" :retention-builds 10}
    :notifications {:slack {:default-webhook nil}}
-   :cleanup {:enabled false :interval-hours 24 :retention-builds 10}})
+   :cleanup {:enabled false :interval-hours 24 :retention-builds 10}
+   :plugins {:directory "plugins" :enabled []}
+   :docker {:host "unix:///var/run/docker.sock"
+            :default-timeout 600000
+            :pull-policy :if-not-present}
+   :distributed {:enabled false
+                 :mode :master
+                 :auth-token nil
+                 :agent {:port 9090
+                         :labels #{}
+                         :max-builds 2}
+                 :dispatch {:fallback-local true}}})
 
 (defn load-config
   "Load configuration from config.edn on the classpath, merged with defaults.

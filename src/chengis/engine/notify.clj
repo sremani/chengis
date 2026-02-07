@@ -3,6 +3,8 @@
    Supports console logging and Slack webhook notifications.
    Dispatches based on :type in notification config."
   (:require [chengis.db.notification-store :as notification-store]
+            [chengis.plugin.protocol :as proto]
+            [chengis.plugin.registry :as plugin-reg]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [org.httpkit.client :as http]
@@ -177,8 +179,12 @@
                        {:build-id (:build-id enriched)
                         :type (:type config)
                         :status :pending}))
-            ;; Send it
-            result (send-notification! enriched merged-config)]
+            ;; Send it — try plugin registry first, fall back to multimethod
+            notifier-type (keyword (:type config))
+            plugin-notifier (plugin-reg/get-notifier notifier-type)
+            result (if plugin-notifier
+                     (proto/send-notification plugin-notifier enriched merged-config)
+                     (send-notification! enriched merged-config))]
         ;; Update record with result
         (when (and ds record)
           (notification-store/update-notification-status!

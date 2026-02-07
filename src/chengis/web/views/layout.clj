@@ -44,6 +44,7 @@
           [:div {:class "flex gap-6 text-sm font-medium"}
            [:a {:href "/" :class "hover:text-blue-300 transition"} "Dashboard"]
            [:a {:href "/jobs" :class "hover:text-blue-300 transition"} "Jobs"]
+           [:a {:href "/agents" :class "hover:text-blue-300 transition"} "Agents"]
            [:a {:href "/admin" :class "hover:text-blue-300 transition"} "Admin"]]]]
         ;; Content
         [:main {:class "max-w-7xl mx-auto px-4 sm:px-6 py-8 flex-1 w-full"}

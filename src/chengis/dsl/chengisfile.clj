@@ -61,24 +61,34 @@
 (defn convert-step
   "Convert a Chengisfile step map to an internal step map.
    {:name \"Compile\" :run \"mvn compile\" :env {\"K\" \"V\"} :timeout 30000}
-   → {:step-name \"Compile\" :type :shell :command \"mvn compile\" :env {\"K\" \"V\"} :timeout 30000}"
+   → {:step-name \"Compile\" :type :shell :command \"mvn compile\" :env {\"K\" \"V\"} :timeout 30000}
+
+   If the step has an :image key, it becomes a :docker type step."
   [edn-step]
-  (cond-> {:step-name (:name edn-step)
-           :type      :shell
-           :command   (:run edn-step)}
-    (:env edn-step)     (assoc :env (:env edn-step))
-    (:timeout edn-step) (assoc :timeout (:timeout edn-step))
-    (:dir edn-step)     (assoc :dir (:dir edn-step))))
+  (let [is-docker? (some? (:image edn-step))]
+    (cond-> {:step-name (:name edn-step)
+             :type      (if is-docker? :docker :shell)
+             :command   (:run edn-step)}
+      is-docker?           (assoc :image (:image edn-step))
+      (:env edn-step)      (assoc :env (:env edn-step))
+      (:timeout edn-step)  (assoc :timeout (:timeout edn-step))
+      (:dir edn-step)      (assoc :dir (:dir edn-step))
+      (:volumes edn-step)  (assoc :volumes (:volumes edn-step))
+      (:workdir edn-step)  (assoc :workdir (:workdir edn-step))
+      (:network edn-step)  (assoc :network (:network edn-step)))))
 
 (defn convert-stage
   "Convert a Chengisfile stage map to an internal stage map.
    {:name \"Build\" :parallel true :when {:branch \"main\"} :steps [...]}
-   → {:stage-name \"Build\" :parallel? true :condition {...} :steps [...]}"
+   → {:stage-name \"Build\" :parallel? true :condition {...} :steps [...]}
+
+   If the stage has a :container key, it is passed through for Docker wrapping."
   [edn-stage]
   (cond-> {:stage-name (:name edn-stage)
            :parallel?  (boolean (:parallel edn-stage))
            :steps      (mapv convert-step (:steps edn-stage))}
-    (:when edn-stage) (assoc :condition (convert-condition (:when edn-stage)))))
+    (:when edn-stage)      (assoc :condition (convert-condition (:when edn-stage)))
+    (:container edn-stage) (assoc :container (:container edn-stage))))
 
 ;; ---------------------------------------------------------------------------
 ;; Validation
@@ -222,6 +232,7 @@
                                    (vec notifs))
                   pipeline (cond-> {:stages stages}
                              (:description data)    (assoc :description (:description data))
+                             (:container data)      (assoc :container (:container data))
                              (seq post-actions)      (assoc :post-actions post-actions)
                              (seq artifact-patterns) (assoc :artifacts artifact-patterns)
                              (seq notify-configs)    (assoc :notify notify-configs))]

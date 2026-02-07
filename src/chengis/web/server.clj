@@ -3,6 +3,7 @@
             [chengis.config :as config]
             [chengis.db.connection :as conn]
             [chengis.db.migrate :as migrate]
+            [chengis.plugin.loader :as plugin-loader]
             [chengis.web.routes :as routes]
             [taoensso.timbre :as log]))
 
@@ -16,6 +17,7 @@
         _ (migrate/migrate! db-path)
         ds (conn/create-datasource db-path)
         system {:config cfg :db ds :db-path db-path}
+        _ (plugin-loader/load-plugins! system)
         port (get-in cfg [:server :port] 8080)
         host (get-in cfg [:server :host] "0.0.0.0")
         app (routes/app-routes system)

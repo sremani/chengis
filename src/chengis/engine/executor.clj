@@ -6,11 +6,14 @@
             [chengis.db.artifact-store :as artifact-store]
             [chengis.db.secret-store :as secret-store]
             [chengis.dsl.chengisfile :as chengisfile]
+            [chengis.dsl.yaml :as yaml-parser]
             [chengis.engine.artifacts :as artifacts]
             [chengis.engine.notify :as notify]
             [chengis.engine.git :as git]
             [chengis.engine.process :as process]
             [chengis.engine.workspace :as workspace]
+            [chengis.plugin.protocol :as proto]
+            [chengis.plugin.registry :as plugin-reg]
             [chengis.util :as util]
             [taoensso.timbre :as log])
   (:import [java.time Instant]))
@@ -76,13 +79,18 @@
             (emit build-ctx :step-completed
                   (merge {:stage-name stage-name} result))
             result)
-          (let [result (process/execute-command
-                         (cond-> {:command (:command step-def)
-                                  :dir (:workspace build-ctx)
-                                  :env (merge (:env build-ctx) (:env step-def))
-                                  :timeout (:timeout step-def)}
-                           (seq (:mask-values build-ctx))
-                           (assoc :mask-values (:mask-values build-ctx))))
+          (let [step-type (or (:type step-def) :shell)
+                executor (plugin-reg/get-step-executor step-type)
+                result (if executor
+                         (proto/execute-step executor build-ctx step-def)
+                         ;; Fallback to direct shell execution for backward compat
+                         (process/execute-command
+                           (cond-> {:command (:command step-def)
+                                    :dir (:workspace build-ctx)
+                                    :env (merge (:env build-ctx) (:env step-def))
+                                    :timeout (:timeout step-def)}
+                             (seq (:mask-values build-ctx))
+                             (assoc :mask-values (:mask-values build-ctx)))))
                 status (cond
                          (:cancelled? result) :aborted
                          (zero? (:exit-code result)) :success
@@ -126,8 +134,33 @@
         results (mapv <!! result-chans)]
     results))
 
+(defn- containerize-steps
+  "If a stage has a :container config, wrap all :shell steps to run as :docker.
+   Steps that already have :type :docker are left unchanged."
+  [steps container-config]
+  (if-not container-config
+    steps
+    (mapv (fn [step-def]
+            (if (= :shell (or (:type step-def) :shell))
+              (merge step-def
+                     {:type :docker
+                      :image (:image container-config)}
+                     (when (:volumes container-config)
+                       {:volumes (:volumes container-config)})
+                     (when (:workdir container-config)
+                       {:workdir (:workdir container-config)})
+                     (when (:network container-config)
+                       {:network (:network container-config)})
+                     (when (:pull-policy container-config)
+                       {:pull-policy (:pull-policy container-config)})
+                     (when (:docker-args container-config)
+                       {:docker-args (:docker-args container-config)}))
+              step-def))
+          steps)))
+
 (defn run-stage
-  "Execute a pipeline stage. Returns a stage result map."
+  "Execute a pipeline stage. Returns a stage result map.
+   If the stage has a :container config, shell steps are wrapped to run in Docker."
   [build-ctx stage-def]
   (let [stage-name (:stage-name stage-def)
         started-at (now)
@@ -155,9 +188,12 @@
             (log/info "Skipping stage (condition not met):" stage-name)
             (emit build-ctx :stage-completed {:stage-name stage-name :stage-status :skipped})
             result)
-          (let [step-results (if (:parallel? stage-def)
-                               (run-steps-parallel build-ctx (:steps stage-def))
-                               (run-steps-sequential build-ctx (:steps stage-def)))
+          (let [;; Apply container wrapping if stage has :container config
+                effective-steps (containerize-steps (:steps stage-def)
+                                                    (:container stage-def))
+                step-results (if (:parallel? stage-def)
+                               (run-steps-parallel build-ctx effective-steps)
+                               (run-steps-sequential build-ctx effective-steps))
                 any-failed? (some #(= :failure (:step-status %)) step-results)
                 any-aborted? (some #(= :aborted (:step-status %)) step-results)
                 all-skipped? (every? #(= :skipped (:step-status %)) step-results)
@@ -266,31 +302,57 @@
            :completed-at (now)
            :git-info nil
            :pipeline-source "server"})
-        ;; --- Chengisfile detection (Pipeline as Code) ---
-        (let [cf-result (when (and git-result (:success? git-result)
+        ;; --- Pipeline-as-Code detection (multi-format) ---
+        ;; Priority: Chengisfile (EDN) → YAML workflow → server pipeline
+        (let [;; 1. Try Chengisfile (EDN)
+              cf-result (when (and git-result (:success? git-result)
                                    (chengisfile/chengisfile-exists? ws))
                           (log/info "Chengisfile detected in workspace")
                           (emit early-ctx :chengisfile-detected {:workspace ws})
                           (chengisfile/parse-chengisfile
                             (chengisfile/chengisfile-path ws)))
-              ;; Build effective pipeline: Chengisfile replaces stages/description
+              ;; 2. Try YAML workflow (if no Chengisfile)
+              yaml-result (when (and git-result (:success? git-result)
+                                     (not (and cf-result (:pipeline cf-result))))
+                            (when-let [yaml-path (yaml-parser/detect-yaml-file ws)]
+                              (log/info "YAML workflow detected:" yaml-path)
+                              (emit early-ctx :yaml-detected {:path yaml-path})
+                              (yaml-parser/parse-yaml-workflow yaml-path)))
+              ;; Build effective pipeline from first successful parse
+              [pac-result pac-source]
+              (cond
+                (and cf-result (:pipeline cf-result))
+                [cf-result "chengisfile"]
+
+                (and yaml-result (:pipeline yaml-result))
+                [yaml-result "yaml"]
+
+                :else [nil "server"])
               effective-pipeline
-              (if (and cf-result (:pipeline cf-result))
-                (let [cf-pipeline (:pipeline cf-result)]
-                  (log/info "Using Chengisfile pipeline:"
-                            (count (:stages cf-pipeline)) "stages")
-                  (cond-> (assoc pipeline :stages (:stages cf-pipeline))
-                    (:description cf-pipeline)
-                    (assoc :description (:description cf-pipeline))))
+              (if pac-result
+                (let [pac-pipeline (:pipeline pac-result)]
+                  (log/info "Using" pac-source "pipeline:"
+                            (count (:stages pac-pipeline)) "stages")
+                  (cond-> (assoc pipeline :stages (:stages pac-pipeline))
+                    (:description pac-pipeline)
+                    (assoc :description (:description pac-pipeline))
+                    (:container pac-pipeline)
+                    (assoc :container (:container pac-pipeline))
+                    (:post-actions pac-pipeline)
+                    (assoc :post-actions (:post-actions pac-pipeline))
+                    (:artifacts pac-pipeline)
+                    (assoc :artifacts (:artifacts pac-pipeline))
+                    (:notify pac-pipeline)
+                    (assoc :notify (:notify pac-pipeline))))
                 (do
                   (when (and cf-result (:error cf-result))
-                    (log/warn "Chengisfile parse error, using server pipeline:"
-                              (:error cf-result))
-                    (emit early-ctx :chengisfile-error
-                          {:error (:error cf-result)}))
+                    (log/warn "Chengisfile parse error:" (:error cf-result))
+                    (emit early-ctx :chengisfile-error {:error (:error cf-result)}))
+                  (when (and yaml-result (:error yaml-result))
+                    (log/warn "YAML parse error:" (:error yaml-result))
+                    (emit early-ctx :yaml-error {:error (:error yaml-result)}))
                   pipeline))
-              pipeline-source (if (and cf-result (:pipeline cf-result))
-                                "chengisfile" "server")]
+              pipeline-source pac-source]
           ;; --- Normal build execution ---
           (let [git-env (when git-info
                           {"GIT_BRANCH"       (:branch git-info)
@@ -333,7 +395,17 @@
                            :env build-env
                            :event-fn (:event-fn params)
                            :cancelled? (:cancelled? params)
-                           :mask-values secret-values}]
+                           :mask-values secret-values
+                           :docker-config (get-in system [:config :docker])}
+                ;; Propagate pipeline-level :container to stages that don't have their own
+                pipeline-container (:container effective-pipeline)
+                effective-stages (if pipeline-container
+                                   (mapv (fn [s]
+                                           (if (:container s)
+                                             s
+                                             (assoc s :container pipeline-container)))
+                                         (:stages effective-pipeline))
+                                   (:stages effective-pipeline))]
             (emit build-ctx :build-started {:job-id job-id :build-number build-number})
             (let [stage-results
                   (reduce (fn [results stage-def]
@@ -349,7 +421,7 @@
                                       (reduced updated))
                                     updated)))))
                           []
-                          (:stages effective-pipeline))
+                          effective-stages)
                   any-failed? (some #(= :failure (:stage-status %)) stage-results)
                   any-aborted? (some #(= :aborted (:stage-status %)) stage-results)
                   build-status (cond

@@ -1,6 +1,7 @@
 (ns chengis.web.routes
   (:require [chengis.web.handlers :as h]
             [chengis.web.webhook :as webhook]
+            [chengis.distributed.master-api :as master-api]
             [chengis.engine.build-runner :as build-runner]
             [clojure.string :as str]
             [reitit.ring :as ring]
@@ -23,7 +24,9 @@
   [handler]
   (fn [req]
     (if (and (= :post (:request-method req))
-             (str/starts-with? (or (:uri req) "") "/api/webhook"))
+             (or (str/starts-with? (or (:uri req) "") "/api/webhook")
+                 (str/starts-with? (or (:uri req) "") "/api/agents")
+                 (str/starts-with? (or (:uri req) "") "/api/builds")))
       ;; Temporarily mark as GET so anti-forgery skips it, then restore
       (handler (assoc req :request-method :get
                           :original-method :post))
@@ -56,11 +59,19 @@
         ["/:id/cancel" {:post {:handler (h/cancel-build system)}}]
         ["/:id/retry" {:post {:handler (h/retry-build system)}}]
         ["/:id/artifacts/:filename" {:get {:handler (h/download-artifact system)}}]]
+       ["/agents"
+        ["" {:get {:handler (h/agents-page system)}}]]
        ["/admin"
         ["" {:get {:handler (h/admin-page system)}}]
         ["/cleanup" {:post {:handler (h/admin-cleanup system)}}]]
        ["/api"
         ["/builds/:id/events" {:get {:handler (h/build-events-sse system)}}]
+        ["/builds/:id/agent-events" {:post {:handler (master-api/ingest-event-handler system)}}]
+        ["/builds/:id/result" {:post {:handler (master-api/ingest-result-handler system)}}]
+        ["/agents"
+         ["" {:get {:handler (master-api/list-agents-handler system)}}]
+         ["/register" {:post {:handler (master-api/register-agent-handler system)}}]
+         ["/:id/heartbeat" {:post {:handler (master-api/heartbeat-handler system)}}]]
         ["/webhook" {:post {:handler (webhook/webhook-handler system build-runner/build-executor)}}]]])
     (ring/create-default-handler
       {:not-found (constantly {:status 404

@@ -1,8 +1,11 @@
 (ns chengis.engine.executor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [chengis.dsl.core :as dsl]
             [chengis.engine.executor :as executor]
-            [chengis.engine.workspace :as workspace]))
+            [chengis.engine.workspace :as workspace]
+            [chengis.plugin.loader :as plugin-loader]))
+
+(use-fixtures :once (fn [f] (plugin-loader/load-plugins!) (f)))
 
 (def test-system
   {:config {:workspace {:root "/tmp/chengis-test-workspaces"}}})

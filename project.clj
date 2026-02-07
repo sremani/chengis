@@ -16,7 +16,8 @@
                  [metosin/reitit-ring "0.7.2"]
                  [ring/ring-defaults "0.5.0"]
                  [hiccup/hiccup "2.0.0-RC3"]
-                 [org.clojure/data.json "2.5.0"]]
+                 [org.clojure/data.json "2.5.0"]
+                 [clj-commons/clj-yaml "1.0.29"]]
   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
   :main chengis.core
   :target-path "target/%s"

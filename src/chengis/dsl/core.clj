@@ -119,16 +119,23 @@
         artifact-maps (filter :artifacts stages)
         notify-maps (filter :notify stages)
         real-stages (remove #(or (:post-actions %) (:artifacts %) (:notify %)) stages)
+        ;; Flatten nested vectors from (container ...) calls
+        flat-stages (reduce (fn [acc s]
+                              (if (vector? s)
+                                (into acc s)
+                                (conj acc s)))
+                            [] real-stages)
         merged-post (apply merge (map :post-actions post-maps))
         merged-artifacts (vec (mapcat :artifacts artifact-maps))
         merged-notify (vec (mapcat :notify notify-maps))
         base {:pipeline-name (clojure.core/name pipeline-name)
-              :stages (vec real-stages)}]
+              :stages (vec flat-stages)}]
     (cond-> base
       (:description opts)    (assoc :description (:description opts))
       (:parameters opts)     (assoc :parameters (:parameters opts))
       (:triggers opts)       (assoc :triggers (:triggers opts))
       (:source opts)         (assoc :source (:source opts))
+      (:container opts)      (assoc :container (:container opts))
       (seq merged-post)      (assoc :post-actions merged-post)
       (seq merged-artifacts) (assoc :artifacts merged-artifacts)
       (seq merged-notify)    (assoc :notify merged-notify))))

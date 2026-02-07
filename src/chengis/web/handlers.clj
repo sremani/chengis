@@ -12,6 +12,8 @@
             [chengis.web.views.admin :as v-admin]
             [chengis.web.views.builds :as v-builds]
             [chengis.web.views.trigger-form :as v-trigger-form]
+            [chengis.web.views.agents :as v-agents]
+            [chengis.distributed.agent-registry :as agent-reg]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -327,3 +329,16 @@
                            :db-size db-size
                            :cleanup-result result
                            :csrf-token (csrf-token req)}))))))
+
+;; ---------------------------------------------------------------------------
+;; Agents page
+;; ---------------------------------------------------------------------------
+
+(defn agents-page [_system]
+  (fn [req]
+    (let [agents (agent-reg/list-agents)
+          summary (agent-reg/registry-summary)]
+      (html-response
+        (v-agents/render {:agents agents
+                          :summary summary
+                          :csrf-token (csrf-token req)})))))

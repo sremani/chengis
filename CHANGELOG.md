@@ -2,6 +2,53 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [0.2.0] - 2026
+
+### The Golden Horde Expansion
+
+**Plugin System**
+- Protocol-based extension points: StepExecutor, PipelineFormat, Notifier, ArtifactHandler, ScmProvider
+- Central atom-based plugin registry with register/lookup/introspection
+- Plugin loader with builtin + external plugin discovery and lifecycle
+- Existing shell executor, git, slack, console, artifacts refactored into builtin plugins
+- Migration 008: plugins table for tracking installed plugins
+
+**Docker Integration**
+- Steps can run inside Docker containers via `:type :docker`
+- Docker command generation: `docker run`, `docker-compose run`
+- Image management: pull-image!, image-exists?, ensure-image! with pull policies
+- Stage-level container wrapping: all steps in a stage share a Docker image
+- Pipeline-level container config propagated to stages
+- DSL helpers: `docker-step`, `docker-compose-step`, `container`
+- Chengisfile EDN support: `:image` key on steps, `:container` on stages
+- Migration 009: container_image and container_id on build_steps
+
+**GitHub Actions-style YAML Pipelines**
+- `.chengis/workflow.yml` or `chengis.yml` auto-detected in workspace
+- Full YAML format: stages, steps, parallel, container, env, conditions, post-actions, artifacts, notify
+- `${{ }}` expression syntax: parameters, secrets, env variable resolution
+- YAML validation with detailed error messages
+- Registered as PipelineFormat plugin (multi-format pipeline detection)
+- New dependency: clj-commons/clj-yaml 1.0.29
+
+**Distributed Builds**
+- HTTP-based master/agent architecture
+- Agent registry with heartbeat monitoring, label matching, capacity tracking
+- Build dispatcher: label-based agent selection with local fallback
+- Master API: agent registration, heartbeat, event ingestion, result collection
+- Agent entry point: `lein run agent --master-url URL --labels docker,linux`
+- Agent worker: executes builds, streams events to master in real-time
+- Periodic heartbeat via chime scheduler (offline detection after 90s)
+- Agent management UI page with status badges and capacity metrics
+- Shared-secret auth for agent↔master communication
+- Migration 010: agents table, agent_id/dispatched_at on builds
+
+### Test Suite
+- 100 tests, 487 assertions — all passing
+- New test suites: plugin registry, plugin loader, Docker command generation, Docker plugin, YAML parsing, YAML expressions, agent registry, dispatcher, master API, agent worker
+
+---
+
 ## [0.1.0] - 2025
 
 ### Round 2 Features
@@ -111,4 +158,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 52 passed, 301 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 100 passed, 487 assertions | varies | SUCCESS |
