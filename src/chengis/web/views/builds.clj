@@ -1,0 +1,156 @@
+(ns chengis.web.views.builds
+  (:require [chengis.web.views.layout :as layout]
+            [chengis.web.views.components :as c]
+            [hiccup.util :refer [escape-html]]))
+
+(defn- render-git-info-section
+  "Render git metadata card if git info is present in the build."
+  [build]
+  (when (:git-commit build)
+    [:div {:class "bg-white rounded-lg shadow-sm border mb-6"}
+     [:div {:class "px-5 py-4 border-b"}
+      [:h2 {:class "text-lg font-semibold text-gray-900"} "Source"]]
+     [:div {:class "grid grid-cols-2 md:grid-cols-4 gap-4 p-5 text-sm"}
+      [:div
+       [:span {:class "text-gray-500 block"} "Branch"]
+       [:span {:class "font-mono font-medium bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-sm"}
+        (or (:git-branch build) "-")]]
+      [:div
+       [:span {:class "text-gray-500 block"} "Commit"]
+       [:span {:class "font-mono text-sm"}
+        (or (:git-commit-short build) "-")]]
+      [:div
+       [:span {:class "text-gray-500 block"} "Author"]
+       [:span {:class "font-medium"} (or (:git-author build) "-")]]
+      [:div
+       [:span {:class "text-gray-500 block"} "Message"]
+       [:span {:class "text-sm text-gray-700 truncate block max-w-xs"}
+        (or (:git-message build) "-")]]]]))
+
+(defn- render-stages-section
+  "Render the stages & steps section."
+  [stages steps]
+  [:div {:class "bg-white rounded-lg shadow-sm border mb-6"
+         :id "stages-container"}
+   [:div {:class "px-5 py-4 border-b"}
+    [:h2 {:class "text-lg font-semibold text-gray-900"} "Stages"]]
+   [:div {:class "divide-y" :id "stages-list"}
+    (if (empty? stages)
+      [:div {:class "p-5 text-gray-400"} "No stage data available."]
+      (for [stage stages]
+        (let [stage-steps (filter #(= (:stage-name %) (:stage-name stage)) steps)]
+          [:div {:class "p-5" :id (str "stage-" (:stage-name stage))}
+           [:div {:class "flex items-center justify-between mb-3"}
+            [:span {:class "font-medium text-gray-900"} (:stage-name stage)]
+            (c/status-badge (:status stage))]
+           (when (seq stage-steps)
+             [:div {:class "ml-4 space-y-2"}
+              (for [step stage-steps]
+                [:div {:class "flex items-center gap-3 text-sm"
+                       :id (str "step-" (:stage-name step) "-" (:step-name step))}
+                 (c/status-badge (:status step))
+                 [:span {:class "text-gray-700"} (:step-name step)]
+                 (when (:exit-code step)
+                   [:span {:class "text-gray-400 font-mono text-xs"}
+                    (str "exit: " (:exit-code step))])])])])))]])
+
+(defn- render-output-section
+  "Render the build output / log section."
+  [build-id running? steps]
+  [:div {:class "bg-white rounded-lg shadow-sm border"}
+   [:div {:class "px-5 py-4 border-b flex items-center justify-between"}
+    [:h2 {:class "text-lg font-semibold text-gray-900"} "Build Output"]
+    [:a {:href (str "/builds/" build-id "/log")
+         :class "text-sm text-blue-600 hover:underline"} "Full log"]]
+   [:div {:id "build-log"
+          :class "bg-gray-900 text-gray-100 font-mono text-sm p-4 rounded-b-lg
+                  max-h-[600px] overflow-y-auto log-container"
+          :sse-swap (when running? "log-line")
+          :hx-swap (when running? "beforeend")}
+    (for [step steps :when (or (seq (:stdout step)) (seq (:stderr step)))]
+      [:div {:class "mb-3"}
+       [:div {:class "text-blue-400 font-bold text-xs mb-1"}
+        (str "--- " (:stage-name step) " / " (:step-name step) " ---")]
+       (when (seq (:stdout step))
+         [:pre {:class "whitespace-pre-wrap text-green-300"} (escape-html (:stdout step))])
+       (when (seq (:stderr step))
+         [:pre {:class "whitespace-pre-wrap text-red-400"} (escape-html (:stderr step))])])]])
+
+(defn render-detail
+  "Build detail page with stages, steps, and log output.
+   For running builds, includes SSE connection for live updates."
+  [{:keys [build stages steps job csrf-token]}]
+  (let [build-id (:id build)
+        running? (= :running (:status build))]
+    (layout/base-layout
+      {:title (str "Build #" (:build-number build)) :csrf-token csrf-token}
+      [:div (when running?
+              {:hx-ext "sse"
+               :sse-connect (str "/api/builds/" build-id "/events")})
+
+       ;; Header
+       [:div {:class "flex items-center justify-between mb-6"}
+        [:div
+         [:h1 {:class "text-2xl font-bold text-gray-900"}
+          (str "Build #" (:build-number build))]
+         [:p {:class "text-sm text-gray-500 mt-1"}
+          (str "Job: ")
+          [:a {:href (str "/jobs/" (or (:name job) ""))
+               :class "text-blue-600 hover:underline"}
+           (or (:name job) (:job-id build))]]]
+        [:div {:id "build-status"}
+         (c/status-badge (:status build))]]
+
+       ;; Build info
+       [:div {:class "bg-white rounded-lg shadow-sm border mb-6"}
+        [:div {:class "grid grid-cols-2 md:grid-cols-5 gap-4 p-5 text-sm"}
+         [:div
+          [:span {:class "text-gray-500 block"} "Trigger"]
+          [:span {:class "font-medium"} (or (:trigger-type build) "manual")]]
+         [:div
+          [:span {:class "text-gray-500 block"} "Pipeline Source"]
+          (let [source (or (:pipeline-source build) "server")]
+            (if (= source "chengisfile")
+              [:span {:class "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                              bg-purple-100 text-purple-700"}
+               "Chengisfile"]
+              [:span {:class "font-medium text-sm"} "Server"]))]
+         [:div
+          [:span {:class "text-gray-500 block"} "Started"]
+          [:span {:class "font-mono"} (or (:started-at build) "-")]]
+         [:div
+          [:span {:class "text-gray-500 block"} "Completed"]
+          [:span {:class "font-mono"} (or (:completed-at build) "-")]]
+         [:div
+          [:span {:class "text-gray-500 block"} "Workspace"]
+          [:span {:class "font-mono text-xs"} (or (:workspace build) "-")]]]]
+
+       ;; Git info (only for git-sourced builds)
+       (render-git-info-section build)
+
+       ;; Stages & Steps
+       (render-stages-section stages steps)
+
+       ;; Build output
+       (render-output-section build-id running? steps)])))
+
+(defn render-log
+  "Full build log page — all step stdout/stderr."
+  [{:keys [build steps csrf-token]}]
+  (layout/base-layout
+    {:title (str "Build #" (:build-number build) " Log") :csrf-token csrf-token}
+    (c/page-header (str "Build #" (:build-number build) " - Full Log")
+                   [:a {:href (str "/builds/" (:id build))
+                        :class "text-sm text-blue-600 hover:underline"} "Back to build"])
+    [:div {:class "bg-gray-900 rounded-lg shadow-sm border text-gray-100 font-mono text-sm p-6 overflow-x-auto"}
+     (if (empty? steps)
+       [:div {:class "text-gray-500"} "No log output available."]
+       (for [step steps]
+         [:div {:class "mb-6"}
+          [:div {:class "text-blue-400 font-bold text-xs mb-2 border-b border-gray-700 pb-1"}
+           (str "--- " (:stage-name step) " / " (:step-name step)
+                " [" (:status step) "] exit:" (:exit-code step) " ---")]
+          (when (seq (:stdout step))
+            [:pre {:class "whitespace-pre-wrap text-green-300"} (escape-html (:stdout step))])
+          (when (seq (:stderr step))
+            [:pre {:class "whitespace-pre-wrap text-red-400 mt-1"} (escape-html (:stderr step))])]))]))

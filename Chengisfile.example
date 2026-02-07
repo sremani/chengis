@@ -1,0 +1,8 @@
+{:description "Example Chengisfile for testing Pipeline as Code"
+ :stages [{:name "Build"
+           :steps [{:name "Check files" :run "ls -la"}
+                   {:name "Show info" :run "echo Hello from Chengisfile!"}]}
+          {:name "Test"
+           :parallel true
+           :steps [{:name "Unit Tests" :run "echo Running unit tests..."}
+                   {:name "Lint" :run "echo Linting..."}]}]}

@@ -1,0 +1,32 @@
+# Leiningen
+/target/
+/classes/
+/checkouts/
+profiles.clj
+pom.xml
+pom.xml.asc
+*.jar
+*.class
+
+# Project runtime data
+chengis.db
+workspaces/
+
+# Leiningen
+.lein-*
+.nrepl-port
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
