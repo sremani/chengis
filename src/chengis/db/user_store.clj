@@ -80,11 +80,12 @@
                    :where [:= :id user-id]}))))
 
 (defn update-password!
-  "Update a user's password."
+  "Update a user's password and bump session_version to invalidate active sessions."
   [ds user-id new-password]
   (jdbc/execute-one! ds
     (sql/format {:update :users
                  :set {:password-hash (hash-password new-password)
+                       :session-version [:+ :session-version 1]
                        :updated-at [:datetime "now"]}
                  :where [:= :id user-id]})))
 
@@ -131,7 +132,7 @@
   "List API tokens for a user (without hashes)."
   [ds user-id]
   (jdbc/execute! ds
-    (sql/format {:select [:id :name :last-used-at :expires-at :created-at]
+    (sql/format {:select [:id :name :last-used-at :expires-at :revoked-at :created-at]
                  :from :api-tokens
                  :where [:= :user-id user-id]
                  :order-by [[:created-at :desc]]})
@@ -150,13 +151,14 @@
 
 (defn find-api-token-user
   "Find the user associated with an API token by checking the token against stored hashes.
-   Returns the user map if found and token is not expired, nil otherwise.
-   Note: This is O(n) over tokens — acceptable for typical token counts."
+   Returns the user map if found, not expired, and not revoked. Nil otherwise.
+   Note: This is O(n) over non-revoked tokens — acceptable for typical token counts."
   [ds plaintext-token]
   (let [tokens (jdbc/execute! ds
                  (sql/format {:select [:api-tokens/id :api-tokens/user-id :api-tokens/token-hash
-                                       :api-tokens/expires-at]
-                              :from :api-tokens})
+                                       :api-tokens/expires-at :api-tokens/revoked-at]
+                              :from :api-tokens
+                              :where [:is :api-tokens/revoked-at nil]})
                  {:builder-fn rs/as-unqualified-kebab-maps})]
     (when-let [match (first (filter #(hashers/check plaintext-token (:token-hash %)) tokens))]
       ;; Check expiration
@@ -177,6 +179,14 @@
   [ds token-id]
   (jdbc/execute-one! ds
     (sql/format {:delete-from :api-tokens
+                 :where [:= :id token-id]})))
+
+(defn revoke-api-token!
+  "Revoke an API token by setting revoked_at timestamp."
+  [ds token-id]
+  (jdbc/execute-one! ds
+    (sql/format {:update :api-tokens
+                 :set {:revoked-at [:datetime "now"]}
                  :where [:= :id token-id]})))
 
 ;; ---------------------------------------------------------------------------

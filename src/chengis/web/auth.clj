@@ -3,6 +3,7 @@
    Config-gated: when :auth :enabled is false, all requests are treated as admin."
   (:require [chengis.db.user-store :as user-store]
             [chengis.metrics :as metrics]
+            [next.jdbc :as jdbc]
             [buddy.sign.jwt :as jwt]
             [clojure.string :as str]
             [taoensso.timbre :as log])
@@ -83,30 +84,69 @@
       @auto-jwt-secret))
 
 (defn generate-jwt
-  "Generate a JWT token for a user."
+  "Generate a JWT token for a user. Includes jti (JWT ID) for blacklist support."
   [user config]
   (let [secret (resolve-jwt-secret config)
         expiry-hours (get-in config [:auth :jwt-expiry-hours] 24)
         now (Instant/now)
-        exp (.plusSeconds now (* expiry-hours 3600))]
+        exp (.plusSeconds now (* expiry-hours 3600))
+        jti (str (java.util.UUID/randomUUID))]
     (jwt/sign {:user-id (:id user)
                :username (:username user)
                :role (:role user)
+               :jti jti
                :iat (.getEpochSecond now)
                :exp (.getEpochSecond exp)}
               secret)))
 
-(defn verify-jwt
-  "Verify and decode a JWT token. Returns claims map or nil."
-  [token config]
+;; ---------------------------------------------------------------------------
+;; JWT blacklist (for early token invalidation)
+;; ---------------------------------------------------------------------------
+
+(defn blacklist-jwt!
+  "Add a JWT to the blacklist. Used for password change / forced logout."
+  [ds jti user-id expires-at reason]
   (try
-    (let [secret (resolve-jwt-secret config)
-          claims (jwt/unsign token secret)
-          now (.getEpochSecond (Instant/now))]
-      (when (> (:exp claims) now)
-        claims))
-    (catch Exception _
-      nil)))
+    (jdbc/execute-one! ds
+      ["INSERT OR IGNORE INTO jwt_blacklist (jti, user_id, expires_at, reason) VALUES (?, ?, ?, ?)"
+       jti user-id expires-at reason])
+    (catch Exception e
+      (log/warn "Failed to blacklist JWT:" (.getMessage e)))))
+
+(defn- jti-blacklisted?
+  "Check if a JWT ID is in the blacklist.
+   Returns false if ds is nil, jti is nil, or the table doesn't exist yet."
+  [ds jti]
+  (when (and ds jti)
+    (try
+      (some?
+        (jdbc/execute-one! ds
+          ["SELECT jti FROM jwt_blacklist WHERE jti = ?" jti]))
+      (catch Exception _
+        false))))
+
+(defn cleanup-expired-blacklist!
+  "Remove expired entries from the JWT blacklist."
+  [ds]
+  (let [result (jdbc/execute-one! ds
+                 ["DELETE FROM jwt_blacklist WHERE expires_at < datetime('now')"])]
+    (:next.jdbc/update-count result 0)))
+
+(defn verify-jwt
+  "Verify and decode a JWT token. Returns claims map or nil.
+   Checks expiry and JWT blacklist (when ds is provided via 2-arity call)."
+  ([token config]
+   (verify-jwt token config nil))
+  ([token config ds]
+   (try
+     (let [secret (resolve-jwt-secret config)
+           claims (jwt/unsign token secret)
+           now (.getEpochSecond (Instant/now))]
+       (when (and (> (:exp claims) now)
+                  (not (jti-blacklisted? ds (:jti claims))))
+         claims))
+     (catch Exception _
+       nil))))
 
 ;; ---------------------------------------------------------------------------
 ;; Extract user from request
@@ -218,9 +258,10 @@
   (get-in req [:session :user]))
 
 (defn- try-jwt-auth
-  "Try to authenticate via JWT bearer token. Returns user map or nil."
-  [token config]
-  (when-let [claims (verify-jwt token config)]
+  "Try to authenticate via JWT bearer token. Returns user map or nil.
+   Passes ds for JWT blacklist checking."
+  [token config ds]
+  (when-let [claims (verify-jwt token config ds)]
     {:id (:user-id claims)
      :username (:username claims)
      :role (keyword (:role claims))}))
@@ -247,7 +288,10 @@
         auth-enabled? (get-in config [:auth :enabled] false)
         distributed-enabled? (get-in config [:distributed :enabled] false)]
     (fn [req]
-      (let [uri (or (:uri req) "")]
+      (let [uri (or (:uri req) "")
+            session-user (when auth-enabled? (try-session-auth req))
+            bearer-token (when (and auth-enabled? (not session-user))
+                           (extract-bearer-token req))]
         (cond
           ;; Auth disabled — backward compatible: everyone is admin
           (not auth-enabled?)
@@ -263,20 +307,19 @@
           (handler req)
 
           ;; Session auth
-          (try-session-auth req)
-          (handler (attach-user req (try-session-auth req)))
+          session-user
+          (handler (attach-user req session-user))
 
           ;; Bearer token present — try JWT, then API token
-          (extract-bearer-token req)
-          (let [token (extract-bearer-token req)]
-            (if-let [user (or (try-jwt-auth token config)
-                              (try-api-token-auth ds token))]
-              (do
-                (try (metrics/record-token-auth! registry :success) (catch Exception _))
-                (handler (attach-user req user)))
-              (do
-                (try (metrics/record-token-auth! registry :failure) (catch Exception _))
-                (unauthorized-response req "Invalid or expired token"))))
+          bearer-token
+          (if-let [user (or (try-jwt-auth bearer-token config ds)
+                            (try-api-token-auth ds bearer-token))]
+            (do
+              (try (metrics/record-token-auth! registry :success) (catch Exception _))
+              (handler (attach-user req user)))
+            (do
+              (try (metrics/record-token-auth! registry :failure) (catch Exception _))
+              (unauthorized-response req "Invalid or expired token")))
 
           ;; No credentials at all
           :else

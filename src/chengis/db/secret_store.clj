@@ -5,6 +5,8 @@
   (:require [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [honey.sql :as sql]
+            [chengis.db.secret-audit :as secret-audit]
+            [chengis.metrics :as metrics]
             [chengis.util :as util])
   (:import [javax.crypto Cipher KeyGenerator SecretKey]
            [javax.crypto.spec GCMParameterSpec SecretKeySpec]
@@ -63,12 +65,27 @@
       (String. (.doFinal cipher ciphertext) "UTF-8"))))
 
 ;; ---------------------------------------------------------------------------
+;; Audit helper
+;; ---------------------------------------------------------------------------
+
+(defn- audit-secret!
+  "Log a secret access event (non-blocking, swallows errors)."
+  [ds action secret-name scope {:keys [user-id ip-address registry]}]
+  (try
+    (secret-audit/log-secret-access! ds
+      {:secret-name secret-name :scope (or scope "global")
+       :action action :user-id user-id :ip-address ip-address})
+    (metrics/record-secret-access! registry action)
+    (catch Exception _)))
+
+;; ---------------------------------------------------------------------------
 ;; CRUD operations
 ;; ---------------------------------------------------------------------------
 
 (defn set-secret!
-  "Create or update a secret. Scope is 'global' or a job-id."
-  [ds config secret-name value & {:keys [scope] :or {scope "global"}}]
+  "Create or update a secret. Scope is 'global' or a job-id.
+   Optional :user-id, :ip-address, :registry for audit logging."
+  [ds config secret-name value & {:keys [scope user-id ip-address registry] :or {scope "global"}}]
   (let [key (get-master-key config)
         encrypted (encrypt key value)
         existing (jdbc/execute-one! ds
@@ -89,17 +106,22 @@
                      :values [{:id (util/generate-id)
                                :scope scope
                                :name secret-name
-                               :encrypted-value encrypted}]})))))
+                               :encrypted-value encrypted}]})))
+    (audit-secret! ds :write secret-name scope
+      {:user-id user-id :ip-address ip-address :registry registry})))
 
 (defn get-secret
-  "Get a decrypted secret value. Returns nil if not found."
-  [ds config secret-name & {:keys [scope] :or {scope "global"}}]
+  "Get a decrypted secret value. Returns nil if not found.
+   Optional :user-id, :ip-address, :registry for audit logging."
+  [ds config secret-name & {:keys [scope user-id ip-address registry] :or {scope "global"}}]
   (let [row (jdbc/execute-one! ds
               (sql/format {:select [:encrypted-value]
                            :from :secrets
                            :where [:and [:= :scope scope] [:= :name secret-name]]})
               {:builder-fn rs/as-unqualified-kebab-maps})]
     (when row
+      (audit-secret! ds :read secret-name scope
+        {:user-id user-id :ip-address ip-address :registry registry})
       (let [key (get-master-key config)]
         (decrypt key (:encrypted-value row))))))
 
@@ -115,16 +137,21 @@
       {:builder-fn rs/as-unqualified-kebab-maps})))
 
 (defn delete-secret!
-  "Delete a secret. Returns true if deleted, false if not found."
-  [ds secret-name & {:keys [scope] :or {scope "global"}}]
+  "Delete a secret. Returns true if deleted, false if not found.
+   Optional :user-id, :ip-address, :registry for audit logging."
+  [ds secret-name & {:keys [scope user-id ip-address registry] :or {scope "global"}}]
   (let [result (jdbc/execute-one! ds
                  (sql/format {:delete-from :secrets
                               :where [:and [:= :scope scope] [:= :name secret-name]]}))]
+    (when (pos? (:next.jdbc/update-count result 0))
+      (audit-secret! ds :delete secret-name scope
+        {:user-id user-id :ip-address ip-address :registry registry}))
     (pos? (:next.jdbc/update-count result 0))))
 
 (defn get-secrets-for-build
   "Get all secrets as a map of {name value} for a build.
-   Merges global secrets with job-scoped secrets (job scope overrides global)."
+   Merges global secrets with job-scoped secrets (job scope overrides global).
+   Logs each secret access as :build-read."
   [ds config job-id]
   (let [key (get-master-key config)
         rows (jdbc/execute! ds
@@ -133,6 +160,8 @@
                             :where [:or [:= :scope "global"] [:= :scope job-id]]
                             :order-by [[:scope :asc]]}) ;; global first, then job overrides
                {:builder-fn rs/as-unqualified-kebab-maps})]
+    (doseq [row rows]
+      (audit-secret! ds :build-read (:name row) (:scope row) {}))
     (reduce (fn [m row]
               (assoc m (:name row) (decrypt key (:encrypted-value row))))
             {}

@@ -18,8 +18,13 @@
             [chengis.web.views.login :as v-login]
             [chengis.web.views.audit :as v-audit]
             [chengis.web.views.users :as v-users]
+            [chengis.web.views.webhooks :as v-webhooks]
+            [chengis.web.views.tokens :as v-tokens]
+            [chengis.db.webhook-log :as webhook-log]
             [chengis.web.alerts :as alerts]
             [chengis.db.audit-store :as audit-store]
+            [chengis.metrics :as metrics]
+            [chengis.engine.retention :as retention]
             [chengis.distributed.agent-registry :as agent-reg]
             [chengis.distributed.circuit-breaker :as cb]
             [chengis.distributed.build-queue :as bq]
@@ -335,7 +340,9 @@
         (v-admin/render {:system-info system-info
                          :disk-usage disk-usage
                          :db-size db-size
-                         :csrf-token (csrf-token req)})))))
+                         :csrf-token (csrf-token req)
+                         :user (auth/current-user req)
+                         :auth-enabled (get-in config [:auth :enabled] false)})))))
 
 (defn admin-cleanup [system]
   (fn [req]
@@ -350,7 +357,16 @@
                            :disk-usage disk-usage
                            :db-size db-size
                            :cleanup-result result
-                           :csrf-token (csrf-token req)}))))))
+                           :csrf-token (csrf-token req)
+                           :user (auth/current-user req)
+                           :auth-enabled (get-in config [:auth :enabled] false)}))))))
+
+(defn admin-retention [system]
+  (fn [req]
+    (let [result (retention/run-retention! system)]
+      (log/info "Manual retention run:" result)
+      {:status 303
+       :headers {"Location" "/admin"}})))
 
 ;; ---------------------------------------------------------------------------
 ;; Agents page
@@ -469,7 +485,8 @@
     (let [ds (:db system)
           config (:config system)
           params (or (:query-params req) (:params req) {})
-          page (max 1 (Integer/parseInt (or (get params "page") "1")))
+          page (max 1 (try (Integer/parseInt (or (get params "page") "1"))
+                          (catch NumberFormatException _ 1)))
           page-size 50
           ;; Build filter map: resolve username to user-id for proper filtering
           username-filter (get params "username")
@@ -492,6 +509,31 @@
                          :csrf-token (csrf-token req)
                          :user (auth/current-user req)
                          :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+;; ---------------------------------------------------------------------------
+;; Webhook events (admin only)
+;; ---------------------------------------------------------------------------
+
+(defn webhooks-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          params (or (:query-params req) (:params req) {})
+          page (max 1 (try (Integer/parseInt (or (get params "page") "1"))
+                          (catch NumberFormatException _ 1)))
+          page-size 50
+          events (webhook-log/list-webhook-events ds
+                   :limit page-size
+                   :offset (* (dec page) page-size))
+          total (webhook-log/count-webhook-events ds)]
+      (html-response
+        (v-webhooks/render {:events events
+                            :total total
+                            :page page
+                            :page-size page-size
+                            :csrf-token (csrf-token req)
+                            :user (auth/current-user req)
+                            :auth-enabled (get-in config [:auth :enabled] false)})))))
 
 ;; ---------------------------------------------------------------------------
 ;; User management (admin only)
@@ -597,3 +639,78 @@
           (user-store/update-password! ds user-id new-password)
           (log/info "Password reset for user" user-id "by:" (:username (auth/current-user req)))
           (render-users-page system req :message "Password updated"))))))
+
+;; ---------------------------------------------------------------------------
+;; API Token management (all authenticated users)
+;; ---------------------------------------------------------------------------
+
+(defn tokens-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          user (auth/current-user req)
+          tokens (user-store/list-api-tokens ds (:id user))
+          ;; Get new token from session flash (one-time display, never in URL)
+          new-token (get-in req [:session :flash-new-token])
+          ;; Clear flash from session after reading
+          response (html-response
+                     (v-tokens/render {:tokens tokens
+                                       :new-token new-token
+                                       :csrf-token (csrf-token req)
+                                       :user user
+                                       :auth-enabled (get-in config [:auth :enabled] false)}))]
+      ;; Remove flash token from session so it's only shown once
+      (if new-token
+        (assoc response :session (dissoc (:session req) :flash-new-token))
+        response))))
+
+(defn generate-token-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          registry (:metrics system)
+          user (auth/current-user req)
+          params (:form-params req)
+          token-name (get params "name")
+          expires-in (get params "expires-in")]
+      (if (str/blank? token-name)
+        (let [tokens (user-store/list-api-tokens ds (:id user))]
+          (html-response
+            (v-tokens/render {:tokens tokens
+                              :error "Token name cannot be empty"
+                              :csrf-token (csrf-token req)
+                              :user user
+                              :auth-enabled (get-in (:config system) [:auth :enabled] false)})))
+        (let [expires-at (when (and expires-in (not (str/blank? expires-in)))
+                           (try
+                             (str (.plus (java.time.Instant/now)
+                                         (java.time.Duration/ofDays (Integer/parseInt expires-in))))
+                             (catch NumberFormatException _ nil)))
+              result (user-store/create-api-token! ds {:user-id (:id user)
+                                                       :name token-name
+                                                       :expires-at expires-at})]
+          (try (metrics/record-token-generated! registry) (catch Exception _))
+          (log/info "API token generated:" token-name "for user:" (:username user))
+          ;; Store new token in session flash (never in URL — prevents token leaking via referer/logs)
+          {:status 303
+           :headers {"Location" "/settings/tokens"}
+           :session (assoc (:session req) :flash-new-token (:token result))})))))
+
+(defn revoke-token-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          registry (:metrics system)
+          user (auth/current-user req)
+          token-id (get-in req [:path-params :id])
+          ;; Verify token belongs to the current user (ownership check)
+          user-tokens (user-store/list-api-tokens ds (:id user))
+          owns-token? (some #(= (:id %) token-id) user-tokens)]
+      (if-not owns-token?
+        {:status 403
+         :headers {"Content-Type" "text/html; charset=utf-8"}
+         :body "<h1>403 Forbidden</h1><p>You can only revoke your own tokens.</p>"}
+        (do
+          (user-store/revoke-api-token! ds token-id)
+          (try (metrics/record-token-revoked! registry) (catch Exception _))
+          (log/info "API token revoked:" token-id "by:" (:username user))
+          {:status 303
+           :headers {"Location" "/settings/tokens"}})))))

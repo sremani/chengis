@@ -98,7 +98,43 @@
       (prometheus/register
         (prometheus/counter :auth/token-auth-total
                             {:description "API token authentication attempts"
-                             :labels [:result]}))))
+                             :labels [:result]}))
+
+      ;; Phase 4: Rate limiting metrics
+      (prometheus/register
+        (prometheus/counter :rate-limit/rejected-total
+                            {:description "Requests rejected by rate limiter"
+                             :labels [:endpoint-type]}))
+
+      ;; Phase 4: Webhook metrics
+      (prometheus/register
+        (prometheus/counter :webhooks/received-total
+                            {:description "Webhook events received"
+                             :labels [:provider :status]}))
+      (prometheus/register
+        (prometheus/histogram :webhooks/processing-seconds
+                              {:description "Webhook processing duration in seconds"
+                               :buckets [0.01 0.05 0.1 0.25 0.5 1.0 2.5 5.0]}))
+
+      ;; Phase 4: Token management metrics
+      (prometheus/register
+        (prometheus/counter :tokens/generated-total
+                            {:description "API tokens generated"}))
+      (prometheus/register
+        (prometheus/counter :tokens/revoked-total
+                            {:description "API tokens revoked"}))
+
+      ;; Phase 4: Retention metrics
+      (prometheus/register
+        (prometheus/counter :retention/cleaned-total
+                            {:description "Records cleaned by retention scheduler"
+                             :labels [:resource-type]}))
+
+      ;; Phase 4: Secret access metrics
+      (prometheus/register
+        (prometheus/counter :secrets/access-total
+                            {:description "Secret access events"
+                             :labels [:action]}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Record helpers — all no-op when registry is nil
@@ -215,6 +251,56 @@
   [registry ratio]
   (when registry
     (prometheus/set (registry :agents/utilization-ratio) (double ratio))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 4: Rate limiting, webhook, token, retention, secret metrics
+;; ---------------------------------------------------------------------------
+
+(defn record-rate-limit-rejected!
+  "Record a rate-limited request rejection."
+  [registry endpoint-type]
+  (when registry
+    (prometheus/inc (registry :rate-limit/rejected-total
+                              {:endpoint-type (name endpoint-type)}))))
+
+(defn record-webhook-received!
+  "Record a received webhook event."
+  [registry provider status]
+  (when registry
+    (prometheus/inc (registry :webhooks/received-total
+                              {:provider (name provider) :status (name status)}))))
+
+(defn record-webhook-processing!
+  "Record webhook processing duration in seconds."
+  [registry duration-s]
+  (when registry
+    (prometheus/observe (registry :webhooks/processing-seconds) duration-s)))
+
+(defn record-token-generated!
+  "Record an API token generation."
+  [registry]
+  (when registry
+    (prometheus/inc (registry :tokens/generated-total))))
+
+(defn record-token-revoked!
+  "Record an API token revocation."
+  [registry]
+  (when registry
+    (prometheus/inc (registry :tokens/revoked-total))))
+
+(defn record-retention-cleaned!
+  "Record retention cleanup count for a resource type."
+  [registry resource-type count]
+  (when registry
+    (dotimes [_ count]
+      (prometheus/inc (registry :retention/cleaned-total
+                                {:resource-type (name resource-type)})))))
+
+(defn record-secret-access!
+  "Record a secret access event."
+  [registry action]
+  (when registry
+    (prometheus/inc (registry :secrets/access-total {:action (name action)}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Metrics endpoint handler

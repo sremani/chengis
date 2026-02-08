@@ -47,6 +47,27 @@
    :metrics {:enabled false
              :path "/metrics"
              :auth-required false}
+   :rate-limit {:enabled false
+                :requests-per-minute 60
+                :auth-requests-per-minute 10
+                :webhook-requests-per-minute 120}
+   :security {:cors {:enabled false
+                     :allowed-origins ["*"]
+                     :allowed-methods ["GET" "POST" "PUT" "DELETE"]
+                     :max-age 3600}
+              :csp {:enabled true
+                    :directives {:default-src "'self'"
+                                 :script-src "'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com"
+                                 :style-src "'self' 'unsafe-inline'"
+                                 :img-src "'self' data:"
+                                 :connect-src "'self'"}}}
+   :retention {:enabled false
+               :interval-hours 24
+               :builds-days 90
+               :build-logs-days 30
+               :audit-days 90
+               :webhook-events-days 30
+               :queue-completed-hours 168}
    :log {:level :info
          :format :text
          :file nil}})

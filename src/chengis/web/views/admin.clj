@@ -26,7 +26,7 @@
 
 (defn render
   "Admin dashboard page."
-  [{:keys [system-info disk-usage db-size cleanup-result csrf-token]}]
+  [{:keys [system-info disk-usage db-size cleanup-result csrf-token user auth-enabled]}]
   (let [jvm (:jvm system-info)
         uptime (:uptime system-info)
         os (:os system-info)
@@ -35,7 +35,7 @@
         ws-usage (:workspaces disk-usage)
         art-usage (:artifacts disk-usage)]
     (layout/base-layout
-      {:title "Admin" :csrf-token csrf-token}
+      {:title "Admin" :csrf-token csrf-token :user user :auth-enabled auth-enabled}
       (c/page-header "Admin Dashboard")
 
       ;; Cleanup result flash message
@@ -96,6 +96,26 @@
                    :class "block text-xs text-blue-600 hover:underline font-mono truncate max-w-xs"}
                id])]
            [:span {:class "text-gray-400 text-xs"} "None"])]]]
+
+      ;; Quick links
+      [:div {:class "bg-white rounded-lg shadow-sm border p-5 mb-6"}
+       [:h2 {:class "text-lg font-semibold text-gray-900 mb-3"} "Administration"]
+       [:div {:class "flex flex-wrap gap-3"}
+        [:a {:href "/admin/audit"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "Audit Log"]
+        [:a {:href "/admin/webhooks"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "Webhook Events"]
+        [:a {:href "/admin/users"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "User Management"]
+        [:form {:method "POST" :action "/admin/retention" :class "inline"}
+         [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
+         [:button {:type "submit"
+                   :class "px-4 py-2 bg-orange-100 rounded text-sm font-medium text-orange-700 hover:bg-orange-200 transition"
+                   :onclick "return confirm('Run data retention cleanup now?')"}
+          "Run Retention Now"]]]]
 
       ;; Disk usage
       [:div {:class "bg-white rounded-lg shadow-sm border p-5 mb-6"}

@@ -57,6 +57,8 @@
            [:a {:href "/" :class "hover:text-blue-300 transition"} "Dashboard"]
            [:a {:href "/jobs" :class "hover:text-blue-300 transition"} "Jobs"]
            [:a {:href "/agents" :class "hover:text-blue-300 transition"} "Agents"]
+           (when (and auth-enabled user)
+             [:a {:href "/settings/tokens" :class "hover:text-blue-300 transition"} "Settings"])
            (when (or (not auth-enabled)
                      (and user (= (keyword (:role user)) :admin)))
              [:a {:href "/admin" :class "hover:text-blue-300 transition"} "Admin"])

@@ -3,6 +3,7 @@
             [chengis.web.auth :as auth]
             [chengis.web.audit :as audit]
             [chengis.web.webhook :as webhook]
+            [chengis.web.rate-limit :as rate-limit]
             [chengis.metrics :as metrics]
             [chengis.web.alerts :as alerts]
             [chengis.web.metrics-middleware :as metrics-mw]
@@ -13,11 +14,25 @@
             [reitit.ring :as ring]
             [ring.middleware.defaults :refer [wrap-defaults site-defaults]]))
 
+(defn- build-csp-header
+  "Build a Content-Security-Policy header string from config directives map."
+  [directives]
+  (when (seq directives)
+    (str/join "; "
+      (map (fn [[k v]]
+             (str (name k) " " v))
+           directives))))
+
 (defn- wrap-security-headers
-  "Add security headers to every response, including HSTS when HTTPS is configured."
+  "Add security headers to every response: HSTS, CSP, X-Frame-Options, etc.
+   CSP directives come from :security :csp :directives config."
   [handler system]
-  (let [hsts? (and (get-in (:config system) [:https :enabled] false)
-                   (get-in (:config system) [:https :hsts] true))]
+  (let [config (:config system)
+        hsts? (and (get-in config [:https :enabled] false)
+                   (get-in config [:https :hsts] true))
+        csp-enabled? (get-in config [:security :csp :enabled] true)
+        csp-header (when csp-enabled?
+                     (build-csp-header (get-in config [:security :csp :directives])))]
     (fn [req]
       (let [resp (handler req)]
         (when resp
@@ -26,7 +41,41 @@
                      "X-Frame-Options" "DENY"
                      "Referrer-Policy" "strict-origin-when-cross-origin"
                      "X-XSS-Protection" "1; mode=block"}
-              hsts? (assoc "Strict-Transport-Security" "max-age=31536000; includeSubDomains"))))))))
+              hsts?       (assoc "Strict-Transport-Security" "max-age=31536000; includeSubDomains")
+              csp-header  (assoc "Content-Security-Policy" csp-header))))))))
+
+(defn- wrap-cors
+  "CORS middleware: handle preflight OPTIONS requests and add CORS headers.
+   Only active when :security :cors :enabled is true."
+  [handler system]
+  (let [config (:config system)
+        cors-enabled? (get-in config [:security :cors :enabled] false)]
+    (if-not cors-enabled?
+      handler
+      (let [allowed-origins (set (get-in config [:security :cors :allowed-origins] ["*"]))
+            allowed-methods (get-in config [:security :cors :allowed-methods] ["GET" "POST" "PUT" "DELETE"])
+            max-age (get-in config [:security :cors :max-age] 3600)
+            methods-str (str/join ", " allowed-methods)
+            max-age-str (str max-age)]
+        (fn [req]
+          (let [origin (get-in req [:headers "origin"])
+                allowed? (or (contains? allowed-origins "*")
+                             (contains? allowed-origins origin))
+                cors-headers (when (and origin allowed?)
+                               {"Access-Control-Allow-Origin" (if (contains? allowed-origins "*") "*" origin)
+                                "Access-Control-Allow-Methods" methods-str
+                                "Access-Control-Allow-Headers" "Content-Type, Authorization, X-CSRF-Token"
+                                "Access-Control-Max-Age" max-age-str})]
+            (if (= :options (:request-method req))
+              ;; Preflight response
+              {:status 204
+               :headers (merge {"Content-Length" "0"} cors-headers)
+               :body ""}
+              ;; Regular request — add CORS headers to response
+              (let [resp (handler req)]
+                (if cors-headers
+                  (update resp :headers merge cors-headers)
+                  resp)))))))))
 
 (def ^:private csrf-exempt-paths
   "Exact API paths that should skip CSRF validation.
@@ -104,11 +153,18 @@
         ["/:id/artifacts/:filename" {:get {:handler (h/download-artifact system)}}]]
        ["/agents"
         ["" {:get {:handler (h/agents-page system)}}]]
+       ;; Settings routes (any authenticated user)
+       ["/settings"
+        ["/tokens" {:get {:handler (auth/wrap-require-role :viewer (h/tokens-page system))}
+                    :post {:handler (auth/wrap-require-role :viewer (h/generate-token-handler system))}}]
+        ["/tokens/:id/revoke" {:post {:handler (auth/wrap-require-role :viewer (h/revoke-token-handler system))}}]]
        ;; Admin-only routes
        ["/admin"
         ["" {:get {:handler (auth/wrap-require-role :admin (h/admin-page system))}}]
         ["/cleanup" {:post {:handler (auth/wrap-require-role :admin (h/admin-cleanup system))}}]
+        ["/retention" {:post {:handler (auth/wrap-require-role :admin (h/admin-retention system))}}]
         ["/audit" {:get {:handler (auth/wrap-require-role :admin (h/audit-page system))}}]
+        ["/webhooks" {:get {:handler (auth/wrap-require-role :admin (h/webhooks-page system))}}]
         ["/users" {:get {:handler (auth/wrap-require-role :admin (h/users-page system))}
                    :post {:handler (auth/wrap-require-role :admin (h/create-user-handler system))}}]
         ["/users/:id" {:post {:handler (auth/wrap-require-role :admin (h/update-user-handler system))}}]
@@ -132,7 +188,9 @@
       {:not-found (constantly {:status 404
                                :headers {"Content-Type" "text/html"}
                                :body "<h1>404 - Page Not Found</h1>"})})
-    {:middleware [[metrics-mw/wrap-http-metrics (:metrics system)]
+    {:middleware [[rate-limit/wrap-rate-limit system]
+                  [metrics-mw/wrap-http-metrics (:metrics system)]
+                  [wrap-cors system]
                   [wrap-security-headers system]
                   [wrap-skip-csrf-for-api]
                   [wrap-defaults

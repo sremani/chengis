@@ -9,13 +9,18 @@
             [chengis.engine.events :as events]
             [chengis.distributed.queue-processor :as queue-processor]
             [chengis.distributed.orphan-monitor :as orphan-monitor]
+            [chengis.engine.retention :as retention]
             [chengis.plugin.loader :as plugin-loader]
             [chengis.web.audit :as audit]
             [chengis.web.routes :as routes]
             [taoensso.timbre :as log]))
 
+(declare stop!)
+
 (defonce server-instance (atom nil))
 (defonce https-instance (atom nil))
+(defonce system-state (atom nil))
+(defonce shutdown-hook-registered? (atom false))
 
 (defn- redirect-handler
   "Create a handler that redirects all HTTP requests to HTTPS."
@@ -64,6 +69,10 @@
         _ (when (get-in cfg [:distributed :enabled])
             (log/info "Starting orphan build monitor")
             (orphan-monitor/start-monitor! system))
+        ;; Start retention scheduler when enabled
+        _ (when (get-in cfg [:retention :enabled])
+            (log/info "Starting data retention scheduler")
+            (retention/start-retention! system))
         ;; Seed admin user when auth is enabled
         _ (when (get-in cfg [:auth :enabled])
             (user-store/seed-admin! ds (get-in cfg [:auth :seed-admin-password] "admin")))
@@ -98,6 +107,18 @@
         (log/info (str "HTTP→HTTPS redirect on http://" host ":" port))
         (log/info (str "Chengis web UI started on http://" host ":" port))))
 
+    ;; Store system state for shutdown
+    (reset! system-state {:ds ds :audit-writer audit-writer :config cfg})
+
+    ;; Register JVM shutdown hook (once)
+    (when (compare-and-set! shutdown-hook-registered? false true)
+      (.addShutdownHook (Runtime/getRuntime)
+        (Thread. ^Runnable
+          (fn []
+            (log/info "Shutdown signal received — stopping Chengis gracefully")
+            (stop!))
+          "chengis-shutdown-hook")))
+
     (when metrics-registry
       (log/info (str "Prometheus metrics enabled at " (get-in cfg [:metrics :path] "/metrics"))))
     (when (get-in cfg [:auth :enabled])
@@ -118,18 +139,42 @@
     @(promise)))
 
 (defn stop!
-  "Stop the running web server."
+  "Stop the running web server with ordered shutdown:
+   1. Stop background services (orphan monitor, queue processor)
+   2. Stop HTTP/HTTPS servers (with timeout for in-flight requests)
+   3. Close audit writer channel
+   4. Close database connection"
   []
-  ;; Stop orphan monitor if running
+  ;; 1. Stop background services first
+  (when (retention/running?*)
+    (log/info "Stopping retention scheduler...")
+    (retention/stop-retention!))
   (when (orphan-monitor/running?*)
+    (log/info "Stopping orphan monitor...")
     (orphan-monitor/stop-monitor!))
-  ;; Stop queue processor if running
   (when (queue-processor/running?*)
+    (log/info "Stopping queue processor...")
     (queue-processor/stop-processor!))
+
+  ;; 2. Stop HTTP/HTTPS servers — allow 15s for in-flight requests to complete
   (when-let [stop-fn @server-instance]
-    (stop-fn :timeout 5000)
+    (log/info "Stopping HTTP server...")
+    (stop-fn :timeout 15000)
     (reset! server-instance nil))
   (when-let [stop-fn @https-instance]
-    (stop-fn :timeout 5000)
+    (log/info "Stopping HTTPS server...")
+    (stop-fn :timeout 15000)
     (reset! https-instance nil))
+
+  ;; 3. Close audit writer and datasource
+  (when-let [{:keys [audit-writer ds]} @system-state]
+    (when-let [stop-fn (:stop-fn audit-writer)]
+      (log/info "Closing audit writer...")
+      (stop-fn))
+    ;; 4. Close datasource
+    (when ds
+      (log/info "Closing database connection...")
+      (conn/close-datasource! ds)))
+  (reset! system-state nil)
+
   (log/info "Chengis web UI stopped"))
