@@ -15,7 +15,8 @@
          :notifiers          {}   ;; type-keyword -> Notifier instance
          :artifact-handlers  {}   ;; handler-name -> ArtifactHandler instance
          :scm-providers      {}   ;; type-keyword -> ScmProvider instance
-         :status-reporters   {}}));; type-keyword -> ScmStatusReporter instance
+         :status-reporters   {}   ;; type-keyword -> ScmStatusReporter instance
+         :secret-backends    {}}));; backend-name -> SecretBackend instance
 
 ;; ---------------------------------------------------------------------------
 ;; Plugin registration
@@ -157,6 +158,26 @@
   (seq (:status-reporters @registry)))
 
 ;; ---------------------------------------------------------------------------
+;; Secret Backends
+;; ---------------------------------------------------------------------------
+
+(defn register-secret-backend!
+  "Register a secret backend (e.g., \"local\", \"vault\", \"aws-sm\")."
+  [backend-name backend]
+  (log/debug "Registering secret backend:" backend-name)
+  (swap! registry assoc-in [:secret-backends backend-name] backend))
+
+(defn get-secret-backend
+  "Look up a secret backend by name."
+  [backend-name]
+  (get-in @registry [:secret-backends backend-name]))
+
+(defn list-secret-backends
+  "List all registered secret backend names."
+  []
+  (keys (:secret-backends @registry)))
+
+;; ---------------------------------------------------------------------------
 ;; Introspection
 ;; ---------------------------------------------------------------------------
 
@@ -179,7 +200,8 @@
    :notifiers         (vec (keys (:notifiers @registry)))
    :artifact-handlers (vec (keys (:artifact-handlers @registry)))
    :scm-providers     (vec (keys (:scm-providers @registry)))
-   :status-reporters  (vec (keys (:status-reporters @registry)))})
+   :status-reporters  (vec (keys (:status-reporters @registry)))
+   :secret-backends   (vec (keys (:secret-backends @registry)))})
 
 ;; ---------------------------------------------------------------------------
 ;; Reset (for testing)
@@ -190,4 +212,4 @@
   []
   (reset! registry {:plugins {} :step-executors {} :pipeline-formats {}
                     :notifiers {} :artifact-handlers {} :scm-providers {}
-                    :status-reporters {}}))
+                    :status-reporters {} :secret-backends {}}))

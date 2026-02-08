@@ -414,10 +414,20 @@
 ;; Auth handlers
 ;; ---------------------------------------------------------------------------
 
-(defn login-page [_system]
+(defn login-page [system]
   (fn [req]
-    (html-response
-      (v-login/render {:csrf-token (csrf-token req)}))))
+    (let [config (:config system)
+          oidc-enabled? (get-in config [:oidc :enabled] false)
+          oidc-name (when oidc-enabled?
+                      ((resolve 'chengis.web.oidc/oidc-provider-name) config))
+          ;; Support ?error= query param from OIDC callback redirects
+          error (or (get (:query-params req) "error")
+                    (get (:params req) "error"))]
+      (html-response
+        (v-login/render {:csrf-token (csrf-token req)
+                          :error error
+                          :oidc-enabled oidc-enabled?
+                          :oidc-provider-name oidc-name})))))
 
 (defn login-submit [system]
   (fn [req]
@@ -437,9 +447,13 @@
          :headers {"Location" "/"}
          :session {:user (:user result)}}
         ;; Re-render login with error
-        (html-response
-          (v-login/render {:error (:error result)
-                           :csrf-token (csrf-token req)}))))))
+        (let [oidc-enabled? (get-in config [:oidc :enabled] false)]
+          (html-response
+            (v-login/render {:error (:error result)
+                              :csrf-token (csrf-token req)
+                              :oidc-enabled oidc-enabled?
+                              :oidc-provider-name (when oidc-enabled?
+                                                    ((resolve 'chengis.web.oidc/oidc-provider-name) config))})))))))
 
 (defn logout-submit [_system]
   (fn [_req]
@@ -753,9 +767,17 @@
                              (str (.plus (java.time.Instant/now)
                                          (java.time.Duration/ofDays (Integer/parseInt expires-in))))
                              (catch NumberFormatException _ nil)))
+              ;; Parse scopes from form (multi-select checkboxes)
+              scopes-raw (let [v (get params "scopes")]
+                           (cond
+                             (nil? v) nil
+                             (string? v) (when-not (str/blank? v) [v])
+                             (sequential? v) (seq (remove str/blank? v))
+                             :else nil))
               result (user-store/create-api-token! ds {:user-id (:id user)
                                                        :name token-name
-                                                       :expires-at expires-at})]
+                                                       :expires-at expires-at
+                                                       :scopes scopes-raw})]
           (try (metrics/record-token-generated! registry) (catch Exception _))
           (log/info "API token generated:" token-name "for user:" (:username user))
           ;; Store new token in session flash (never in URL — prevents token leaking via referer/logs)

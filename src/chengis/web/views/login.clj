@@ -4,8 +4,8 @@
             [hiccup.util :refer [raw-string escape-html]]))
 
 (defn render
-  "Render the login page. Options: :error (string), :csrf-token."
-  [{:keys [error csrf-token]}]
+  "Render the login page. Options: :error, :csrf-token, :oidc-enabled, :oidc-provider-name."
+  [{:keys [error csrf-token oidc-enabled oidc-provider-name]}]
   (str
     (h/html
       (raw-string "<!DOCTYPE html>")
@@ -27,6 +27,17 @@
           (when error
             [:div {:class "bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4"}
              (escape-html error)])
+          ;; SSO button (when OIDC is enabled)
+          (when oidc-enabled
+            [:div {:class "mb-6"}
+             [:a {:href "/auth/oidc/login"
+                  :class "w-full flex items-center justify-center bg-gray-800 text-white py-2 px-4 rounded-md hover:bg-gray-900 transition font-medium"}
+              (str "Sign in with " (or oidc-provider-name "SSO"))]
+             [:div {:class "relative my-4"}
+              [:div {:class "absolute inset-0 flex items-center"}
+               [:div {:class "w-full border-t border-gray-300"}]]
+              [:div {:class "relative flex justify-center text-sm"}
+               [:span {:class "px-2 bg-white text-gray-500"} "or sign in with password"]]]])
           ;; Login form
           [:form {:method "POST" :action "/login"}
            (when csrf-token
@@ -51,4 +62,4 @@
             "Sign In"]]]
          ;; Footer
          [:p {:class "text-center text-gray-400 text-xs mt-6"}
-          "Chengis CI v0.2.0"]]]])))
+          "Chengis CI v0.8.0"]]]])))

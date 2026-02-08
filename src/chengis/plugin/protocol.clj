@@ -77,6 +77,23 @@
      Returns {:status :sent/:failed :details \"message\"}"))
 
 ;; ---------------------------------------------------------------------------
+;; Secret Backend — pluggable secret storage
+;; ---------------------------------------------------------------------------
+
+(defprotocol SecretBackend
+  "Protocol for external secret store integration.
+   Implementations can wrap HashiCorp Vault, AWS Secrets Manager, etc.
+   The builtin implementation wraps the existing AES-256-GCM encrypted DB store."
+  (fetch-secret [this secret-name scope config]
+    "Fetch a single secret value. Returns the plaintext string, or nil if not found.
+     scope is \"global\" or a job-id.")
+  (list-secrets [this scope config]
+    "List secret names (never values) for a scope. Returns a vector of name strings.")
+  (fetch-secrets-for-build [this job-id config]
+    "Fetch all secrets for a build as a map of {name value}.
+     Merges global secrets with job-scoped secrets (job overrides global)."))
+
+;; ---------------------------------------------------------------------------
 ;; Plugin descriptor
 ;; ---------------------------------------------------------------------------
 

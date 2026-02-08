@@ -2,7 +2,33 @@
   "API token management page: list, generate, revoke tokens."
   (:require [chengis.web.views.layout :as layout]
             [chengis.web.views.components :as c]
-            [hiccup.util :refer [escape-html]]))
+            [hiccup.util :refer [escape-html]]
+            [clojure.data.json :as json]
+            [clojure.string :as str]))
+
+(def ^:private scope-groups
+  "Available token scopes grouped by category for the UI."
+  [["Builds"  [["build:read"    "View builds and logs"]
+               ["build:trigger" "Trigger new builds"]
+               ["build:cancel"  "Cancel running builds"]]]
+   ["Jobs"    [["job:read"    "View jobs and pipelines"]
+               ["job:create"  "Create and update jobs"]
+               ["job:delete"  "Delete jobs"]]]
+   ["Secrets" [["secret:read"  "Read secrets (for builds)"]
+               ["secret:write" "Create, update, delete secrets"]]]
+   ["Agents"  [["agent:read"     "View agents"]
+               ["agent:register" "Register new agents"]]]
+   ["Admin"   [["admin:*" "Full admin access"]]]])
+
+(defn- parse-scopes
+  "Parse scopes JSON string into a human-readable label."
+  [scopes-str]
+  (when scopes-str
+    (try
+      (let [scopes (json/read-str scopes-str)]
+        (str/join ", " scopes))
+      (catch Exception _
+        scopes-str))))
 
 (defn- token-status-badge
   "Badge showing token status (active, expired, revoked)."
@@ -29,6 +55,10 @@
   [:tr {:class "border-b border-gray-100 hover:bg-gray-50"}
    [:td {:class "py-2 px-3 text-sm font-medium"} (escape-html (:name token))]
    [:td {:class "py-2 px-3"} (token-status-badge token)]
+   [:td {:class "py-2 px-3 text-xs text-gray-500"}
+    (if (:scopes token)
+      [:span {:class "text-xs text-gray-600"} (parse-scopes (:scopes token))]
+      [:span {:class "text-xs text-blue-600 font-medium"} "Full access"])]
    [:td {:class "py-2 px-3 text-xs text-gray-500"} (:created-at token)]
    [:td {:class "py-2 px-3 text-xs text-gray-500"} (or (:last-used-at token) "Never")]
    [:td {:class "py-2 px-3 text-xs text-gray-500"} (or (:expires-at token) "Never")]
@@ -69,22 +99,38 @@
     ;; Generate form
     [:div {:class "bg-white rounded-lg shadow-sm border p-5 mb-6"}
      [:h2 {:class "text-lg font-semibold text-gray-900 mb-4"} "Generate New Token"]
-     [:form {:method "POST" :action "/settings/tokens" :class "flex flex-wrap items-end gap-4"}
+     [:form {:method "POST" :action "/settings/tokens"}
       [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
-      [:div
-       [:label {:class "block text-sm font-medium text-gray-700 mb-1"} "Token Name"]
-       [:input {:type "text" :name "name" :required true
-                :placeholder "e.g., CI Pipeline"
-                :class "px-3 py-2 border rounded text-sm w-64 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"}]]
-      [:div
-       [:label {:class "block text-sm font-medium text-gray-700 mb-1"} "Expires In"]
-       [:select {:name "expires-in"
-                 :class "px-3 py-2 border rounded text-sm focus:ring-2 focus:ring-blue-500"}
-        [:option {:value "7"} "7 days"]
-        [:option {:value "30"} "30 days"]
-        [:option {:value "90" :selected true} "90 days"]
-        [:option {:value "365"} "1 year"]
-        [:option {:value ""} "Never"]]]
+      [:div {:class "flex flex-wrap items-end gap-4 mb-4"}
+       [:div
+        [:label {:class "block text-sm font-medium text-gray-700 mb-1"} "Token Name"]
+        [:input {:type "text" :name "name" :required true
+                 :placeholder "e.g., CI Pipeline"
+                 :class "px-3 py-2 border rounded text-sm w-64 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"}]]
+       [:div
+        [:label {:class "block text-sm font-medium text-gray-700 mb-1"} "Expires In"]
+        [:select {:name "expires-in"
+                  :class "px-3 py-2 border rounded text-sm focus:ring-2 focus:ring-blue-500"}
+         [:option {:value "7"} "7 days"]
+         [:option {:value "30"} "30 days"]
+         [:option {:value "90" :selected true} "90 days"]
+         [:option {:value "365"} "1 year"]
+         [:option {:value ""} "Never"]]]]
+      ;; Scopes section
+      [:div {:class "mb-4"}
+       [:label {:class "block text-sm font-medium text-gray-700 mb-2"} "Scopes"]
+       [:p {:class "text-xs text-gray-500 mb-2"} "Leave unchecked for full access. Select specific scopes for least-privilege tokens."]
+       [:div {:class "grid grid-cols-2 md:grid-cols-3 gap-4"}
+        (for [[group-name scopes] scope-groups]
+          [:div {:class "border rounded p-3"}
+           [:h3 {:class "text-xs font-semibold text-gray-600 mb-2"} group-name]
+           (for [[scope-key scope-desc] scopes]
+             [:label {:class "flex items-start gap-2 mb-1 text-xs cursor-pointer"}
+              [:input {:type "checkbox" :name "scopes" :value scope-key
+                       :class "mt-0.5 rounded border-gray-300"}]
+              [:span
+               [:span {:class "font-mono text-gray-800"} scope-key]
+               [:span {:class "text-gray-500 ml-1"} (str "- " scope-desc)]]])])]]
       [:button {:type "submit"
                 :class "bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700 transition"}
        "Generate Token"]]]
@@ -102,6 +148,7 @@
          [:tr {:class "text-left text-gray-500 border-b bg-gray-50"}
           [:th {:class "py-2 px-3 font-medium"} "Name"]
           [:th {:class "py-2 px-3 font-medium"} "Status"]
+          [:th {:class "py-2 px-3 font-medium"} "Scopes"]
           [:th {:class "py-2 px-3 font-medium"} "Created"]
           [:th {:class "py-2 px-3 font-medium"} "Last Used"]
           [:th {:class "py-2 px-3 font-medium"} "Expires"]

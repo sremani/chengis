@@ -72,6 +72,17 @@
         system {:config cfg :db ds :db-path db-path
                 :audit-writer audit-writer :metrics metrics-registry}
         _ (plugin-loader/load-plugins! system)
+        ;; Register secret backend based on configuration
+        _ (let [backend-type (get-in cfg [:secrets :backend] "local")
+                plugin-reg (requiring-resolve 'chengis.plugin.registry/register-secret-backend!)]
+            (case backend-type
+              "vault" (let [create-fn (requiring-resolve 'chengis.plugin.builtin.vault-secrets/create-backend)]
+                        (plugin-reg "vault" (create-fn))
+                        (log/info "Secret backend: HashiCorp Vault"))
+              ;; Default to local encrypted DB store
+              (let [create-fn (requiring-resolve 'chengis.plugin.builtin.local-secrets/create-backend)]
+                (plugin-reg "local" (create-fn ds))
+                (log/info "Secret backend: local (AES-256-GCM encrypted database)"))))
         ;; Start queue processor when distributed + queue enabled
         _ (when (and (get-in cfg [:distributed :enabled])
                      (get-in cfg [:distributed :dispatch :queue-enabled]))

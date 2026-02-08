@@ -19,7 +19,9 @@
    'chengis.plugin.builtin.git-scm
    'chengis.plugin.builtin.yaml-format
    'chengis.plugin.builtin.github-status
-   'chengis.plugin.builtin.gitlab-status])
+   'chengis.plugin.builtin.gitlab-status
+   'chengis.plugin.builtin.local-secrets
+   'chengis.plugin.builtin.vault-secrets])
 
 ;; ---------------------------------------------------------------------------
 ;; Plugin loading

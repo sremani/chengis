@@ -185,7 +185,7 @@
 
 (def ^:private public-prefixes
   "Path prefixes that don't require authentication."
-  ["/health" "/ready"])
+  ["/health" "/ready" "/auth/oidc/"])
 
 (defn- public-path?
   "Check if the request path is a public (no-auth) path.
@@ -326,7 +326,8 @@
 
 (defn- try-api-token-auth
   "Try to authenticate via API token. Returns user map or nil.
-   Rejects tokens belonging to deactivated users."
+   Rejects tokens belonging to deactivated users.
+   Attaches :token-scopes (nil = full access, set = scoped) to the user map."
   [ds token]
   (when-let [user (user-store/find-api-token-user ds token)]
     (if (and (some? (:active user)) (zero? (:active user)))
@@ -334,7 +335,8 @@
           nil)
       {:id (:id user)
        :username (:username user)
-       :role (keyword (:role user))})))
+       :role (keyword (:role user))
+       :token-scopes (:token-scopes user)})))
 
 (defn wrap-auth
   "Ring middleware: authenticate the request.
@@ -400,6 +402,55 @@
       (if (and user (role-sufficient? (:role user) required-role))
         (handler req)
         (forbidden-response req required-role)))))
+
+;; ---------------------------------------------------------------------------
+;; API Token Scope checking
+;; ---------------------------------------------------------------------------
+
+(def ^:private valid-scopes
+  "The set of recognized API token scopes.
+   nil scopes on a token means full user access (backward compatible)."
+  #{"build:trigger" "build:read" "build:cancel"
+    "job:read" "job:create" "job:delete"
+    "secret:read" "secret:write"
+    "agent:read" "agent:register"
+    "admin:*"})
+
+(defn scope-sufficient?
+  "Check if the user's token scopes permit the required scope.
+   Returns true if:
+   - token-scopes is nil (full access, backward compat)
+   - token-scopes contains the required scope
+   - token-scopes contains a wildcard (e.g., \"admin:*\" covers \"admin:anything\")
+   - user authenticated via session or JWT (no :token-scopes key)"
+  [user required-scope]
+  (let [scopes (:token-scopes user)]
+    (cond
+      ;; Not an API token auth (session/JWT) — no scope restriction
+      (not (contains? user :token-scopes)) true
+      ;; nil scopes = full access
+      (nil? scopes) true
+      ;; Check exact match
+      (contains? scopes required-scope) true
+      ;; Check wildcard (e.g., "admin:*")
+      :else
+      (let [scope-prefix (first (clojure.string/split required-scope #":"))]
+        (contains? scopes (str scope-prefix ":*"))))))
+
+(defn wrap-require-scope
+  "Middleware that checks if the API token has the required scope.
+   Session and JWT users bypass scope checks (scopes only apply to API tokens).
+   Must be applied AFTER wrap-auth."
+  [required-scope handler]
+  (fn [req]
+    (let [user (current-user req)]
+      (if (scope-sufficient? user required-scope)
+        (handler req)
+        (if (api-request? req)
+          {:status 403
+           :headers {"Content-Type" "application/json"}
+           :body (str "{\"error\":\"Insufficient token scope. Required: " required-scope "\"}")}
+          (forbidden-response req :developer))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Login/Logout helpers

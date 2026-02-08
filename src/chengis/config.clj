@@ -18,7 +18,12 @@
    :workspace {:root "workspaces"}
    :scheduler {:enabled false}
    :server {:port 8080 :host "0.0.0.0"}
-   :secrets {:master-key nil}
+   :secrets {:master-key nil
+             :backend "local"      ;; "local" (AES-256-GCM in DB) or "vault" (HashiCorp Vault)
+             :vault {:url nil      ;; e.g., "http://127.0.0.1:8200" or VAULT_ADDR env
+                     :token nil    ;; Vault token or VAULT_TOKEN env
+                     :mount "secret"
+                     :prefix "chengis/"}}
    :artifacts {:root "artifacts" :retention-builds 10}
    :notifications {:slack {:default-webhook nil}
                    :email {:host nil
@@ -94,6 +99,16 @@
                   :base-url "https://api.github.com"}
          :gitlab {:token nil
                   :base-url "https://gitlab.com"}}
+   :oidc {:enabled false
+          :issuer-url nil         ;; e.g., "https://keycloak.example.com/realms/chengis"
+          :client-id nil
+          :client-secret nil
+          :scopes "openid profile email"
+          :role-claim nil         ;; e.g., "realm_access.roles" (dot-separated path)
+          :role-mapping {}        ;; e.g., {"chengis-admin" "admin", "chengis-dev" "developer"}
+          :default-role "viewer"
+          :auto-create-users true ;; JIT provision users on first OIDC login
+          :provider-name nil}     ;; Display name, e.g., "Okta" (auto-detected if nil)
    :approvals {:enabled true
                :default-timeout-minutes 1440
                :poll-interval-ms 5000}
@@ -127,6 +142,11 @@
    "CHENGIS_AUTH_SESSION_SECRET"                [:auth :session-secret]
    "CHENGIS_AUTH_SEED_ADMIN_PASSWORD"           [:auth :seed-admin-password]
    "CHENGIS_SECRETS_MASTER_KEY"                 [:secrets :master-key]
+   "CHENGIS_SECRETS_BACKEND"                    [:secrets :backend]
+   "CHENGIS_SECRETS_VAULT_URL"                  [:secrets :vault :url]
+   "CHENGIS_SECRETS_VAULT_TOKEN"                [:secrets :vault :token]
+   "CHENGIS_SECRETS_VAULT_MOUNT"                [:secrets :vault :mount]
+   "CHENGIS_SECRETS_VAULT_PREFIX"               [:secrets :vault :prefix]
    "CHENGIS_DISTRIBUTED_ENABLED"                [:distributed :enabled]
    "CHENGIS_DISTRIBUTED_MODE"                   [:distributed :mode]
    "CHENGIS_DISTRIBUTED_AUTH_TOKEN"             [:distributed :auth-token]
@@ -143,7 +163,16 @@
    "CHENGIS_NOTIFICATIONS_EMAIL_PORT"           [:notifications :email :port]
    "CHENGIS_NOTIFICATIONS_EMAIL_FROM"           [:notifications :email :from]
    "CHENGIS_NOTIFICATIONS_SLACK_DEFAULT_WEBHOOK" [:notifications :slack :default-webhook]
-   "CHENGIS_MATRIX_MAX_COMBINATIONS"            [:matrix :max-combinations]})
+   "CHENGIS_MATRIX_MAX_COMBINATIONS"            [:matrix :max-combinations]
+   "CHENGIS_OIDC_ENABLED"                       [:oidc :enabled]
+   "CHENGIS_OIDC_ISSUER_URL"                    [:oidc :issuer-url]
+   "CHENGIS_OIDC_CLIENT_ID"                     [:oidc :client-id]
+   "CHENGIS_OIDC_CLIENT_SECRET"                 [:oidc :client-secret]
+   "CHENGIS_OIDC_SCOPES"                        [:oidc :scopes]
+   "CHENGIS_OIDC_ROLE_CLAIM"                    [:oidc :role-claim]
+   "CHENGIS_OIDC_DEFAULT_ROLE"                  [:oidc :default-role]
+   "CHENGIS_OIDC_AUTO_CREATE_USERS"             [:oidc :auto-create-users]
+   "CHENGIS_OIDC_PROVIDER_NAME"                 [:oidc :provider-name]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.

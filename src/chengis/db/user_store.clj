@@ -4,6 +4,7 @@
             [next.jdbc.result-set :as rs]
             [honey.sql :as sql]
             [buddy.hashers :as hashers]
+            [clojure.data.json :as json]
             [chengis.util :as util]
             [taoensso.timbre :as log])
   (:import [java.time Instant]))
@@ -121,26 +122,31 @@
 
 (defn create-api-token!
   "Create an API token for a user. Returns the plaintext token (only shown once).
-   The token hash is stored in the database."
-  [ds {:keys [user-id name expires-at]}]
+   The token hash is stored in the database.
+   Optional :scopes — a seq of scope strings like [\"build:trigger\" \"build:read\"].
+   Nil scopes means full user access (backward compatible)."
+  [ds {:keys [user-id name expires-at scopes]}]
   (let [id (util/generate-id)
         plaintext-token (str (util/generate-id) (util/generate-id))  ; 72-char token
         token-hash (hashers/derive plaintext-token {:alg :bcrypt+sha512})
-        row {:id id
-             :user-id user-id
-             :name name
-             :token-hash token-hash
-             :expires-at expires-at}]
+        scopes-json (when (seq scopes)
+                      (json/write-str scopes))
+        row (cond-> {:id id
+                     :user-id user-id
+                     :name name
+                     :token-hash token-hash
+                     :expires-at expires-at}
+              scopes-json (assoc :scopes scopes-json))]
     (jdbc/execute-one! ds
       (sql/format {:insert-into :api-tokens
                    :values [row]}))
-    {:id id :token plaintext-token :name name}))
+    {:id id :token plaintext-token :name name :scopes scopes}))
 
 (defn list-api-tokens
-  "List API tokens for a user (without hashes)."
+  "List API tokens for a user (without hashes). Includes scopes."
   [ds user-id]
   (jdbc/execute! ds
-    (sql/format {:select [:id :name :last-used-at :expires-at :revoked-at :created-at]
+    (sql/format {:select [:id :name :scopes :last-used-at :expires-at :revoked-at :created-at]
                  :from :api-tokens
                  :where [:= :user-id user-id]
                  :order-by [[:created-at :desc]]})
@@ -159,12 +165,13 @@
 
 (defn find-api-token-user
   "Find the user associated with an API token by checking the token against stored hashes.
-   Returns the user map if found, not expired, and not revoked. Nil otherwise.
+   Returns the user map (with :token-scopes attached) if found, not expired, and not revoked.
+   :token-scopes is nil for full-access tokens, or a set of scope strings.
    Note: This is O(n) over non-revoked tokens — acceptable for typical token counts."
   [ds plaintext-token]
   (let [tokens (jdbc/execute! ds
                  (sql/format {:select [:api-tokens/id :api-tokens/user-id :api-tokens/token-hash
-                                       :api-tokens/expires-at :api-tokens/revoked-at]
+                                       :api-tokens/expires-at :api-tokens/revoked-at :api-tokens/scopes]
                               :from :api-tokens
                               :where [:is :api-tokens/revoked-at nil]})
                  {:builder-fn rs/as-unqualified-kebab-maps})]
@@ -179,8 +186,14 @@
             (sql/format {:update :api-tokens
                          :set {:last-used-at [:datetime "now"]}
                          :where [:= :id (:id match)]}))
-          ;; Return the associated user
-          (get-user ds (:user-id match)))))))
+          ;; Return the associated user with token scopes attached
+          (when-let [user (get-user ds (:user-id match))]
+            (let [scopes-json (:scopes match)
+                  parsed-scopes (when scopes-json
+                                  (try
+                                    (set (json/read-str scopes-json))
+                                    (catch Exception _ nil)))]
+              (assoc user :token-scopes parsed-scopes))))))))
 
 (defn delete-api-token!
   "Delete an API token."

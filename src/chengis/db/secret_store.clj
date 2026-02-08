@@ -150,19 +150,40 @@
 
 (defn get-secrets-for-build
   "Get all secrets as a map of {name value} for a build.
+   Dispatches to the registered SecretBackend plugin if one is available
+   and the backend is not \"local\". Otherwise falls back to the local
+   AES-256-GCM encrypted store.
    Merges global secrets with job-scoped secrets (job scope overrides global).
    Logs each secret access as :build-read."
   [ds config job-id]
-  (let [key (get-master-key config)
-        rows (jdbc/execute! ds
-               (sql/format {:select [:scope :name :encrypted-value]
-                            :from :secrets
-                            :where [:or [:= :scope "global"] [:= :scope job-id]]
-                            :order-by [[:scope :asc]]}) ;; global first, then job overrides
-               {:builder-fn rs/as-unqualified-kebab-maps})]
-    (doseq [row rows]
-      (audit-secret! ds :build-read (:name row) (:scope row) {}))
-    (reduce (fn [m row]
-              (assoc m (:name row) (decrypt key (:encrypted-value row))))
-            {}
-            rows)))
+  ;; Try plugin-based backend first (when configured as non-local)
+  (let [backend-type (get-in config [:secrets :backend] "local")]
+    (if (= "local" backend-type)
+      ;; Local encrypted DB store (original behavior)
+      (let [key (get-master-key config)
+            rows (jdbc/execute! ds
+                   (sql/format {:select [:scope :name :encrypted-value]
+                                :from :secrets
+                                :where [:or [:= :scope "global"] [:= :scope job-id]]
+                                :order-by [[:scope :asc]]}) ;; global first, then job overrides
+                   {:builder-fn rs/as-unqualified-kebab-maps})]
+        (doseq [row rows]
+          (audit-secret! ds :build-read (:name row) (:scope row) {}))
+        (reduce (fn [m row]
+                  (assoc m (:name row) (decrypt key (:encrypted-value row))))
+                {}
+                rows))
+      ;; External backend via plugin protocol
+      (try
+        (let [get-backend (requiring-resolve 'chengis.plugin.registry/get-secret-backend)
+              backend (get-backend backend-type)]
+          (if backend
+            (let [proto-fn (requiring-resolve 'chengis.plugin.protocol/fetch-secrets-for-build)]
+              (proto-fn backend job-id config))
+            ;; Fallback to local if backend not found
+            (do
+              (taoensso.timbre/warn "Secret backend" backend-type "not registered, falling back to local")
+              (get-secrets-for-build ds (assoc-in config [:secrets :backend] "local") job-id))))
+        (catch Exception e
+          (taoensso.timbre/error "Secret backend error, falling back to local:" (.getMessage e))
+          (get-secrets-for-build ds (assoc-in config [:secrets :backend] "local") job-id))))))

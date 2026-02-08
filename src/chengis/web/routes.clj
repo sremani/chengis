@@ -3,6 +3,7 @@
             [chengis.web.auth :as auth]
             [chengis.web.audit :as audit]
             [chengis.web.webhook :as webhook]
+            [chengis.web.oidc :as oidc]
             [chengis.web.rate-limit :as rate-limit]
             [chengis.metrics :as metrics]
             [chengis.web.alerts :as alerts]
@@ -131,6 +132,10 @@
        ["/login" {:get {:handler (h/login-page system)}
                   :post {:handler (h/login-submit system)}}]
        ["/logout" {:post {:handler (h/logout-submit system)}}]
+       ;; OIDC routes (public — handle IdP redirects)
+       ["/auth/oidc"
+        ["/login" {:get {:handler (oidc/oidc-login-handler system)}}]
+        ["/callback" {:get {:handler (oidc/oidc-callback-handler system)}}]]
        ["/health" {:get {:handler (h/health-check system)}}]
        ["/ready" {:get {:handler (h/readiness-check system)}}]
        ;; Prometheus metrics endpoint (only when metrics enabled)
