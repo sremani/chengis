@@ -64,27 +64,36 @@
 ;; ---------------------------------------------------------------------------
 
 (defn record-failed-attempt!
-  "Increment the failed login attempt counter for a user.
+  "Atomically increment the failed login attempt counter for a user.
    If the count reaches max-attempts, lock the account for lockout-minutes.
+   Uses SQL-level increment to avoid read-then-write race conditions.
    When lockout is disabled, this is a no-op."
   [ds user lockout-config registry]
   (when (:enabled lockout-config)
     (let [max-attempts (get lockout-config :max-attempts 5)
           lockout-minutes (get lockout-config :lockout-minutes 30)
-          new-count (inc (or (:failed-attempts user) 0))
-          lock? (>= new-count max-attempts)
-          locked-until (when lock?
-                         (str (.plus (Instant/now) (Duration/ofMinutes lockout-minutes))))]
+          locked-until-str (str (.plus (Instant/now) (Duration/ofMinutes lockout-minutes)))]
+      ;; Atomic increment + conditional lockout in a single statement
       (jdbc/execute-one! ds
         (sql/format {:update :users
-                     :set (cond-> {:failed-attempts new-count
-                                   :updated-at [:datetime "now"]}
-                            locked-until (assoc :locked-until locked-until))
+                     :set {:failed-attempts [:+ :failed-attempts 1]
+                           :locked-until [:case
+                                          [:>= [:+ :failed-attempts 1] max-attempts]
+                                          locked-until-str
+                                          :else :locked-until]
+                           :updated-at [:datetime "now"]}
                      :where [:= :id (:id user)]}))
-      (when lock?
-        (log/warn "Account locked due to" new-count "failed attempts:" (:username user)
-                  "locked until" locked-until)
-        (try (metrics/record-account-lockout! registry) (catch Exception _))))))
+      ;; Re-read to check if lockout was triggered
+      (let [updated (jdbc/execute-one! ds
+                      (sql/format {:select [:failed-attempts :locked-until]
+                                   :from [:users]
+                                   :where [:= :id (:id user)]})
+                      {:builder-fn rs/as-unqualified-kebab-maps})]
+        (when (>= (or (:failed-attempts updated) 0) max-attempts)
+          (log/warn "Account locked due to" (:failed-attempts updated)
+                    "failed attempts:" (:username user)
+                    "locked until" (:locked-until updated))
+          (try (metrics/record-account-lockout! registry) (catch Exception _)))))))
 
 (defn reset-failed-attempts!
   "Reset the failed attempts counter after a successful login.

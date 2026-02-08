@@ -156,6 +156,12 @@
                             {:description "SCM status reports sent"
                              :labels [:provider :result]}))))
 
+(defn- as-label
+  "Coerce a keyword, symbol, or string to a Prometheus label string.
+   Prevents ClassCastException when callers accidentally pass strings."
+  [x]
+  (if (string? x) x (name x)))
+
 ;; ---------------------------------------------------------------------------
 ;; Record helpers — all no-op when registry is nil
 ;; ---------------------------------------------------------------------------
@@ -264,7 +270,7 @@
   "Record an artifact transfer result (:success or :failure)."
   [registry result]
   (when registry
-    (prometheus/inc (registry :artifacts/transferred-total {:result (name result)}))))
+    (prometheus/inc (registry :artifacts/transferred-total {:result (as-label result)}))))
 
 (defn record-agent-utilization!
   "Set the agent utilization ratio (active-builds / total-capacity)."
@@ -281,14 +287,14 @@
   [registry endpoint-type]
   (when registry
     (prometheus/inc (registry :rate-limit/rejected-total
-                              {:endpoint-type (name endpoint-type)}))))
+                              {:endpoint-type (as-label endpoint-type)}))))
 
 (defn record-webhook-received!
   "Record a received webhook event."
   [registry provider status]
   (when registry
     (prometheus/inc (registry :webhooks/received-total
-                              {:provider (name provider) :status (name status)}))))
+                              {:provider (as-label provider) :status (as-label status)}))))
 
 (defn record-webhook-processing!
   "Record webhook processing duration in seconds."
@@ -314,7 +320,7 @@
   (when registry
     (dotimes [_ count]
       (prometheus/inc (registry :retention/cleaned-total
-                                {:resource-type (name resource-type)})))))
+                                {:resource-type (as-label resource-type)})))))
 
 (defn record-secret-access!
   "Record a secret access event."

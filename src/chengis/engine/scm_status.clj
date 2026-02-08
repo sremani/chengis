@@ -2,7 +2,8 @@
   "SCM status reporting — dispatches build status to registered SCM providers.
    Determines the provider from the build's repo-url and calls the appropriate
    status reporter plugin."
-  (:require [chengis.plugin.registry :as registry]
+  (:require [chengis.plugin.protocol :as proto]
+            [chengis.plugin.registry :as registry]
             [chengis.metrics :as metrics]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -80,7 +81,7 @@
                 (try
                   (log/info "Reporting" (name build-status) "status to" (name provider)
                             "for commit" (subs commit-sha 0 (min 8 (count commit-sha))))
-                  (let [result (chengis.plugin.protocol/report-status reporter info scm-config)]
+                  (let [result (proto/report-status reporter info scm-config)]
                     (try (metrics/record-scm-status-report! registry*
                            (name provider) (name (:status result)))
                          (catch Exception _))

@@ -86,8 +86,8 @@
 
 (defn get-git-info
   "Extract git metadata from the workspace after clone/checkout.
-   Returns {:branch str :commit str :commit-short str :author str :message str}
-   or nil if not a git repo."
+   Returns {:branch str :commit str :commit-short str :author str :message str
+            :remote-url str} or nil if not a git repo."
   [workspace-dir]
   (let [run-git (fn [args]
                   (let [result (process/execute-command
@@ -102,7 +102,8 @@
        :branch       (or (run-git "rev-parse --abbrev-ref HEAD") "detached")
        :author       (or (run-git "log -1 --format=%an") "")
        :author-email (or (run-git "log -1 --format=%ae") "")
-       :message      (or (run-git "log -1 --format=%s") "")})))
+       :message      (or (run-git "log -1 --format=%s") "")
+       :remote-url   (run-git "config --get remote.origin.url")})))
 
 ;; ---------------------------------------------------------------------------
 ;; High-level entry point (called by executor)

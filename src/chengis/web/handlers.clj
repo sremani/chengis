@@ -843,6 +843,12 @@
          :headers {"Content-Type" "text/html; charset=utf-8"}
          :body "<p>Gate is no longer pending.</p>"}
 
+        ;; Check if user has the required role (same check as approve)
+        (not (auth/role-sufficient? (:role user) (keyword (:required-role gate))))
+        {:status 403
+         :headers {"Content-Type" "text/html; charset=utf-8"}
+         :body (str "<p>Insufficient role. Required: " (:required-role gate) "</p>")}
+
         :else
         (do
           (approval-store/reject-gate! ds gate-id (:username user))

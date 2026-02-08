@@ -112,6 +112,51 @@
         (is (re-find #"steps_duration_seconds" dump))))))
 
 ;; ---------------------------------------------------------------------------
+;; Type-safe label coercion (keyword + string inputs)
+;; ---------------------------------------------------------------------------
+
+(deftest webhook-metrics-accept-strings-and-keywords-test
+  (testing "webhook metrics work with keyword labels"
+    (let [registry (metrics/init-registry)]
+      (metrics/record-webhook-received! registry :github :processed)
+      (let [dump (export/text-format registry)]
+        (is (re-find #"webhooks_received_total" dump)))))
+
+  (testing "webhook metrics work with string labels"
+    (let [registry (metrics/init-registry)]
+      (metrics/record-webhook-received! registry "github" "processed")
+      (let [dump (export/text-format registry)]
+        (is (re-find #"webhooks_received_total" dump))))))
+
+(deftest retention-metrics-accept-strings-and-keywords-test
+  (testing "retention metrics work with keyword labels"
+    (let [registry (metrics/init-registry)]
+      (metrics/record-retention-cleaned! registry :audit-logs 1)
+      (let [dump (export/text-format registry)]
+        (is (re-find #"retention_cleaned_total" dump)))))
+
+  (testing "retention metrics work with string labels"
+    (let [registry (metrics/init-registry)]
+      (metrics/record-retention-cleaned! registry "audit-logs" 1)
+      (let [dump (export/text-format registry)]
+        (is (re-find #"retention_cleaned_total" dump))))))
+
+(deftest rate-limit-and-artifact-metrics-accept-strings-test
+  (testing "rate-limit metrics work with string endpoint-type"
+    (let [registry (metrics/init-registry)]
+      (metrics/record-rate-limit-rejected! registry "api")
+      (metrics/record-rate-limit-rejected! registry :api)
+      (let [dump (export/text-format registry)]
+        (is (re-find #"rate_limit_rejected_total" dump)))))
+
+  (testing "artifact transfer metrics work with string result"
+    (let [registry (metrics/init-registry)]
+      (metrics/record-artifact-transfer! registry "success")
+      (metrics/record-artifact-transfer! registry :failure)
+      (let [dump (export/text-format registry)]
+        (is (re-find #"artifacts_transferred_total" dump))))))
+
+;; ---------------------------------------------------------------------------
 ;; Metrics handler
 ;; ---------------------------------------------------------------------------
 

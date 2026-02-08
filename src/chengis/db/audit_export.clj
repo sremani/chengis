@@ -71,15 +71,17 @@
   [ds filters ^Writer writer]
   (.write writer "[")
   (loop [offset 0
-         first? true]
+         total-written 0]
     (let [batch (audit-store/query-audits ds
-                  (merge filters {:limit batch-size :offset offset}))]
-      (doseq [audit batch]
-        (when-not (and first? (= audit (first batch)))
-          (.write writer ","))
-        (.write writer (json/write-str (audit->json-record audit))))
+                  (merge filters {:limit batch-size :offset offset}))
+          written (reduce (fn [n audit]
+                            (when (pos? (+ total-written n))
+                              (.write writer ","))
+                            (.write writer (json/write-str (audit->json-record audit)))
+                            (inc n))
+                          0 batch)]
       (when (= (count batch) batch-size)
-        (recur (+ offset batch-size) false))))
+        (recur (+ offset batch-size) (+ total-written written)))))
   (.write writer "]")
   (.flush writer))
 
