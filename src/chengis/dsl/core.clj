@@ -122,14 +122,24 @@
   [type config]
   {:notify [(assoc config :type type)]})
 
+(defn matrix
+  "Declare a build matrix for parallel parameter expansion.
+   Usage: (matrix {:os [\"linux\" \"macos\"] :jdk [\"11\" \"17\"]})
+          (matrix {:os [\"linux\" \"macos\"] :jdk [\"11\" \"17\"]}
+                  :exclude [{:os \"macos\" :jdk \"11\"}])"
+  [config & {:keys [exclude]}]
+  {:matrix (cond-> config
+             exclude (assoc :exclude exclude))})
+
 (defn build-pipeline
   "Construct a pipeline map from opts and stages.
-   Filters out post-action, artifact, and notify maps from stages and merges them."
+   Filters out post-action, artifact, notify, and matrix maps from stages and merges them."
   [pipeline-name opts stages]
   (let [post-maps (filter :post-actions stages)
         artifact-maps (filter :artifacts stages)
         notify-maps (filter :notify stages)
-        real-stages (remove #(or (:post-actions %) (:artifacts %) (:notify %)) stages)
+        matrix-maps (filter :matrix stages)
+        real-stages (remove #(or (:post-actions %) (:artifacts %) (:notify %) (:matrix %)) stages)
         ;; Flatten nested vectors from (container ...) calls
         flat-stages (reduce (fn [acc s]
                               (if (vector? s)
@@ -139,6 +149,7 @@
         merged-post (apply merge (map :post-actions post-maps))
         merged-artifacts (vec (mapcat :artifacts artifact-maps))
         merged-notify (vec (mapcat :notify notify-maps))
+        merged-matrix (first (map :matrix matrix-maps))
         base {:pipeline-name (clojure.core/name pipeline-name)
               :stages (vec flat-stages)}]
     (cond-> base
@@ -149,7 +160,8 @@
       (:container opts)      (assoc :container (:container opts))
       (seq merged-post)      (assoc :post-actions merged-post)
       (seq merged-artifacts) (assoc :artifacts merged-artifacts)
-      (seq merged-notify)    (assoc :notify merged-notify))))
+      (seq merged-notify)    (assoc :notify merged-notify)
+      merged-matrix          (assoc :matrix merged-matrix))))
 
 (defn register-pipeline!
   "Register a pipeline in the global registry. Returns the pipeline."

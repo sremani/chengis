@@ -33,6 +33,8 @@ Commands:
   secret delete <name>     Delete a secret (--scope <job-id>)
   pipeline validate <file> Validate a pipeline file (.clj)
   pipeline validate-edn <file>  Validate a Chengisfile (EDN)
+  backup [output-dir]      Create database backup
+  restore <backup-file>    Restore from backup (--force to overwrite)
   status                   Show system status
   serve                    Start the web UI (http://localhost:8080)
 
@@ -83,6 +85,8 @@ Options:
                        "validate-edn" (cmd/cmd-pipeline-validate-edn rest-args)
                        (do (println (str "Unknown pipeline command: " sub-command))
                            (usage)))
+          "backup"   (cmd/cmd-backup rest-args)
+          "restore"  (cmd/cmd-restore rest-args)
           "status"   (cmd/cmd-status rest-args)
           "serve"    (do (println "Starting web server...")
                          ((requiring-resolve 'chengis.web.server/start!)))

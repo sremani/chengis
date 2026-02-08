@@ -258,7 +258,25 @@
                   (reduce-kv (fn [m k v] (assoc m (name k) (str v)))
                              {} (:env data)))
         parameters (convert-yaml-parameters (:parameters data))
-        triggers (convert-yaml-triggers (:on data))]
+        triggers (convert-yaml-triggers (:on data))
+        ;; Matrix config: support both top-level :matrix and :strategy :matrix
+        matrix-config (or (:matrix data)
+                          (get-in data [:strategy :matrix]))
+        ;; Convert keyword keys to proper matrix format
+        matrix-with-exclude (when matrix-config
+                              (let [exclude (or (:exclude matrix-config)
+                                                (get-in data [:strategy :exclude]))]
+                                (cond-> (reduce-kv (fn [m k v]
+                                                     (if (= k :exclude)
+                                                       m
+                                                       (assoc m k (mapv str v))))
+                                                   {} matrix-config)
+                                  (seq exclude) (assoc :exclude
+                                                  (mapv (fn [rule]
+                                                          (reduce-kv (fn [m k v]
+                                                                       (assoc m k (str v)))
+                                                                     {} rule))
+                                                        exclude)))))]
     (cond-> {:stages stages}
       (:name data)            (assoc :pipeline-name (str (:name data)))
       (:description data)     (assoc :description (str (:description data)))
@@ -269,7 +287,8 @@
       (seq notify-configs)     (assoc :notify notify-configs)
       (seq parameters)         (assoc :parameters parameters)
       triggers                 (assoc :triggers triggers)
-      (:extends data)          (assoc :extends (str (:extends data))))))
+      (:extends data)          (assoc :extends (str (:extends data)))
+      matrix-with-exclude      (assoc :matrix matrix-with-exclude))))
 
 ;; ---------------------------------------------------------------------------
 ;; Main entry points

@@ -1,0 +1,68 @@
+# ============================================================================
+# Chengis CI/CD Engine — Docker Compose
+# ============================================================================
+# Start:  docker compose up --build
+# Stop:   docker compose down
+# Logs:   docker compose logs -f master
+# ============================================================================
+
+services:
+  master:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - chengis-data:/data
+    environment:
+      CHENGIS_AUTH_ENABLED: "true"
+      CHENGIS_AUTH_JWT_SECRET: "change-me-in-production-use-a-long-random-string"
+      CHENGIS_AUTH_SESSION_SECRET: "change-me-session-secret-at-least-16-chars"
+      CHENGIS_SECRETS_MASTER_KEY: "0123456789abcdef0123456789abcdef"
+      CHENGIS_METRICS_ENABLED: "true"
+      CHENGIS_DISTRIBUTED_ENABLED: "true"
+      CHENGIS_DISTRIBUTED_AUTH_TOKEN: "agent-shared-secret"
+      CHENGIS_DISTRIBUTED_DISPATCH_QUEUE_ENABLED: "true"
+      CHENGIS_LOG_LEVEL: ":info"
+      CHENGIS_RETENTION_ENABLED: "true"
+    restart: unless-stopped
+
+  agent-1:
+    build: .
+    command:
+      - agent
+      - --master-url
+      - http://master:8080
+      - --labels
+      - docker,linux
+      - --auth-token
+      - agent-shared-secret
+      - --name
+      - agent-1
+    depends_on:
+      master:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  agent-2:
+    build: .
+    command:
+      - agent
+      - --master-url
+      - http://master:8080
+      - --labels
+      - docker,linux
+      - --auth-token
+      - agent-shared-secret
+      - --name
+      - agent-2
+    depends_on:
+      master:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  chengis-data:

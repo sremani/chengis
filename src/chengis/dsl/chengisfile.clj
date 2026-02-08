@@ -231,12 +231,14 @@
                                      (vec arts))
                   notify-configs (when-let [notifs (:notify data)]
                                    (vec notifs))
+                  matrix-config (:matrix data)
                   pipeline (cond-> {:stages stages}
                              (:description data)    (assoc :description (:description data))
                              (:container data)      (assoc :container (:container data))
                              (seq post-actions)      (assoc :post-actions post-actions)
                              (seq artifact-patterns) (assoc :artifacts artifact-patterns)
-                             (seq notify-configs)    (assoc :notify notify-configs))]
+                             (seq notify-configs)    (assoc :notify notify-configs)
+                             matrix-config           (assoc :matrix matrix-config))]
               (log/info "Chengisfile parsed successfully:"
                         (count stages) "stages")
               {:pipeline (cond-> pipeline

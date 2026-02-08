@@ -6,10 +6,12 @@
             [chengis.db.job-store :as job-store]
             [chengis.db.build-store :as build-store]
             [chengis.db.secret-store :as secret-store]
+            [chengis.db.backup :as backup]
             [chengis.dsl.core :as dsl]
             [chengis.dsl.chengisfile :as chengisfile]
             [chengis.engine.build-runner :as build-runner]
             [chengis.cli.output :as out]
+            [chengis.util :as util]
             [clojure.java.io :as io]))
 
 (defn- load-system
@@ -316,6 +318,33 @@
         (if (secret-store/delete-secret! db secret-name :scope (or scope "global"))
           (out/print-success (str "Secret '" secret-name "' deleted."))
           (out/print-error (str "Secret not found: " secret-name)))))))
+
+;; --- backup/restore ---
+
+(defn cmd-backup
+  "Create a database backup."
+  [args]
+  (let [{:keys [db config]} (load-system)
+        output-dir (or (first args) ".")
+        output-path (backup/generate-backup-path output-dir)
+        result (backup/backup! db output-path)]
+    (out/print-success (str "Backup created: " (:path result)
+                            " (" (util/format-size (:size-bytes result)) ")"))))
+
+(defn cmd-restore
+  "Restore a database from a backup file."
+  [args]
+  (let [backup-path (first args)
+        force? (some #{"--force"} args)]
+    (if-not backup-path
+      (out/print-error "Usage: chengis restore <backup-file> [--force]")
+      (try
+        (let [{:keys [config]} (load-system)
+              target-path (get-in config [:database :path])
+              result (backup/restore! backup-path target-path :force? (boolean force?))]
+          (out/print-success (str "Restored from " (:restored-from result) " to " (:target result))))
+        (catch Exception e
+          (out/print-error (.getMessage e)))))))
 
 ;; --- status ---
 

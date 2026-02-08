@@ -54,6 +54,34 @@
                    [:span {:class "text-gray-400 font-mono text-xs"}
                     (str "exit: " (:exit-code step))])])])])))]])
 
+(defn- render-matrix-grid
+  "Render a compact grid of matrix build results, if stages have matrix labels."
+  [stages]
+  (let [;; Detect matrix stages: they have names like "Build [os=linux, jdk=11]"
+        matrix-stages (filter #(re-find #"\[.*=.*\]" (or (:stage-name %) "")) stages)]
+    (when (seq matrix-stages)
+      [:div {:class "bg-white rounded-lg shadow-sm border mb-6"}
+       [:div {:class "px-5 py-4 border-b"}
+        [:h2 {:class "text-lg font-semibold text-gray-900"} "Matrix Results"]]
+       [:div {:class "p-5 flex flex-wrap gap-2"}
+        (for [stage matrix-stages]
+          (let [label (second (re-find #"\[(.*)\]" (or (:stage-name stage) "")))
+                status-class (case (keyword (or (:status stage) "pending"))
+                               :success "bg-green-100 text-green-800 border-green-300"
+                               :failure "bg-red-100 text-red-800 border-red-300"
+                               :running "bg-blue-100 text-blue-800 border-blue-300"
+                               :aborted "bg-yellow-100 text-yellow-800 border-yellow-300"
+                               "bg-gray-100 text-gray-600 border-gray-300")
+                icon (case (keyword (or (:status stage) "pending"))
+                      :success "\u2713"
+                      :failure "\u2717"
+                      :running "\u25CB"
+                      :aborted "\u25CB"
+                      "\u25CB")]
+            [:span {:class (str "inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs font-mono " status-class)}
+             [:span icon]
+             (escape-html (or label (:stage-name stage)))]))]])))
+
 (defn- render-output-section
   "Render the build output / log section."
   [build-id running? steps]
@@ -218,6 +246,9 @@
                [:div
                 [:span {:class "text-gray-500 block font-mono text-xs"} (name k)]
                 [:span {:class "font-medium"} (str v)]])]]))
+
+       ;; Matrix results grid (if matrix build)
+       (render-matrix-grid stages)
 
        ;; Pipeline visualization (with live status)
        (when (seq stages)

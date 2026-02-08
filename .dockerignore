@@ -1,0 +1,12 @@
+target/
+.lein-*
+*.db
+workspaces/
+artifacts/
+.nrepl-port
+.git/
+test/
+benchmarks/
+scripts/
+.claude/
+*.md

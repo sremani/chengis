@@ -31,6 +31,8 @@
             [chengis.web.account-lockout :as lockout]
             [chengis.db.approval-store :as approval-store]
             [chengis.db.template-store :as template-store]
+            [chengis.db.backup :as backup]
+            [chengis.db.audit-export :as audit-export]
             [chengis.web.views.approvals :as v-approvals]
             [chengis.web.views.templates :as v-templates]
             [chengis.web.sse :as sse]
@@ -40,6 +42,7 @@
             [hiccup2.core :as h]
             [hiccup.util :refer [escape-html]]
             [ring.middleware.anti-forgery :as anti-forgery]
+            [ring.util.io]
             [taoensso.timbre :as log])
   (:import [java.util.concurrent RejectedExecutionException]))
 
@@ -373,6 +376,20 @@
       {:status 303
        :headers {"Location" "/admin"}})))
 
+(defn admin-backup [system]
+  (fn [req]
+    (let [ds (:db system)
+          backup-dir (or (get-in system [:config :backup :directory]) "/tmp")
+          output-path (backup/generate-backup-path backup-dir)
+          result (backup/backup! ds output-path)
+          backup-file (io/file (:path result))]
+      (log/info "Admin backup created:" (:path result))
+      {:status 200
+       :headers {"Content-Type" "application/octet-stream"
+                 "Content-Disposition" (str "attachment; filename=\"" (.getName backup-file) "\"")
+                 "Content-Length" (str (:size-bytes result))}
+       :body backup-file})))
+
 ;; ---------------------------------------------------------------------------
 ;; Agents page
 ;; ---------------------------------------------------------------------------
@@ -519,6 +536,35 @@
                          :csrf-token (csrf-token req)
                          :user (auth/current-user req)
                          :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn audit-export-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          params (or (:query-params req) (:params req) {})
+          format (get params "format" "csv")
+          ;; Build filters from query params
+          username-filter (get params "username")
+          user-for-filter (when (seq username-filter)
+                            (user-store/get-user-by-username ds username-filter))
+          filters (cond-> {}
+                    (seq (get params "action"))   (assoc :action (get params "action"))
+                    user-for-filter               (assoc :user-id (:id user-for-filter))
+                    (and (seq username-filter) (nil? user-for-filter)) (assoc :user-id "__nonexistent__")
+                    (seq (get params "from"))      (assoc :from-date (get params "from"))
+                    (seq (get params "to"))        (assoc :to-date (get params "to")))
+          today (str (java.time.LocalDate/now))
+          [content-type ext export-fn]
+          (if (= format "json")
+            ["application/json" "json" audit-export/export-json]
+            ["text/csv" "csv" audit-export/export-csv])]
+      {:status 200
+       :headers {"Content-Type" content-type
+                 "Content-Disposition" (str "attachment; filename=\"audit-export-" today "." ext "\"")}
+       :body (ring.util.io/piped-input-stream
+               (fn [out]
+                 (let [writer (java.io.OutputStreamWriter. out "UTF-8")]
+                   (export-fn ds filters writer)
+                   (.close writer))))})))
 
 ;; ---------------------------------------------------------------------------
 ;; Webhook events (admin only)

@@ -23,7 +23,7 @@
         [:span {:class "text-sm text-gray-500"} (str total-count " total events")]]
 
        ;; Filter form
-       [:form {:method "GET" :action "/admin/audit" :class "flex gap-4 items-end"}
+       [:form {:method "GET" :action "/admin/audit" :class "flex gap-4 items-end flex-wrap"}
         [:div
          [:label {:class "block text-xs font-medium text-gray-600 mb-1"} "Action"]
          [:input {:type "text" :name "action" :value (get filters :action "")
@@ -37,6 +37,19 @@
         [:button {:type "submit"
                   :class "px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"}
          "Filter"]]
+
+       ;; Export buttons
+       (let [filter-params (str (when (seq (get filters "action"))
+                                  (str "&action=" (get filters "action")))
+                                (when (seq (get filters "username"))
+                                  (str "&username=" (get filters "username"))))]
+         [:div {:class "flex gap-2"}
+          [:a {:href (str "/admin/audit/export?format=csv" filter-params)
+               :class "px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"}
+           "Export CSV"]
+          [:a {:href (str "/admin/audit/export?format=json" filter-params)
+               :class "px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"}
+           "Export JSON"]])
 
        ;; Table
        [:div {:class "bg-white rounded-lg shadow overflow-hidden"}

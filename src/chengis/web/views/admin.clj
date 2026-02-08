@@ -115,7 +115,12 @@
          [:button {:type "submit"
                    :class "px-4 py-2 bg-orange-100 rounded text-sm font-medium text-orange-700 hover:bg-orange-200 transition"
                    :onclick "return confirm('Run data retention cleanup now?')"}
-          "Run Retention Now"]]]]
+          "Run Retention Now"]]
+        [:form {:method "POST" :action "/admin/backup" :class "inline"}
+         [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
+         [:button {:type "submit"
+                   :class "px-4 py-2 bg-blue-100 rounded text-sm font-medium text-blue-700 hover:bg-blue-200 transition"}
+          "Download Backup"]]]]
 
       ;; Disk usage
       [:div {:class "bg-white rounded-lg shadow-sm border p-5 mb-6"}

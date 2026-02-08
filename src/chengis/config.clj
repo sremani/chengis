@@ -1,6 +1,7 @@
 (ns chengis.config
   (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [clojure.string :as str]))
 
 (def default-config
   {:database {:path "chengis.db"}
@@ -88,19 +89,98 @@
                :poll-interval-ms 5000}
    :templates {:enabled true
                :max-depth 3}
+   :matrix {:max-combinations 25}
    :log {:level :info
          :format :text
          :file nil}})
 
-(defn load-config
-  "Load configuration from config.edn on the classpath, merged with defaults.
-   Optionally accepts a path to an external config file."
+;; ---------------------------------------------------------------------------
+;; Environment variable configuration
+;; ---------------------------------------------------------------------------
+
+(def ^:private env-key-map
+  "Explicit mapping of environment variable names to config paths.
+   Only variables listed here are recognized — no automatic wildcard scanning."
+  {"CHENGIS_DATABASE_PATH"                      [:database :path]
+   "CHENGIS_WORKSPACE_ROOT"                     [:workspace :root]
+   "CHENGIS_ARTIFACTS_ROOT"                     [:artifacts :root]
+   "CHENGIS_SERVER_PORT"                        [:server :port]
+   "CHENGIS_SERVER_HOST"                        [:server :host]
+   "CHENGIS_AUTH_ENABLED"                       [:auth :enabled]
+   "CHENGIS_AUTH_JWT_SECRET"                    [:auth :jwt-secret]
+   "CHENGIS_AUTH_SESSION_SECRET"                [:auth :session-secret]
+   "CHENGIS_AUTH_SEED_ADMIN_PASSWORD"           [:auth :seed-admin-password]
+   "CHENGIS_SECRETS_MASTER_KEY"                 [:secrets :master-key]
+   "CHENGIS_DISTRIBUTED_ENABLED"                [:distributed :enabled]
+   "CHENGIS_DISTRIBUTED_MODE"                   [:distributed :mode]
+   "CHENGIS_DISTRIBUTED_AUTH_TOKEN"             [:distributed :auth-token]
+   "CHENGIS_DISTRIBUTED_DISPATCH_QUEUE_ENABLED" [:distributed :dispatch :queue-enabled]
+   "CHENGIS_METRICS_ENABLED"                    [:metrics :enabled]
+   "CHENGIS_LOG_LEVEL"                          [:log :level]
+   "CHENGIS_LOG_FORMAT"                         [:log :format]
+   "CHENGIS_RATE_LIMIT_ENABLED"                 [:rate-limit :enabled]
+   "CHENGIS_HTTPS_ENABLED"                      [:https :enabled]
+   "CHENGIS_RETENTION_ENABLED"                  [:retention :enabled]
+   "CHENGIS_SCM_GITHUB_TOKEN"                   [:scm :github :token]
+   "CHENGIS_SCM_GITLAB_TOKEN"                   [:scm :gitlab :token]
+   "CHENGIS_NOTIFICATIONS_EMAIL_HOST"           [:notifications :email :host]
+   "CHENGIS_NOTIFICATIONS_EMAIL_PORT"           [:notifications :email :port]
+   "CHENGIS_NOTIFICATIONS_EMAIL_FROM"           [:notifications :email :from]
+   "CHENGIS_NOTIFICATIONS_SLACK_DEFAULT_WEBHOOK" [:notifications :slack :default-webhook]
+   "CHENGIS_MATRIX_MAX_COMBINATIONS"            [:matrix :max-combinations]})
+
+(defn coerce-env-value
+  "Coerce a string environment variable value to the appropriate type.
+   Rules: \"true\"/\"false\" → boolean, pure digits → long,
+   colon-prefixed → keyword, else string."
+  [v]
+  (cond
+    (= v "true")  true
+    (= v "false") false
+    (re-matches #"\d+" v) (Long/parseLong v)
+    (str/starts-with? v ":") (keyword (subs v 1))
+    :else v))
+
+(defn load-env-overrides
+  "Read CHENGIS_* environment variables and return a partial config map.
+   Only variables in env-key-map are recognized. Values are type-coerced."
   ([]
-   (if-let [resource (io/resource "config.edn")]
-     (merge default-config (edn/read-string {:readers {}} (slurp resource)))
-     default-config))
+   (load-env-overrides (fn [k] (System/getenv k))))
+  ([env-fn]
+   (reduce-kv (fn [m env-key config-path]
+                (if-let [v (env-fn env-key)]
+                  (assoc-in m config-path (coerce-env-value v))
+                  m))
+              {} env-key-map)))
+
+(defn deep-merge
+  "Recursively merge maps. When both values are maps, merge them.
+   Otherwise the later value wins. nil values are ignored."
+  [& maps]
+  (reduce (fn [result m]
+            (if (nil? m)
+              result
+              (reduce-kv (fn [acc k v]
+                           (let [existing (get acc k)]
+                             (if (and (map? existing) (map? v))
+                               (assoc acc k (deep-merge existing v))
+                               (assoc acc k v))))
+                         result m)))
+          {} maps))
+
+(defn load-config
+  "Load configuration from config.edn on the classpath, merged with defaults,
+   then overlaid with CHENGIS_* environment variables.
+   Precedence: env vars > config.edn > defaults."
+  ([]
+   (let [file-config (when-let [resource (io/resource "config.edn")]
+                       (edn/read-string {:readers {}} (slurp resource)))
+         env-config (load-env-overrides)]
+     (deep-merge default-config file-config env-config)))
   ([path]
-   (merge default-config (edn/read-string {:readers {}} (slurp path)))))
+   (let [file-config (edn/read-string {:readers {}} (slurp path))
+         env-config (load-env-overrides)]
+     (deep-merge default-config file-config env-config))))
 
 (defn resolve-path
   "Resolve a potentially relative path against a base directory."

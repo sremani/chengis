@@ -168,7 +168,9 @@
         ["" {:get {:handler (auth/wrap-require-role :admin (h/admin-page system))}}]
         ["/cleanup" {:post {:handler (auth/wrap-require-role :admin (h/admin-cleanup system))}}]
         ["/retention" {:post {:handler (auth/wrap-require-role :admin (h/admin-retention system))}}]
+        ["/backup" {:post {:handler (auth/wrap-require-role :admin (h/admin-backup system))}}]
         ["/audit" {:get {:handler (auth/wrap-require-role :admin (h/audit-page system))}}]
+        ["/audit/export" {:get {:handler (auth/wrap-require-role :admin (h/audit-export-handler system))}}]
         ["/webhooks" {:get {:handler (auth/wrap-require-role :admin (h/webhooks-page system))}}]
         ["/users" {:get {:handler (auth/wrap-require-role :admin (h/users-page system))}
                    :post {:handler (auth/wrap-require-role :admin (h/create-user-handler system))}}]

@@ -8,6 +8,7 @@
             [chengis.dsl.chengisfile :as chengisfile]
             [chengis.dsl.yaml :as yaml-parser]
             [chengis.engine.approval :as approval]
+            [chengis.engine.matrix :as matrix]
             [chengis.engine.artifacts :as artifacts]
             [chengis.engine.notify :as notify]
             [chengis.engine.git :as git]
@@ -417,13 +418,22 @@
                            :metrics-registry (:metrics system)}
                 ;; Propagate pipeline-level :container to stages that don't have their own
                 pipeline-container (:container effective-pipeline)
-                effective-stages (if pipeline-container
-                                   (mapv (fn [s]
-                                           (if (:container s)
-                                             s
-                                             (assoc s :container pipeline-container)))
-                                         (:stages effective-pipeline))
-                                   (:stages effective-pipeline))]
+                pre-matrix-stages (if pipeline-container
+                                    (mapv (fn [s]
+                                            (if (:container s)
+                                              s
+                                              (assoc s :container pipeline-container)))
+                                          (:stages effective-pipeline))
+                                    (:stages effective-pipeline))
+                ;; Matrix expansion: if the pipeline has a :matrix config,
+                ;; expand each stage into N copies (one per combination)
+                matrix-config (:matrix effective-pipeline)
+                max-combos (get-in system [:config :matrix :max-combinations]
+                                   matrix/default-max-combinations)
+                effective-stages (if matrix-config
+                                   (matrix/expand-stages pre-matrix-stages matrix-config
+                                                         :max max-combos)
+                                   pre-matrix-stages)]
             (emit build-ctx :build-started {:job-id job-id :build-number build-number})
             (let [stage-results
                   (reduce (fn [results stage-def]
