@@ -41,7 +41,7 @@
            (try
              (let [n (audit-store/purge-old! ds audit-days)]
                (when (pos? n)
-                 (try (metrics/record-retention-cleaned! registry "audit-logs" n)
+                 (try (metrics/record-retention-cleaned! registry :audit-logs n)
                       (catch Exception _)))
                n)
              (catch Exception e
@@ -52,7 +52,7 @@
            (try
              (let [n (webhook-log/cleanup-old-events! ds webhook-days)]
                (when (pos? n)
-                 (try (metrics/record-retention-cleaned! registry "webhook-events" n)
+                 (try (metrics/record-retention-cleaned! registry :webhook-events n)
                       (catch Exception _)))
                n)
              (catch Exception e
@@ -63,7 +63,7 @@
            (try
              (let [n (secret-audit/cleanup-old-accesses! ds secret-audit-days)]
                (when (pos? n)
-                 (try (metrics/record-retention-cleaned! registry "secret-access-log" n)
+                 (try (metrics/record-retention-cleaned! registry :secret-access-log n)
                       (catch Exception _)))
                n)
              (catch Exception e
@@ -74,7 +74,7 @@
            (try
              (let [n (auth/cleanup-expired-blacklist! ds)]
                (when (pos? n)
-                 (try (metrics/record-retention-cleaned! registry "jwt-blacklist" n)
+                 (try (metrics/record-retention-cleaned! registry :jwt-blacklist n)
                       (catch Exception _)))
                n)
              (catch Exception e
@@ -85,7 +85,7 @@
            (try
              (let [result (cleanup/cleanup-workspaces! config)]
                (when (pos? (:cleaned result))
-                 (try (metrics/record-retention-cleaned! registry "workspaces" (:cleaned result))
+                 (try (metrics/record-retention-cleaned! registry :workspaces (:cleaned result))
                       (catch Exception _)))
                (:cleaned result))
              (catch Exception e

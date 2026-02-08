@@ -19,7 +19,7 @@
              :branch branch
              :commit-sha commit-sha
              :signature-valid (if (false? signature-valid) 0 1)
-             :status (or status "processed")
+             :status (if status (name status) "processed")
              :matched-jobs (or matched-jobs 0)
              :triggered-builds (or triggered-builds 0)
              :error error

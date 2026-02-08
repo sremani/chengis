@@ -175,7 +175,7 @@
       ;; Reject unknown provider early
       (if-not provider
         (do (log-webhook-event! ds registry
-              {:provider "unknown" :event-type event-type :status "rejected"
+              {:provider :unknown :event-type event-type :status :rejected
                :error "Unsupported webhook provider" :payload-size payload-size
                :processing-ms (- (System/currentTimeMillis) start-ms)})
             {:status 400
@@ -186,7 +186,7 @@
           (do (log/warn "Webhook signature verification failed for" (name provider))
               (log-webhook-event! ds registry
                 {:provider provider :event-type event-type :signature-valid false
-                 :status "rejected" :error "Invalid signature" :payload-size payload-size
+                 :status :rejected :error "Invalid signature" :payload-size payload-size
                  :processing-ms (- (System/currentTimeMillis) start-ms)})
               {:status 401
                :headers {"Content-Type" "application/json"}
@@ -199,7 +199,7 @@
                            nil))]
             (if-not parsed
               (do (log-webhook-event! ds registry
-                    {:provider provider :event-type event-type :status "error"
+                    {:provider provider :event-type event-type :status :error
                      :error "Invalid JSON payload" :payload-size payload-size
                      :processing-ms (- (System/currentTimeMillis) start-ms)})
                   {:status 400
@@ -220,7 +220,7 @@
                         {:provider provider :event-type event-type
                          :repo-url (:repo-url webhook-data) :repo-name (:repo-name webhook-data)
                          :branch (:branch webhook-data) :commit-sha (:commit webhook-data)
-                         :status "processed" :matched-jobs 0 :triggered-builds 0
+                         :status :processed :matched-jobs 0 :triggered-builds 0
                          :payload-size payload-size :processing-ms duration})
                       {:status 200
                        :headers {"Content-Type" "application/json"}
@@ -257,7 +257,7 @@
                           {:provider provider :event-type event-type
                            :repo-url (:repo-url webhook-data) :repo-name (:repo-name webhook-data)
                            :branch (:branch webhook-data) :commit-sha (:commit webhook-data)
-                           :status "processed" :matched-jobs (count jobs)
+                           :status :processed :matched-jobs (count jobs)
                            :triggered-builds @triggered
                            :payload-size payload-size :processing-ms duration})
                         {:status 200

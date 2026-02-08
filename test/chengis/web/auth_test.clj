@@ -160,7 +160,8 @@
         (is (= 200 (:status resp)))))
 
     (testing "session auth works"
-      (let [session-user {:id "u1" :username "bob" :role :developer}
+      (let [bob (user-store/create-user! ds {:username "bob" :password "password1" :role "developer"})
+            session-user {:id (:id bob) :username "bob" :role :developer :session-version 1}
             resp (wrapped {:uri "/" :request-method :get :headers {}
                            :session {:user session-user}})]
         (is (= 200 (:status resp)))
@@ -197,6 +198,78 @@
             resp (wrapped {:uri "/api/jobs" :request-method :get
                            :headers {"authorization" (str "Bearer " (:token token-result))
                                      "accept" "application/json"}})]
+        (is (= 401 (:status resp)))))))
+
+;; ---------------------------------------------------------------------------
+;; SSE auth bypass fix test
+;; ---------------------------------------------------------------------------
+
+(deftest sse-endpoint-requires-auth-in-distributed-mode-test
+  (let [ds (conn/create-datasource test-db-path)
+        config {:auth {:enabled true
+                       :jwt-secret "test-jwt-secret-32-chars-min!!!!!"}
+                :distributed {:enabled true}}
+        system {:config config :db ds}
+        handler (fn [req] {:status 200 :body (:auth/user req)})
+        wrapped (auth/wrap-auth handler system)]
+
+    (testing "SSE /events endpoint requires auth even in distributed mode"
+      (let [resp (wrapped {:uri "/api/builds/some-id/events" :request-method :get
+                           :headers {"accept" "application/json"}})]
+        ;; Should return 401, NOT 200
+        (is (= 401 (:status resp)))))
+
+    (testing "agent POST endpoints are exempt in distributed mode"
+      (let [resp (wrapped {:uri "/api/builds/some-id/agent-events" :request-method :post
+                           :headers {}})]
+        ;; Agent endpoints bypass global auth (handler-level check-auth validates)
+        (is (= 200 (:status resp)))))
+
+    (testing "agent heartbeat is exempt in distributed mode"
+      (let [resp (wrapped {:uri "/api/agents/some-id/heartbeat" :request-method :post
+                           :headers {}})]
+        (is (= 200 (:status resp)))))))
+
+;; ---------------------------------------------------------------------------
+;; Session invalidation on password reset test
+;; ---------------------------------------------------------------------------
+
+(deftest session-invalidated-on-password-reset-test
+  (let [ds (conn/create-datasource test-db-path)
+        config {:auth {:enabled true
+                       :jwt-secret "test-jwt-secret-32-chars-min!!!!!"}}
+        system {:config config :db ds}
+        handler (fn [req] {:status 200 :body (:auth/user req)})
+        wrapped (auth/wrap-auth handler system)
+        ;; Create a user
+        user (user-store/create-user! ds {:username "carol" :password "password1" :role "developer"})
+        ;; Simulate a session with current session-version
+        db-user (user-store/get-user-by-username ds "carol")
+        session-user {:id (:id user) :username "carol" :role :developer
+                      :session-version (:session-version db-user)}]
+
+    (testing "session works before password reset"
+      (let [resp (wrapped {:uri "/" :request-method :get :headers {}
+                           :session {:user session-user}})]
+        (is (= 200 (:status resp)))
+        (is (= "carol" (:username (:body resp))))))
+
+    ;; Change password — increments session_version
+    (user-store/update-password! ds (:id user) "newpassword!")
+
+    (testing "session is invalidated after password reset"
+      (let [resp (wrapped {:uri "/" :request-method :get :headers {}
+                           :session {:user session-user}})]
+        ;; Should redirect to login (session rejected)
+        (is (= 303 (:status resp)))
+        (is (= "/login" (get-in resp [:headers "Location"])))))
+
+    (testing "JWT is invalidated after password reset"
+      (let [token (auth/generate-jwt session-user config)
+            resp (wrapped {:uri "/api/test" :request-method :get
+                           :headers {"authorization" (str "Bearer " token)
+                                     "accept" "application/json"}})]
+        ;; JWT session-version (old) != DB session-version (new) → rejected
         (is (= 401 (:status resp)))))))
 
 ;; ---------------------------------------------------------------------------

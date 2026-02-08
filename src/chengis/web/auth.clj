@@ -85,7 +85,8 @@
       @auto-jwt-secret))
 
 (defn generate-jwt
-  "Generate a JWT token for a user. Includes jti (JWT ID) for blacklist support."
+  "Generate a JWT token for a user. Includes jti (JWT ID) for blacklist support
+   and session-version for password-reset invalidation."
   [user config]
   (let [secret (resolve-jwt-secret config)
         expiry-hours (get-in config [:auth :jwt-expiry-hours] 24)
@@ -95,6 +96,7 @@
     (jwt/sign {:user-id (:id user)
                :username (:username user)
                :role (:role user)
+               :session-version (or (:session-version user) 0)
                :jti jti
                :iat (.getEpochSecond now)
                :exp (.getEpochSecond exp)}
@@ -210,14 +212,21 @@
    These use RBAC (wrap-require-role) and need the global auth user."
   #{"/api/agents/register"})
 
+(def ^:private distributed-api-exempt-suffixes
+  "Suffixes that should NOT be exempted from global auth.
+   /events (SSE) endpoints are read endpoints for authenticated users."
+  ["/events"])
+
 (defn- distributed-api-path?
   "Check if the request path is a distributed agent endpoint that should
    bypass global auth (handled by handler-level check-auth instead).
    Returns true for agent communication paths, false for registration
-   (which uses RBAC) and other API paths."
+   (which uses RBAC), SSE /events endpoints (which need user auth),
+   and other API paths."
   [uri]
   (and (some #(str/starts-with? uri %) distributed-api-prefixes)
-       (not (contains? distributed-api-exempt-exact uri))))
+       (not (contains? distributed-api-exempt-exact uri))
+       (not (some #(str/ends-with? uri %) distributed-api-exempt-suffixes))))
 
 ;; ---------------------------------------------------------------------------
 ;; Auth response helpers
@@ -254,18 +263,46 @@
   (assoc req :auth/user user))
 
 (defn- try-session-auth
-  "Try to authenticate via session cookie. Returns user map or nil."
-  [req]
-  (get-in req [:session :user]))
+  "Try to authenticate via session cookie. Returns user map or nil.
+   Validates session_version against the DB to enforce password-reset invalidation."
+  [req ds]
+  (when-let [session-user (get-in req [:session :user])]
+    (if-let [user-id (:id session-user)]
+      ;; Verify session version matches the DB to enforce password-change invalidation
+      (if-let [db-user (user-store/get-user ds user-id)]
+        (let [session-version (or (:session-version session-user) 0)
+              db-version (or (:session-version db-user) 0)]
+          (if (= session-version db-version)
+            session-user
+            (do (log/info "Session invalidated for" (:username session-user)
+                          "— session version mismatch (session:" session-version
+                          "db:" db-version ")")
+                nil)))
+        ;; User deleted from DB
+        nil)
+      ;; No user-id in session (legacy/anonymous) — pass through
+      session-user)))
 
 (defn- try-jwt-auth
   "Try to authenticate via JWT bearer token. Returns user map or nil.
-   Passes ds for JWT blacklist checking."
+   Passes ds for JWT blacklist checking and session-version validation."
   [token config ds]
   (when-let [claims (verify-jwt token config ds)]
-    {:id (:user-id claims)
-     :username (:username claims)
-     :role (keyword (:role claims))}))
+    ;; Validate session-version against DB to enforce password-change invalidation
+    (let [jwt-version (or (:session-version claims) 0)]
+      (if-let [db-user (when (:user-id claims) (user-store/get-user ds (:user-id claims)))]
+        (let [db-version (or (:session-version db-user) 0)]
+          (if (= jwt-version db-version)
+            {:id (:user-id claims)
+             :username (:username claims)
+             :role (keyword (:role claims))}
+            (do (log/info "JWT invalidated for" (:username claims)
+                          "— session version mismatch")
+                nil)))
+        ;; No ds or user not found — fall back to claims only (backward compat)
+        {:id (:user-id claims)
+         :username (:username claims)
+         :role (keyword (:role claims))}))))
 
 (defn- try-api-token-auth
   "Try to authenticate via API token. Returns user map or nil."
@@ -290,7 +327,7 @@
         distributed-enabled? (get-in config [:distributed :enabled] false)]
     (fn [req]
       (let [uri (or (:uri req) "")
-            session-user (when auth-enabled? (try-session-auth req))
+            session-user (when auth-enabled? (try-session-auth req ds))
             bearer-token (when (and auth-enabled? (not session-user))
                            (extract-bearer-token req))]
         (cond
@@ -393,4 +430,5 @@
            {:success true
             :user {:id (:id user)
                    :username (:username user)
-                   :role (keyword (:role user))}})))))
+                   :role (keyword (:role user))
+                   :session-version (or (:session-version user) 0)}})))))
