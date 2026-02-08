@@ -29,12 +29,16 @@
     (SecretKeySpec. hash "AES")))
 
 (defn- get-master-key
-  "Get the AES master key from config or environment."
+  "Get the AES master key from config or environment.
+   Logs a warning if using the insecure default key."
   [config]
-  (let [key-str (or (get-in config [:secrets :master-key])
-                     (System/getenv "CHENGIS_SECRET_KEY")
-                     ;; Default key for development (NOT for production!)
-                     "chengis-dev-secret-key-change-me")]
+  (let [explicit-key (or (get-in config [:secrets :master-key])
+                          (System/getenv "CHENGIS_SECRET_KEY"))
+        key-str (or explicit-key
+                    ;; Default key for development (NOT for production!)
+                    "chengis-dev-secret-key-change-me")]
+    (when-not explicit-key
+      (taoensso.timbre/warn "SECURITY WARNING: Using default secret master key. Set CHENGIS_SECRET_KEY or :secrets :master-key for production!"))
     (derive-key key-str)))
 
 (defn- encrypt
@@ -174,16 +178,25 @@
                 {}
                 rows))
       ;; External backend via plugin protocol
-      (try
-        (let [get-backend (requiring-resolve 'chengis.plugin.registry/get-secret-backend)
-              backend (get-backend backend-type)]
-          (if backend
-            (let [proto-fn (requiring-resolve 'chengis.plugin.protocol/fetch-secrets-for-build)]
-              (proto-fn backend job-id config))
-            ;; Fallback to local if backend not found
-            (do
-              (taoensso.timbre/warn "Secret backend" backend-type "not registered, falling back to local")
-              (get-secrets-for-build ds (assoc-in config [:secrets :backend] "local") job-id))))
-        (catch Exception e
-          (taoensso.timbre/error "Secret backend error, falling back to local:" (.getMessage e))
-          (get-secrets-for-build ds (assoc-in config [:secrets :backend] "local") job-id))))))
+      (let [fallback? (get-in config [:secrets :fallback-to-local] false)
+            fallback-fn (fn [reason]
+                          (if fallback?
+                            (do
+                              (taoensso.timbre/warn "Secret backend" backend-type reason "— falling back to local")
+                              (get-secrets-for-build ds (assoc-in config [:secrets :backend] "local") job-id))
+                            (throw (ex-info (str "Secret backend " backend-type " " reason " (fallback disabled)")
+                                            {:backend backend-type}))))]
+        (try
+          (let [get-backend (requiring-resolve 'chengis.plugin.registry/get-secret-backend)
+                backend (get-backend backend-type)]
+            (if backend
+              (let [proto-fn (requiring-resolve 'chengis.plugin.protocol/fetch-secrets-for-build)]
+                (proto-fn backend job-id config))
+              ;; Backend not registered
+              (fallback-fn "not registered")))
+          (catch clojure.lang.ExceptionInfo e
+            ;; Re-throw our own exceptions (from fallback-fn)
+            (throw e))
+          (catch Exception e
+            (taoensso.timbre/error "Secret backend error:" (.getMessage e))
+            (fallback-fn (str "error: " (.getMessage e)))))))))

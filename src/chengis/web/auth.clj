@@ -407,9 +407,10 @@
 ;; API Token Scope checking
 ;; ---------------------------------------------------------------------------
 
-(def ^:private valid-scopes
+(def valid-scopes
   "The set of recognized API token scopes.
-   nil scopes on a token means full user access (backward compatible)."
+   nil scopes on a token means full user access (backward compatible).
+   Public so that handlers can validate scopes on token creation (CR-08)."
   #{"build:trigger" "build:read" "build:cancel"
     "job:read" "job:create" "job:delete"
     "secret:read" "secret:write"

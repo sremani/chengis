@@ -14,24 +14,30 @@
             [clojure.string :as str]
             [taoensso.timbre :as log])
   (:import [java.net URI]
-           [java.net.http HttpClient HttpRequest HttpResponse$BodyHandlers]))
+           [java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers HttpResponse$BodyHandlers]
+           [java.time Duration]))
 
 ;; ---------------------------------------------------------------------------
 ;; Vault HTTP client
 ;; ---------------------------------------------------------------------------
 
 (def ^:private http-client
-  (delay (HttpClient/newHttpClient)))
+  "Shared HTTP client with connection timeout for Vault API calls."
+  (delay
+    (-> (HttpClient/newBuilder)
+        (.connectTimeout (java.time.Duration/ofSeconds 10))
+        (.build))))
 
 (defn- vault-get
-  "Perform an authenticated GET to the Vault API."
+  "Perform an authenticated GET to the Vault API (with 10s request timeout)."
   [vault-url token path]
   (try
-    (let [url (str (str/trimr vault-url "/") path)
+    (let [url (str (str/replace vault-url #"/+$" "") path)
           request (-> (HttpRequest/newBuilder)
                       (.uri (URI/create url))
                       (.header "X-Vault-Token" token)
                       (.header "Accept" "application/json")
+                      (.timeout (java.time.Duration/ofSeconds 10))
                       (.GET)
                       (.build))
           response (.send @http-client request (HttpResponse$BodyHandlers/ofString))]
@@ -42,14 +48,15 @@
       nil)))
 
 (defn- vault-list
-  "Perform an authenticated LIST to the Vault API."
+  "Perform an authenticated LIST to the Vault API (with 10s request timeout)."
   [vault-url token path]
   (try
-    (let [url (str (str/trimr vault-url "/") path "?list=true")
+    (let [url (str (str/replace vault-url #"/+$" "") path "?list=true")
           request (-> (HttpRequest/newBuilder)
                       (.uri (URI/create url))
                       (.header "X-Vault-Token" token)
                       (.header "Accept" "application/json")
+                      (.timeout (java.time.Duration/ofSeconds 10))
                       (.method "LIST" (HttpRequest$BodyPublishers/noBody))
                       (.build))
           response (.send @http-client request (HttpResponse$BodyHandlers/ofString))]

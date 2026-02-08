@@ -7,7 +7,8 @@
             [clojure.string :as str]))
 
 (def ^:private scope-groups
-  "Available token scopes grouped by category for the UI."
+  "Available token scopes grouped by category for the UI.
+   NOTE: Keep in sync with chengis.web.auth/valid-scopes (CR-15)."
   [["Builds"  [["build:read"    "View builds and logs"]
                ["build:trigger" "Trigger new builds"]
                ["build:cancel"  "Cancel running builds"]]]

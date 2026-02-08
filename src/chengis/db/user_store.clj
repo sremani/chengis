@@ -192,7 +192,12 @@
                   parsed-scopes (when scopes-json
                                   (try
                                     (set (json/read-str scopes-json))
-                                    (catch Exception _ nil)))]
+                                    (catch Exception e
+                                      ;; CR-07: On malformed JSON, deny all (empty set) rather than
+                                      ;; nil (which means full access). Secure default.
+                                      (log/error "Failed to parse scopes JSON for token" (:id match)
+                                                 "— denying all scopes:" (.getMessage e))
+                                      #{})))]
               (assoc user :token-scopes parsed-scopes))))))))
 
 (defn delete-api-token!

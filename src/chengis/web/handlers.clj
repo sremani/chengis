@@ -774,10 +774,13 @@
                              (string? v) (when-not (str/blank? v) [v])
                              (sequential? v) (seq (remove str/blank? v))
                              :else nil))
+              ;; CR-08: Validate scopes against known valid scopes (reject unknown)
+              scopes-validated (when scopes-raw
+                                 (filterv #(contains? auth/valid-scopes %) scopes-raw))
               result (user-store/create-api-token! ds {:user-id (:id user)
                                                        :name token-name
                                                        :expires-at expires-at
-                                                       :scopes scopes-raw})]
+                                                       :scopes scopes-validated})]
           (try (metrics/record-token-generated! registry) (catch Exception _))
           (log/info "API token generated:" token-name "for user:" (:username user))
           ;; Store new token in session flash (never in URL — prevents token leaking via referer/logs)

@@ -20,6 +20,7 @@
    :server {:port 8080 :host "0.0.0.0"}
    :secrets {:master-key nil
              :backend "local"      ;; "local" (AES-256-GCM in DB) or "vault" (HashiCorp Vault)
+             :fallback-to-local false  ;; When true, Vault errors fall back to local store (NOT recommended for production)
              :vault {:url nil      ;; e.g., "http://127.0.0.1:8200" or VAULT_ADDR env
                      :token nil    ;; Vault token or VAULT_TOKEN env
                      :mount "secret"
@@ -103,6 +104,7 @@
           :issuer-url nil         ;; e.g., "https://keycloak.example.com/realms/chengis"
           :client-id nil
           :client-secret nil
+          :callback-url nil       ;; Explicit callback URL (recommended behind proxy); nil = auto-detect from headers
           :scopes "openid profile email"
           :role-claim nil         ;; e.g., "realm_access.roles" (dot-separated path)
           :role-mapping {}        ;; e.g., {"chengis-admin" "admin", "chengis-dev" "developer"}
@@ -168,11 +170,13 @@
    "CHENGIS_OIDC_ISSUER_URL"                    [:oidc :issuer-url]
    "CHENGIS_OIDC_CLIENT_ID"                     [:oidc :client-id]
    "CHENGIS_OIDC_CLIENT_SECRET"                 [:oidc :client-secret]
+   "CHENGIS_OIDC_CALLBACK_URL"                  [:oidc :callback-url]
    "CHENGIS_OIDC_SCOPES"                        [:oidc :scopes]
    "CHENGIS_OIDC_ROLE_CLAIM"                    [:oidc :role-claim]
    "CHENGIS_OIDC_DEFAULT_ROLE"                  [:oidc :default-role]
    "CHENGIS_OIDC_AUTO_CREATE_USERS"             [:oidc :auto-create-users]
-   "CHENGIS_OIDC_PROVIDER_NAME"                 [:oidc :provider-name]})
+   "CHENGIS_OIDC_PROVIDER_NAME"                 [:oidc :provider-name]
+   "CHENGIS_SECRETS_FALLBACK_TO_LOCAL"           [:secrets :fallback-to-local]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.
