@@ -66,6 +66,17 @@
       :error \"message\" (on failure)}"))
 
 ;; ---------------------------------------------------------------------------
+;; SCM Status Reporter — reports build status back to SCM (GitHub, GitLab)
+;; ---------------------------------------------------------------------------
+
+(defprotocol ScmStatusReporter
+  "Protocol for reporting build status to SCM providers (GitHub, GitLab, etc.)."
+  (report-status [this build-info config]
+    "Report build status to the SCM provider. build-info contains:
+     :commit-sha :repo-url :status :build-url :description :context
+     Returns {:status :sent/:failed :details \"message\"}"))
+
+;; ---------------------------------------------------------------------------
 ;; Plugin descriptor
 ;; ---------------------------------------------------------------------------
 

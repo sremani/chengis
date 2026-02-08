@@ -9,7 +9,14 @@
    :server {:port 8080 :host "0.0.0.0"}
    :secrets {:master-key nil}
    :artifacts {:root "artifacts" :retention-builds 10}
-   :notifications {:slack {:default-webhook nil}}
+   :notifications {:slack {:default-webhook nil}
+                   :email {:host nil
+                           :port 587
+                           :tls true
+                           :username nil
+                           :password nil
+                           :from "chengis@localhost"
+                           :default-recipients []}}
    :cleanup {:enabled false :interval-hours 24 :retention-builds 10}
    :plugins {:directory "plugins" :enabled []}
    :docker {:host "unix:///var/run/docker.sock"
@@ -34,7 +41,10 @@
           :jwt-secret nil
           :jwt-expiry-hours 24
           :seed-admin-password "admin"
-          :session-max-age 86400}
+          :session-max-age 86400
+          :lockout {:enabled true
+                    :max-attempts 5
+                    :lockout-minutes 30}}
    :https {:enabled false
            :port 8443
            :keystore nil
@@ -68,6 +78,16 @@
                :audit-days 90
                :webhook-events-days 30
                :queue-completed-hours 168}
+   :scm {:github {:token nil
+                  :context "chengis/build"
+                  :base-url "https://api.github.com"}
+         :gitlab {:token nil
+                  :base-url "https://gitlab.com"}}
+   :approvals {:enabled true
+               :default-timeout-minutes 1440
+               :poll-interval-ms 5000}
+   :templates {:enabled true
+               :max-depth 3}
    :log {:level :info
          :format :text
          :file nil}})

@@ -22,7 +22,8 @@
                  [buddy/buddy-sign "3.5.351"]
                  [clj-commons/iapetos "0.1.14"]
                  [io.prometheus/simpleclient_hotspot "0.16.0"]
-                 [viesti/timbre-json-appender "0.2.14"]]
+                 [viesti/timbre-json-appender "0.2.14"]
+                 [com.sun.mail/javax.mail "1.6.2"]]
   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
   :main chengis.core
   :target-path "target/%s"

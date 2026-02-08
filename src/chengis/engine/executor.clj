@@ -7,6 +7,7 @@
             [chengis.db.secret-store :as secret-store]
             [chengis.dsl.chengisfile :as chengisfile]
             [chengis.dsl.yaml :as yaml-parser]
+            [chengis.engine.approval :as approval]
             [chengis.engine.artifacts :as artifacts]
             [chengis.engine.notify :as notify]
             [chengis.engine.git :as git]
@@ -428,15 +429,32 @@
                   (reduce (fn [results stage-def]
                             (if (cancelled? build-ctx)
                               (reduced results)
-                              (let [result (run-stage build-ctx stage-def)]
-                                (let [updated (conj results result)]
-                                  (if (#{:failure :aborted} (:stage-status result))
-                                    (do
-                                      (log/error "Pipeline stopped: stage"
-                                                 (:stage-name stage-def)
-                                                 (name (:stage-status result)))
-                                      (reduced updated))
-                                    updated)))))
+                              ;; Check for approval gate before running stage
+                              (let [approval-result (approval/check-stage-approval!
+                                                      system build-ctx stage-def)]
+                                (if-not (:proceed approval-result)
+                                  ;; Approval denied/timed-out — abort pipeline
+                                  (do
+                                    (log/warn "Stage" (:stage-name stage-def)
+                                              "approval denied:" (:reason approval-result))
+                                    (emit build-ctx :stage-skipped
+                                          {:stage-name (:stage-name stage-def)
+                                           :reason (:reason approval-result)})
+                                    (reduced (conj results
+                                               {:stage-name (:stage-name stage-def)
+                                                :stage-status :aborted
+                                                :step-results []
+                                                :reason (:reason approval-result)})))
+                                  ;; Approval granted (or not required) — run stage
+                                  (let [result (run-stage build-ctx stage-def)]
+                                    (let [updated (conj results result)]
+                                      (if (#{:failure :aborted} (:stage-status result))
+                                        (do
+                                          (log/error "Pipeline stopped: stage"
+                                                     (:stage-name stage-def)
+                                                     (name (:stage-status result)))
+                                          (reduced updated))
+                                        updated)))))))
                           []
                           effective-stages)
                   any-failed? (some #(= :failure (:stage-status %)) stage-results)

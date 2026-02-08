@@ -114,7 +114,9 @@
     (:when yaml-stage)
     (assoc :condition (convert-yaml-condition (:when yaml-stage)))
     (:container yaml-stage)
-    (assoc :container (:container yaml-stage))))
+    (assoc :container (:container yaml-stage))
+    (:approval yaml-stage)
+    (assoc :approval (:approval yaml-stage))))
 
 (defn- convert-yaml-post-steps
   "Convert a vector of YAML post-action steps."
@@ -266,7 +268,8 @@
       (seq artifact-patterns)  (assoc :artifacts artifact-patterns)
       (seq notify-configs)     (assoc :notify notify-configs)
       (seq parameters)         (assoc :parameters parameters)
-      triggers                 (assoc :triggers triggers))))
+      triggers                 (assoc :triggers triggers)
+      (:extends data)          (assoc :extends (str (:extends data))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Main entry points

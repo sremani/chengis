@@ -14,9 +14,12 @@
    'chengis.plugin.builtin.docker
    'chengis.plugin.builtin.console-notifier
    'chengis.plugin.builtin.slack-notifier
+   'chengis.plugin.builtin.email-notifier
    'chengis.plugin.builtin.local-artifacts
    'chengis.plugin.builtin.git-scm
-   'chengis.plugin.builtin.yaml-format])
+   'chengis.plugin.builtin.yaml-format
+   'chengis.plugin.builtin.github-status
+   'chengis.plugin.builtin.gitlab-status])
 
 ;; ---------------------------------------------------------------------------
 ;; Plugin loading

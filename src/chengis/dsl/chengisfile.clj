@@ -88,7 +88,8 @@
            :parallel?  (boolean (:parallel edn-stage))
            :steps      (mapv convert-step (:steps edn-stage))}
     (:when edn-stage)      (assoc :condition (convert-condition (:when edn-stage)))
-    (:container edn-stage) (assoc :container (:container edn-stage))))
+    (:container edn-stage) (assoc :container (:container edn-stage))
+    (:approval edn-stage)  (assoc :approval (:approval edn-stage))))
 
 ;; ---------------------------------------------------------------------------
 ;; Validation
@@ -238,6 +239,7 @@
                              (seq notify-configs)    (assoc :notify notify-configs))]
               (log/info "Chengisfile parsed successfully:"
                         (count stages) "stages")
-              {:pipeline pipeline})))))
+              {:pipeline (cond-> pipeline
+                           (:extends data) (assoc :extends (:extends data)))})))))
     (catch Exception e
       {:error (str "Failed to parse Chengisfile: " (.getMessage e))})))

@@ -153,6 +153,11 @@
         ["/:id/artifacts/:filename" {:get {:handler (h/download-artifact system)}}]]
        ["/agents"
         ["" {:get {:handler (h/agents-page system)}}]]
+       ;; Approval gates (developer+)
+       ["/approvals"
+        ["" {:get {:handler (auth/wrap-require-role :developer (h/approvals-page system))}}]
+        ["/:id/approve" {:post {:handler (auth/wrap-require-role :developer (h/approve-gate-handler system))}}]
+        ["/:id/reject" {:post {:handler (auth/wrap-require-role :developer (h/reject-gate-handler system))}}]]
        ;; Settings routes (any authenticated user)
        ["/settings"
         ["/tokens" {:get {:handler (auth/wrap-require-role :viewer (h/tokens-page system))}
@@ -169,7 +174,15 @@
                    :post {:handler (auth/wrap-require-role :admin (h/create-user-handler system))}}]
         ["/users/:id" {:post {:handler (auth/wrap-require-role :admin (h/update-user-handler system))}}]
         ["/users/:id/password" {:post {:handler (auth/wrap-require-role :admin (h/reset-password-handler system))}}]
-        ["/users/:id/toggle" {:post {:handler (auth/wrap-require-role :admin (h/toggle-user-handler system))}}]]
+        ["/users/:id/toggle" {:post {:handler (auth/wrap-require-role :admin (h/toggle-user-handler system))}}]
+        ["/users/:id/unlock" {:post {:handler (auth/wrap-require-role :admin (h/unlock-user-handler system))}}]
+        ["/templates"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/templates-page system))}
+              :post {:handler (auth/wrap-require-role :admin (h/create-template-handler system))}}]
+         ["/new" {:get {:handler (auth/wrap-require-role :admin (h/template-new-page system))}}]
+         ["/:name/edit" {:get {:handler (auth/wrap-require-role :admin (h/template-edit-page system))}
+                         :post {:handler (auth/wrap-require-role :admin (h/update-template-handler system))}}]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-template-handler system))}}]]]
        ["/api"
         ["/alerts" {:get {:handler (alerts/alerts-handler system)}}]
         ["/alerts/fragment" {:get {:handler (alerts/alerts-fragment-handler system)}}]
@@ -183,7 +196,8 @@
          ["" {:get {:handler (master-api/list-agents-handler system)}}]
          ["/register" {:post {:handler (auth/wrap-require-role :admin (master-api/register-agent-handler system))}}]
          ["/:id/heartbeat" {:post {:handler (master-api/heartbeat-handler system)}}]]
-        ["/webhook" {:post {:handler (webhook/webhook-handler system build-runner/build-executor)}}]]]))
+        ["/webhook" {:post {:handler (webhook/webhook-handler system build-runner/build-executor)}}]
+        ["/approvals/pending" {:get {:handler (h/api-pending-approvals system)}}]]]))
     (ring/create-default-handler
       {:not-found (constantly {:status 404
                                :headers {"Content-Type" "text/html"}

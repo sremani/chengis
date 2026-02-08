@@ -2,7 +2,8 @@
   "User management view — admin-only."
   (:require [chengis.web.views.layout :as layout]
             [hiccup2.core :as h]
-            [hiccup.util :refer [escape-html]]))
+            [hiccup.util :refer [escape-html]])
+  (:import [java.time Instant]))
 
 (defn- role-class [role]
   (case (str role)
@@ -10,6 +11,14 @@
     "developer" "bg-blue-100 text-blue-800"
     "viewer" "bg-gray-100 text-gray-800"
     "bg-gray-100 text-gray-800"))
+
+(defn- account-locked?
+  "Check if a user account is currently locked based on locked_until."
+  [u]
+  (when-let [locked-until (:locked-until u)]
+    (try
+      (.isBefore (Instant/now) (Instant/parse locked-until))
+      (catch Exception _ false))))
 
 (defn render
   "Render the user management page."
@@ -62,6 +71,7 @@
          [:th {:class "px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Username"]
          [:th {:class "px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Role"]
          [:th {:class "px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Status"]
+         [:th {:class "px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Lock"]
          [:th {:class "px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Created"]
          [:th {:class "px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Actions"]]]
        [:tbody {:class "bg-white divide-y divide-gray-200"}
@@ -77,6 +87,26 @@
             (if (pos? (or (:active u) 1))
               [:span {:class "text-green-600"} "Active"]
               [:span {:class "text-red-600"} "Deactivated"])]
+           [:td {:class "px-4 py-2 text-sm"}
+            (cond
+              (account-locked? u)
+              [:span {:class "inline-flex items-center gap-1"}
+               [:span {:class "inline-block px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700"}
+                "Locked"]
+               [:form {:method "POST" :action (str "/admin/users/" (:id u) "/unlock")
+                       :class "inline"}
+                (when csrf-token
+                  [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}])
+                [:button {:type "submit"
+                          :class "px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200"}
+                 "Unlock"]]]
+
+              (and (:failed-attempts u) (pos? (:failed-attempts u)))
+              [:span {:class "text-yellow-600 text-xs"}
+               (str (:failed-attempts u) " failed")]
+
+              :else
+              [:span {:class "text-gray-400 text-xs"} "—"])]
            [:td {:class "px-4 py-2 text-sm text-gray-500"} (or (:created-at u) "—")]
            [:td {:class "px-4 py-2 text-sm space-x-2"}
             ;; Role change form

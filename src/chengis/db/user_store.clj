@@ -60,10 +60,10 @@
     {:builder-fn rs/as-unqualified-kebab-maps}))
 
 (defn list-users
-  "List all users (without password hashes)."
+  "List all users (without password hashes). Includes lockout fields."
   [ds]
   (jdbc/execute! ds
-    (sql/format {:select [:id :username :role :active :created-at :updated-at]
+    (sql/format {:select [:id :username :role :active :failed-attempts :locked-until :created-at :updated-at]
                  :from :users
                  :order-by [[:created-at :asc]]})
     {:builder-fn rs/as-unqualified-kebab-maps}))

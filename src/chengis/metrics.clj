@@ -134,7 +134,27 @@
       (prometheus/register
         (prometheus/counter :secrets/access-total
                             {:description "Secret access events"
-                             :labels [:action]}))))
+                             :labels [:action]}))
+
+      ;; Phase 5: Account lockout metrics
+      (prometheus/register
+        (prometheus/counter :auth/account-lockouts-total
+                            {:description "Account lockout events"}))
+
+      ;; Phase 5: Approval gate metrics
+      (prometheus/register
+        (prometheus/counter :approvals/requested-total
+                            {:description "Approval gates created"}))
+      (prometheus/register
+        (prometheus/counter :approvals/resolved-total
+                            {:description "Approval gates resolved"
+                             :labels [:result]}))
+
+      ;; Phase 5: SCM status check metrics
+      (prometheus/register
+        (prometheus/counter :scm/status-reports-total
+                            {:description "SCM status reports sent"
+                             :labels [:provider :result]}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Record helpers — all no-op when registry is nil
@@ -301,6 +321,36 @@
   [registry action]
   (when registry
     (prometheus/inc (registry :secrets/access-total {:action (name action)}))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 5: Account lockout metrics
+;; ---------------------------------------------------------------------------
+
+(defn record-account-lockout!
+  "Record an account lockout event."
+  [registry]
+  (when registry
+    (prometheus/inc (registry :auth/account-lockouts-total))))
+
+(defn record-approval-requested!
+  "Record an approval gate creation."
+  [registry]
+  (when registry
+    (prometheus/inc (registry :approvals/requested-total))))
+
+(defn record-approval-resolved!
+  "Record an approval gate resolution."
+  [registry result]
+  (when registry
+    (prometheus/inc (registry :approvals/resolved-total {:result (or result "unknown")}))))
+
+(defn record-scm-status-report!
+  "Record an SCM status report."
+  [registry provider result]
+  (when registry
+    (prometheus/inc (registry :scm/status-reports-total
+                              {:provider (or provider "unknown")
+                               :result (or result "unknown")}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Metrics endpoint handler

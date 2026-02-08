@@ -6,6 +6,7 @@
   (:require [chengis.db.build-store :as build-store]
             [chengis.engine.executor :as executor]
             [chengis.engine.events :as events]
+            [chengis.engine.scm-status :as scm-status]
             [chengis.metrics :as metrics]
             [taoensso.timbre :as log])
   (:import [java.time Instant]
@@ -59,6 +60,24 @@
   (build-store/update-build-workspace! ds build-id (:workspace result))
   (build-store/save-build-result! ds (assoc result :build-id build-id)))
 
+(defn- report-scm-status!
+  "Report build status to SCM if git-info is available.
+   Extracts commit-sha and repo-url from the build result's git-info."
+  [system build-id job-id result build-status description]
+  (try
+    (when-let [git-info (:git-info result)]
+      (let [commit-sha (or (:commit git-info) (:sha git-info))
+            repo-url   (or (:repo-url git-info) (:remote-url git-info))]
+        (when (and (seq commit-sha) (seq repo-url))
+          (scm-status/report! system
+            {:commit-sha commit-sha
+             :repo-url   repo-url
+             :build-id   build-id
+             :job-id     job-id}
+            build-status description))))
+    (catch Exception e
+      (log/debug "SCM status report failed:" (.getMessage e)))))
+
 (defn execute-build!
   "Full build lifecycle: create record, execute, persist results.
    Used by CLI and scheduler (synchronous callers).
@@ -102,6 +121,8 @@
                (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
         (log/info "Build #" build-number "for" (:name job)
                   "completed:" (name (:build-status result)))
+        (report-scm-status! system build-id (:id job) result
+          (:build-status result) (str "Build #" build-number " " (name (:build-status result))))
         (assoc result :build-id build-id :build-number build-number))
       (finally
         (deregister-build! build-id)))))
@@ -142,6 +163,8 @@
         (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
           (try (metrics/record-build-end! registry (:build-status result) duration-s)
                (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
+        (report-scm-status! system build-id (:id job) result
+          (:build-status result) (str "Build #" build-number " " (name (:build-status result))))
         (assoc result :build-id build-id :build-number build-number))
       (finally
         (deregister-build! build-id)))))

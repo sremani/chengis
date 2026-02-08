@@ -2,6 +2,7 @@
   "Authentication and authorization middleware.
    Config-gated: when :auth :enabled is false, all requests are treated as admin."
   (:require [chengis.db.user-store :as user-store]
+            [chengis.web.account-lockout :as lockout]
             [chengis.metrics :as metrics]
             [next.jdbc :as jdbc]
             [buddy.sign.jwt :as jwt]
@@ -347,10 +348,14 @@
   "Authenticate a user with username/password.
    Returns {:success true :user user-map} or {:success false :error msg}.
    Uses consistent error messages to prevent user enumeration.
-   Optionally accepts a metrics registry for recording login attempts."
+   Integrates account lockout: checks lock status before password verification,
+   records failed attempts, and resets on success.
+   Optionally accepts a metrics registry and lockout config."
   ([ds username password]
    (login! ds username password nil))
   ([ds username password registry]
+   (login! ds username password registry nil))
+  ([ds username password registry lockout-config]
    (let [generic-error "Invalid username or password"
          user (user-store/get-user-by-username ds username)]
      (cond
@@ -366,15 +371,24 @@
            (metrics/record-login! registry :failure)
            {:success false :error "Account is deactivated"})
 
-       ;; Wrong password
+       ;; Account locked — check before password verification to avoid unnecessary bcrypt
+       (when-let [lock-result (lockout/check-lockout user lockout-config)]
+         lock-result)
+       (do (log/warn "Login attempt for locked account:" username)
+           (metrics/record-login! registry :failure)
+           {:success false :error (:error (lockout/check-lockout user lockout-config))})
+
+       ;; Wrong password — record failed attempt for lockout tracking
        (not (user-store/check-password password (:password-hash user)))
        (do (log/warn "Failed login attempt — wrong password for:" username)
+           (lockout/record-failed-attempt! ds user lockout-config registry)
            (metrics/record-login! registry :failure)
            {:success false :error generic-error})
 
-       ;; Success
+       ;; Success — reset failed attempts counter
        :else
        (do (log/info "User logged in:" username)
+           (lockout/reset-failed-attempts! ds (:id user) lockout-config)
            (metrics/record-login! registry :success)
            {:success true
             :user {:id (:id user)

@@ -54,9 +54,18 @@
 
 (defn stage
   "Define a named pipeline stage containing steps.
-   Accepts individual steps, parallel groups, or conditional steps."
+   Accepts individual steps, parallel groups, or conditional steps.
+   First argument can optionally be a map of stage options (e.g. {:approval {...}})."
   [name & body]
-  (let [;; Flatten the body: parallel groups contribute :parallel? and :steps,
+  (let [;; Check if the first element of body is an options map (not a step/parallel group)
+        [opts body] (if (and (map? (first body))
+                             (not (:step-name (first body)))
+                             (not (:parallel? (first body)))
+                             (or (:approval (first body))
+                                 (:container (first body))))
+                      [(first body) (rest body)]
+                      [nil body])
+        ;; Flatten the body: parallel groups contribute :parallel? and :steps,
         ;; when-branch returns vectors of steps, regular steps are maps
         items (reduce (fn [acc item]
                         (cond
@@ -73,7 +82,9 @@
                           :else acc))
                       {:stage-name name :parallel? false :steps []}
                       body)]
-    items))
+    (cond-> items
+      (:approval opts)  (assoc :approval (:approval opts))
+      (:container opts) (assoc :container (:container opts)))))
 
 ;; --- Post-build actions ---
 

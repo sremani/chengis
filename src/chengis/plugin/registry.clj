@@ -9,12 +9,13 @@
 ;; ---------------------------------------------------------------------------
 
 (defonce ^:private registry
-  (atom {:plugins           {}   ;; name -> descriptor
-         :step-executors    {}   ;; type-keyword -> StepExecutor instance
-         :pipeline-formats  {}   ;; format-name -> PipelineFormat instance
-         :notifiers         {}   ;; type-keyword -> Notifier instance
-         :artifact-handlers {}   ;; handler-name -> ArtifactHandler instance
-         :scm-providers     {}}));; type-keyword -> ScmProvider instance
+  (atom {:plugins            {}   ;; name -> descriptor
+         :step-executors     {}   ;; type-keyword -> StepExecutor instance
+         :pipeline-formats   {}   ;; format-name -> PipelineFormat instance
+         :notifiers          {}   ;; type-keyword -> Notifier instance
+         :artifact-handlers  {}   ;; handler-name -> ArtifactHandler instance
+         :scm-providers      {}   ;; type-keyword -> ScmProvider instance
+         :status-reporters   {}}));; type-keyword -> ScmStatusReporter instance
 
 ;; ---------------------------------------------------------------------------
 ;; Plugin registration
@@ -131,6 +132,31 @@
   (get-in @registry [:scm-providers scm-type]))
 
 ;; ---------------------------------------------------------------------------
+;; SCM Status Reporters
+;; ---------------------------------------------------------------------------
+
+(defn register-status-reporter!
+  "Register an SCM status reporter for a given provider (e.g., :github, :gitlab)."
+  [provider-type reporter]
+  (log/debug "Registering status reporter:" provider-type)
+  (swap! registry assoc-in [:status-reporters provider-type] reporter))
+
+(defn get-status-reporter
+  "Look up a status reporter by provider type."
+  [provider-type]
+  (get-in @registry [:status-reporters provider-type]))
+
+(defn list-status-reporters
+  "List all registered status reporter types."
+  []
+  (keys (:status-reporters @registry)))
+
+(defn get-all-status-reporters
+  "Get all registered status reporters as a seq of [provider reporter]."
+  []
+  (seq (:status-reporters @registry)))
+
+;; ---------------------------------------------------------------------------
 ;; Introspection
 ;; ---------------------------------------------------------------------------
 
@@ -152,7 +178,8 @@
    :pipeline-formats  (vec (keys (:pipeline-formats @registry)))
    :notifiers         (vec (keys (:notifiers @registry)))
    :artifact-handlers (vec (keys (:artifact-handlers @registry)))
-   :scm-providers     (vec (keys (:scm-providers @registry)))})
+   :scm-providers     (vec (keys (:scm-providers @registry)))
+   :status-reporters  (vec (keys (:status-reporters @registry)))})
 
 ;; ---------------------------------------------------------------------------
 ;; Reset (for testing)
@@ -162,4 +189,5 @@
   "Clear the entire registry. Useful for testing."
   []
   (reset! registry {:plugins {} :step-executors {} :pipeline-formats {}
-                    :notifiers {} :artifact-handlers {} :scm-providers {}}))
+                    :notifiers {} :artifact-handlers {} :scm-providers {}
+                    :status-reporters {}}))

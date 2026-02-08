@@ -28,6 +28,11 @@
             [chengis.distributed.agent-registry :as agent-reg]
             [chengis.distributed.circuit-breaker :as cb]
             [chengis.distributed.build-queue :as bq]
+            [chengis.web.account-lockout :as lockout]
+            [chengis.db.approval-store :as approval-store]
+            [chengis.db.template-store :as template-store]
+            [chengis.web.views.approvals :as v-approvals]
+            [chengis.web.views.templates :as v-templates]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -400,10 +405,15 @@
 (defn login-submit [system]
   (fn [req]
     (let [ds (:db system)
+          config (:config system)
+          lockout-config (get-in config [:auth :lockout])
           params (:form-params req)
           username (get params "username")
           password (get params "password")
-          result (auth/login! ds username password (:metrics system))]
+          ip-address (or (:remote-addr req) "unknown")
+          result (auth/login! ds username password (:metrics system) lockout-config)]
+      ;; Log the login attempt for forensics
+      (lockout/log-login-attempt! ds username ip-address (:success result))
       (if (:success result)
         ;; Set session and redirect to dashboard
         {:status 303
@@ -640,6 +650,18 @@
           (log/info "Password reset for user" user-id "by:" (:username (auth/current-user req)))
           (render-users-page system req :message "Password updated"))))))
 
+(defn unlock-user-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          user-id (get-in req [:path-params :id])
+          target-user (user-store/get-user ds user-id)]
+      (if (nil? target-user)
+        (render-users-page system req :error "User not found")
+        (do
+          (lockout/unlock-account! ds user-id)
+          (log/info "Account unlocked:" (:username target-user) "by:" (:username (auth/current-user req)))
+          (render-users-page system req :message (str "Account '" (:username target-user) "' unlocked")))))))
+
 ;; ---------------------------------------------------------------------------
 ;; API Token management (all authenticated users)
 ;; ---------------------------------------------------------------------------
@@ -714,3 +736,183 @@
           (log/info "API token revoked:" token-id "by:" (:username user))
           {:status 303
            :headers {"Location" "/settings/tokens"}})))))
+
+;; ---------------------------------------------------------------------------
+;; Approval Gates
+;; ---------------------------------------------------------------------------
+
+(defn approvals-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          gates (try (approval-store/list-pending-gates ds) (catch Exception _ []))
+          pending-count (try (approval-store/count-pending-gates ds) (catch Exception _ 0))]
+      (html-response
+        (v-approvals/render {:gates gates
+                             :pending-count pending-count
+                             :csrf-token (csrf-token req)
+                             :user (auth/current-user req)
+                             :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn approve-gate-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          gate-id (get-in req [:path-params :id])
+          user (auth/current-user req)
+          gate (approval-store/get-gate ds gate-id)]
+      (cond
+        (nil? gate)
+        (not-found "Approval gate not found")
+
+        (not= "pending" (:status gate))
+        {:status 400
+         :headers {"Content-Type" "text/html; charset=utf-8"}
+         :body "<p>Gate is no longer pending.</p>"}
+
+        ;; Check if user has the required role
+        (not (auth/role-sufficient? (:role user) (keyword (:required-role gate))))
+        {:status 403
+         :headers {"Content-Type" "text/html; charset=utf-8"}
+         :body (str "<p>Insufficient role. Required: " (:required-role gate) "</p>")}
+
+        :else
+        (do
+          (approval-store/approve-gate! ds gate-id (:username user))
+          (log/info "Approval gate" gate-id "approved by" (:username user))
+          {:status 303
+           :headers {"Location" "/approvals"}})))))
+
+(defn reject-gate-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          gate-id (get-in req [:path-params :id])
+          user (auth/current-user req)
+          gate (approval-store/get-gate ds gate-id)]
+      (cond
+        (nil? gate)
+        (not-found "Approval gate not found")
+
+        (not= "pending" (:status gate))
+        {:status 400
+         :headers {"Content-Type" "text/html; charset=utf-8"}
+         :body "<p>Gate is no longer pending.</p>"}
+
+        :else
+        (do
+          (approval-store/reject-gate! ds gate-id (:username user))
+          (log/info "Approval gate" gate-id "rejected by" (:username user))
+          {:status 303
+           :headers {"Location" "/approvals"}})))))
+
+(defn api-pending-approvals [system]
+  (fn [_req]
+    (let [ds (:db system)
+          gates (try (approval-store/list-pending-gates ds) (catch Exception _ []))]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str gates)})))
+
+;; ---------------------------------------------------------------------------
+;; Pipeline Templates (admin only)
+;; ---------------------------------------------------------------------------
+
+(defn templates-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          templates (try (template-store/list-templates ds) (catch Exception _ []))]
+      (html-response
+        (v-templates/render {:templates templates
+                             :csrf-token (csrf-token req)
+                             :user (auth/current-user req)
+                             :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn template-new-page [system]
+  (fn [req]
+    (let [config (:config system)]
+      (html-response
+        (v-templates/render-form {:csrf-token (csrf-token req)
+                                  :user (auth/current-user req)
+                                  :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn create-template-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          params (:form-params req)
+          tname (get params "name")
+          description (get params "description")
+          format (get params "format" "edn")
+          content (get params "content")]
+      (cond
+        (str/blank? tname)
+        (html-response
+          (v-templates/render-form {:error "Template name is required"
+                                    :template {:description description :format format :content content}
+                                    :csrf-token (csrf-token req)
+                                    :user (auth/current-user req)
+                                    :auth-enabled (get-in (:config system) [:auth :enabled] false)}))
+
+        (str/blank? content)
+        (html-response
+          (v-templates/render-form {:error "Template content is required"
+                                    :template {:name tname :description description :format format}
+                                    :csrf-token (csrf-token req)
+                                    :user (auth/current-user req)
+                                    :auth-enabled (get-in (:config system) [:auth :enabled] false)}))
+
+        :else
+        (let [result (template-store/create-template! ds
+                       {:name tname
+                        :description description
+                        :format format
+                        :content content
+                        :created-by (:username (auth/current-user req))})]
+          (if result
+            (do
+              (log/info "Template created:" tname "by:" (:username (auth/current-user req)))
+              {:status 303 :headers {"Location" "/admin/templates"}})
+            (html-response
+              (v-templates/render-form {:error "Template name already exists"
+                                        :template {:name tname :description description :format format :content content}
+                                        :csrf-token (csrf-token req)
+                                        :user (auth/current-user req)
+                                        :auth-enabled (get-in (:config system) [:auth :enabled] false)}))))))))
+
+(defn template-edit-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          tname (get-in req [:path-params :name])
+          template (template-store/get-template-by-name ds tname)]
+      (if (nil? template)
+        (not-found "Template not found")
+        (html-response
+          (v-templates/render-form {:template template
+                                    :editing? true
+                                    :csrf-token (csrf-token req)
+                                    :user (auth/current-user req)
+                                    :auth-enabled (get-in config [:auth :enabled] false)}))))))
+
+(defn update-template-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          tname (get-in req [:path-params :name])
+          template (template-store/get-template-by-name ds tname)
+          params (:form-params req)]
+      (if (nil? template)
+        (not-found "Template not found")
+        (do
+          (template-store/update-template! ds (:id template)
+            {:description (get params "description")
+             :format (get params "format" "edn")
+             :content (get params "content")})
+          (log/info "Template updated:" tname "by:" (:username (auth/current-user req)))
+          {:status 303 :headers {"Location" "/admin/templates"}})))))
+
+(defn delete-template-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          template-id (get-in req [:path-params :id])]
+      (template-store/delete-template! ds template-id)
+      (log/info "Template deleted:" template-id "by:" (:username (auth/current-user req)))
+      {:status 303 :headers {"Location" "/admin/templates"}})))
