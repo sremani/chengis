@@ -532,6 +532,68 @@
 ;; Authorization URL (PKCE) Tests
 ;; ---------------------------------------------------------------------------
 
+;; ---------------------------------------------------------------------------
+;; Regression Tests (External Review Findings)
+;; ---------------------------------------------------------------------------
+
+(deftest callback-rejects-nil-state-test
+  (let [ds (conn/create-datasource test-db-path)
+        config {:oidc {:enabled true :issuer-url "https://idp.example.com"
+                       :client-id "chengis" :client-secret test-secret}}]
+
+    (testing "P1: both expected-state and actual-state nil → rejected (not bypass)"
+      (let [result (oidc/handle-callback ds config "code123" "http://callback"
+                                          nil nil nil nil)]
+        (is (false? (:success result)))
+        (is (str/includes? (:error result) "state mismatch"))))
+
+    (testing "P1: expected-state nil, actual-state present → rejected"
+      (let [result (oidc/handle-callback ds config "code123" "http://callback"
+                                          nil "some-state" nil nil)]
+        (is (false? (:success result)))
+        (is (str/includes? (:error result) "state mismatch"))))
+
+    (testing "P1: expected-state present, actual-state nil → rejected"
+      (let [result (oidc/handle-callback ds config "code123" "http://callback"
+                                          "some-state" nil nil nil)]
+        (is (false? (:success result)))
+        (is (str/includes? (:error result) "state mismatch"))))
+
+    (testing "P1: both empty strings → rejected"
+      (let [result (oidc/handle-callback ds config "code123" "http://callback"
+                                          "" "" nil nil)]
+        (is (false? (:success result)))
+        (is (str/includes? (:error result) "state mismatch"))))))
+
+(deftest jwt-rejects-four-segment-token-test
+  (let [opts {:client-secret test-secret}]
+
+    (testing "P2: JWT with 4 segments is rejected"
+      (is (nil? (oidc/decode-and-verify-jwt "a.b.c.d" opts))))
+
+    (testing "P2: JWT with 5 segments is rejected"
+      (is (nil? (oidc/decode-and-verify-jwt "a.b.c.d.e" opts))))))
+
+(deftest jwt-rejects-missing-exp-claim-test
+  (let [header {:alg "HS256" :typ "JWT"}
+        ;; Claims with no :exp field
+        claims-no-exp {:sub "user1"
+                       :iss "https://idp.example.com"
+                       :aud "chengis"
+                       :nonce "test-nonce"}
+        jwt (sign-hs256 header claims-no-exp test-secret)
+        opts {:issuer-url "https://idp.example.com"
+              :client-id "chengis"
+              :client-secret test-secret
+              :expected-nonce "test-nonce"}]
+
+    (testing "P2: JWT without exp claim is rejected"
+      (is (nil? (oidc/decode-and-verify-jwt jwt opts))))))
+
+;; ---------------------------------------------------------------------------
+;; Authorization URL (PKCE) Tests
+;; ---------------------------------------------------------------------------
+
 (deftest authorization-url-pkce-test
   (with-redefs [oidc/fetch-oidc-discovery
                 (fn [_] {:authorization_endpoint "https://idp.example.com/auth"})]

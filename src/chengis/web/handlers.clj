@@ -775,18 +775,33 @@
                              (sequential? v) (seq (remove str/blank? v))
                              :else nil))
               ;; CR-08: Validate scopes against known valid scopes (reject unknown)
+              ;; P1 fix: if user submitted scopes but ALL are invalid, reject rather
+              ;; than silently creating a full-access token (empty vec → nil → NULL scopes)
               scopes-validated (when scopes-raw
-                                 (filterv #(contains? auth/valid-scopes %) scopes-raw))
-              result (user-store/create-api-token! ds {:user-id (:id user)
-                                                       :name token-name
-                                                       :expires-at expires-at
-                                                       :scopes scopes-validated})]
-          (try (metrics/record-token-generated! registry) (catch Exception _))
-          (log/info "API token generated:" token-name "for user:" (:username user))
-          ;; Store new token in session flash (never in URL — prevents token leaking via referer/logs)
-          {:status 303
-           :headers {"Location" "/settings/tokens"}
-           :session (assoc (:session req) :flash-new-token (:token result))})))))
+                                 (filterv #(contains? auth/valid-scopes %) scopes-raw))]
+          ;; P1: If scopes were submitted but all were invalid, show error
+          (if (and scopes-raw (empty? scopes-validated))
+            (do
+              (log/warn "Token creation rejected: all submitted scopes invalid"
+                        {:scopes-raw scopes-raw :user (:username user)})
+              (let [tokens (user-store/list-api-tokens ds (:id user))]
+                (html-response
+                  (v-tokens/render
+                    {:tokens tokens
+                     :error "None of the selected scopes are valid"
+                     :csrf-token (csrf-token req)
+                     :user user
+                     :auth-enabled (get-in (:config system) [:auth :enabled] false)}))))
+            (let [result (user-store/create-api-token! ds {:user-id (:id user)
+                                                           :name token-name
+                                                           :expires-at expires-at
+                                                           :scopes scopes-validated})]
+              (try (metrics/record-token-generated! registry) (catch Exception _))
+              (log/info "API token generated:" token-name "for user:" (:username user))
+              ;; Store new token in session flash (never in URL — prevents token leaking via referer/logs)
+              {:status 303
+               :headers {"Location" "/settings/tokens"}
+               :session (assoc (:session req) :flash-new-token (:token result))})))))))
 
 (defn revoke-token-handler [system]
   (fn [req]

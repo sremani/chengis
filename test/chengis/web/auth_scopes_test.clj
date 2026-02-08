@@ -181,3 +181,33 @@
     (is (set? auth/valid-scopes))
     (is (contains? auth/valid-scopes "build:trigger"))
     (is (contains? auth/valid-scopes "admin:*"))))
+
+;; ---------------------------------------------------------------------------
+;; Regression Tests (External Review Findings)
+;; ---------------------------------------------------------------------------
+
+(deftest all-invalid-scopes-creates-full-access-token-vulnerability-test
+  (let [ds (conn/create-datasource test-db-path)
+        user (user-store/create-user! ds {:username "scopetest" :password "pass123" :role "developer"})]
+
+    (testing "P1: empty scopes vector → nil scopes-json → full access token (the bug)"
+      ;; This demonstrates why the handler must reject all-invalid scopes:
+      ;; passing an empty vector to create-api-token! results in a full-access token
+      (let [result (user-store/create-api-token! ds {:user-id (:id user)
+                                                      :name "empty-vec-token"
+                                                      :scopes []})
+            found (user-store/find-api-token-user ds (:token result))]
+        ;; The token was stored with NULL scopes (full access) because (seq []) = nil
+        (is (nil? (:token-scopes found)))
+        (is (true? (auth/scope-sufficient? found "admin:*")))
+        (is (true? (auth/scope-sufficient? found "build:trigger")))))
+
+    (testing "P1: scope filtering must reject, not pass empty vector to create-api-token!"
+      ;; Simulate what the handler SHOULD do: validate and reject
+      (let [scopes-raw ["fake:scope" "bogus:perm"]
+            valid (filterv #(contains? auth/valid-scopes %) scopes-raw)]
+        ;; All invalid scopes filtered → empty vector
+        (is (empty? valid))
+        ;; The handler now detects this and shows an error instead of creating a token
+        ;; This test verifies the filtering logic works correctly
+        (is (= [] valid))))))

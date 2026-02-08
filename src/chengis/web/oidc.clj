@@ -329,8 +329,9 @@
   [jwt-str {:keys [issuer-url client-id client-secret expected-nonce jwks-uri]}]
   (try
     (let [parts (str/split jwt-str #"\.")
-          _ (when (< (count parts) 3)
-              (throw (ex-info "JWT must have 3 parts" {:parts (count parts)})))
+          ;; P2 fix: enforce exactly 3 parts (reject 4+ segment tokens)
+          _ (when (not= (count parts) 3)
+              (throw (ex-info "JWT must have exactly 3 parts" {:parts (count parts)})))
           header (decode-jwt-part (nth parts 0))
           claims (decode-jwt-part (nth parts 1))
           signature-bytes (decode-base64url (nth parts 2))
@@ -367,13 +368,14 @@
 
         ;; --- Claims validation (CR-02) ---
 
-        ;; Check expiry
+        ;; Check expiry — P2 fix: exp is mandatory per OIDC Core spec §2
         (let [now-epoch (/ (System/currentTimeMillis) 1000)]
-          (when-let [exp (:exp claims)]
-            (when (<= exp now-epoch)
-              (throw (ex-info "JWT has expired" {:exp exp :now now-epoch}))))
+          (when-not (:exp claims)
+            (throw (ex-info "JWT missing required exp claim" {:claims-keys (keys claims)})))
+          (when (<= (:exp claims) now-epoch)
+            (throw (ex-info "JWT has expired" {:exp (:exp claims) :now now-epoch})))
 
-          ;; Check not-before
+          ;; Check not-before (optional claim)
           (when-let [nbf (:nbf claims)]
             (when (> nbf (+ now-epoch 60)) ;; 60s clock skew tolerance
               (throw (ex-info "JWT not yet valid" {:nbf nbf :now now-epoch})))))
@@ -534,9 +536,14 @@
    Returns {:success true :user user-map} or {:success false :error msg}."
   [ds config code callback-url expected-state actual-state expected-nonce code-verifier]
   (cond
-    ;; State mismatch — possible CSRF attack
-    (not= expected-state actual-state)
-    (do (log/warn "OIDC state mismatch — possible CSRF attack")
+    ;; State mismatch or missing — possible CSRF attack
+    ;; P1 fix: require both values to be present (prevents nil=nil bypass)
+    (or (str/blank? expected-state)
+        (str/blank? actual-state)
+        (not= expected-state actual-state))
+    (do (log/warn "OIDC state mismatch — possible CSRF attack"
+                  {:expected-present (some? expected-state)
+                   :actual-present (some? actual-state)})
         {:success false :error "Authentication failed: state mismatch"})
 
     ;; Missing code
