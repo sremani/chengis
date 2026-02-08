@@ -264,20 +264,29 @@
 
 (defn- try-session-auth
   "Try to authenticate via session cookie. Returns user map or nil.
-   Validates session_version against the DB to enforce password-reset invalidation."
+   Validates active status and session_version against the DB to enforce
+   deactivation and password-reset invalidation."
   [req ds]
   (when-let [session-user (get-in req [:session :user])]
     (if-let [user-id (:id session-user)]
-      ;; Verify session version matches the DB to enforce password-change invalidation
+      ;; Verify user is active and session version matches the DB
       (if-let [db-user (user-store/get-user ds user-id)]
-        (let [session-version (or (:session-version session-user) 0)
-              db-version (or (:session-version db-user) 0)]
-          (if (= session-version db-version)
-            session-user
-            (do (log/info "Session invalidated for" (:username session-user)
-                          "— session version mismatch (session:" session-version
-                          "db:" db-version ")")
-                nil)))
+        (cond
+          ;; User deactivated — reject
+          (and (some? (:active db-user)) (zero? (:active db-user)))
+          (do (log/info "Session rejected — user deactivated:" (:username session-user))
+              nil)
+
+          ;; Session version mismatch — reject
+          (not= (or (:session-version session-user) 0)
+                (or (:session-version db-user) 0))
+          (do (log/info "Session invalidated for" (:username session-user)
+                        "— session version mismatch")
+              nil)
+
+          ;; All checks pass
+          :else
+          session-user)
         ;; User deleted from DB
         nil)
       ;; No user-id in session (legacy/anonymous) — pass through
@@ -314,12 +323,16 @@
             nil)))))
 
 (defn- try-api-token-auth
-  "Try to authenticate via API token. Returns user map or nil."
+  "Try to authenticate via API token. Returns user map or nil.
+   Rejects tokens belonging to deactivated users."
   [ds token]
   (when-let [user (user-store/find-api-token-user ds token)]
-    {:id (:id user)
-     :username (:username user)
-     :role (keyword (:role user))}))
+    (if (and (some? (:active user)) (zero? (:active user)))
+      (do (log/info "API token rejected — user deactivated:" (:username user))
+          nil)
+      {:id (:id user)
+       :username (:username user)
+       :role (keyword (:role user))})))
 
 (defn wrap-auth
   "Ring middleware: authenticate the request.
