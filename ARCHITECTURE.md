@@ -37,9 +37,11 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
    +-------------+    +------+------+  +------+-----+      | Remote Agent|
                              |                |             |   (HTTP)    |
                       +------+------+  +------+------+     +-------------+
-                      |   SQLite    |  | babashka/   |
-                      |  (next.jdbc)|  |  process    |
-                      +-------------+  +------+------+
+                      |  Database   |  | babashka/   |
+                      | SQLite / PG |  |  process    |
+                      | (next.jdbc  |  +------+------+
+                      |  + HikariCP)|
+                      +-------------+
                                               |
                                        +------+------+
                                        |   Docker    |
@@ -398,7 +400,7 @@ Master (Chengis Web)          Agent Node 1           Agent Node 2
   Event Collector                Local Workspace        Local Workspace
   Circuit Breaker
   Orphan Monitor
-  SQLite DB
+  Database (SQLite / PostgreSQL)
 ```
 
 ### Communication Protocol
@@ -460,7 +462,7 @@ Is distributed enabled?
 
 - **Circuit breaker** — Wraps agent HTTP calls. Opens after N consecutive failures, half-opens after timeout for probe requests, closes on success
 - **Orphan monitor** — Periodically checks for builds dispatched to agents that have gone offline. Auto-fails orphaned builds after configurable timeout
-- **Build queue** — Persistent SQLite-backed queue ensures builds survive master restarts. Priority levels: `:high`, `:normal`, `:low`
+- **Build queue** — Persistent database-backed queue ensures builds survive master restarts. Priority levels: `:high`, `:normal`, `:low`
 
 ### Security
 
@@ -589,7 +591,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis uses SQLite with 22 migration versions:
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 22 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -658,11 +660,11 @@ Secrets are encrypted at rest using AES-256-GCM:
 ```
 Store Secret:
   plaintext -> AES-256-GCM encrypt (master key + random IV)
-              -> Base64(ciphertext) + Base64(IV) -> SQLite
+              -> Base64(ciphertext) + Base64(IV) -> Database
 
 Use Secret:
-  SQLite -> Base64 decode -> AES-256-GCM decrypt (master key + IV)
-         -> plaintext -> injected as env var
+  Database -> Base64 decode -> AES-256-GCM decrypt (master key + IV)
+           -> plaintext -> injected as env var
 
 Log Masking:
   All secret values registered with log masker

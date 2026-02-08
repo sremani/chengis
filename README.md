@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**283 tests | 1331 assertions | 0 failures**
+**319 tests | 1427 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -20,10 +20,10 @@ Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built 
 |---|---|---|
 | **Setup** | `lein run -- init && lein run serve` | Download WAR, configure JVM, set up reverse proxy, install plugins |
 | **Configuration** | Clojure DSL, EDN Chengisfile, or YAML workflows | Groovy/Declarative Jenkinsfile + XML job configs |
-| **Dependencies** | Single JAR + SQLite (zero external services) | Java + servlet container + plugin ecosystem |
+| **Dependencies** | Single JAR + SQLite (zero external services) or PostgreSQL for production | Java + servlet container + plugin ecosystem |
 | **Disk footprint** | ~30 MB uberjar | 400+ MB with common plugins |
 | **Live updates** | Built-in SSE streaming, zero JS | Requires page refresh or Blue Ocean plugin |
-| **Secrets** | AES-256-GCM encrypted at rest in SQLite | Credentials plugin + separate key store |
+| **Secrets** | AES-256-GCM encrypted at rest in database | Credentials plugin + separate key store |
 | **Pipeline as Code** | `Chengisfile` (EDN) or `chengis.yml` (YAML) | Jenkinsfile (Groovy DSL) |
 | **Containers** | Docker steps with per-step/stage/pipeline container config | Docker Pipeline plugin |
 | **Distributed** | Built-in HTTP master/agent with label-based dispatch | Master/agent with JNLP or SSH |
@@ -159,12 +159,13 @@ Build #1 — SUCCESS (8.3 sec)
 - **Build history** &mdash; Full log retention with stage/step breakdown and timing
 - **Alert system** &mdash; System health alerts with auto-resolve
 - **Data retention** &mdash; Automated cleanup scheduler for audit logs, webhook events, and old data
-- **Database backup** &mdash; Hot backup via SQLite `VACUUM INTO`, CLI commands, and admin UI download
+- **Database backup** &mdash; Hot backup via SQLite `VACUUM INTO` or `pg_dump` for PostgreSQL, CLI commands, and admin UI download
 - **Audit export** &mdash; Export audit logs as CSV or JSON for SIEM integration
 
 ### Persistence
 
-- **SQLite database** &mdash; Zero-config database with migration-based schema evolution (22 versions)
+- **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
+- **22 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -545,7 +546,13 @@ Agent:
 Chengis uses sensible defaults. Override via `resources/config.edn` or environment variables:
 
 ```clojure
-{:database   {:path "chengis.db"}
+{:database   {:type "sqlite"         ;; "sqlite" (default) or "postgresql"
+              :path "chengis.db"    ;; SQLite file path
+              ;; PostgreSQL settings (used when :type "postgresql"):
+              ;; :host "localhost" :port 5432 :dbname "chengis"
+              ;; :user "chengis" :password "secret"
+              ;; :pool {:minimum-idle 2 :maximum-pool-size 10}
+              }
  :workspace  {:root "workspaces"}
  :server     {:port 8080 :host "0.0.0.0"}
  :log        {:level :info}
@@ -619,7 +626,13 @@ All configuration can be overridden with `CHENGIS_*` environment variables. Nest
 | `CHENGIS_SERVER_PORT` | `[:server :port]` | `8080` |
 | `CHENGIS_AUTH_ENABLED` | `[:auth :enabled]` | `true` |
 | `CHENGIS_AUTH_JWT_SECRET` | `[:auth :jwt-secret]` | `my-secret` |
+| `CHENGIS_DATABASE_TYPE` | `[:database :type]` | `postgresql` |
 | `CHENGIS_DATABASE_PATH` | `[:database :path]` | `/data/chengis.db` |
+| `CHENGIS_DATABASE_HOST` | `[:database :host]` | `localhost` |
+| `CHENGIS_DATABASE_PORT` | `[:database :port]` | `5432` |
+| `CHENGIS_DATABASE_NAME` | `[:database :dbname]` | `chengis` |
+| `CHENGIS_DATABASE_USER` | `[:database :user]` | `chengis` |
+| `CHENGIS_DATABASE_PASSWORD` | `[:database :password]` | `secret` |
 | `CHENGIS_SECRETS_MASTER_KEY` | `[:secrets :master-key]` | `0123456789abcdef...` |
 | `CHENGIS_DISTRIBUTED_ENABLED` | `[:distributed :enabled]` | `true` |
 | `CHENGIS_METRICS_ENABLED` | `[:metrics :enabled]` | `true` |
@@ -679,8 +692,8 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # SQLite persistence layer (15 files)
-      connection.clj        # SQLite connection pool
+    db/                     # Database persistence layer (15 files)
+      connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
       build_store.clj       # Build + stage + step CRUD
@@ -780,7 +793,9 @@ chengis/
     util.clj                # Shared utilities
     core.clj                # Entry point
   test/chengis/             # Test suite (47 files)
-  resources/migrations/     # SQLite migrations (22 versions)
+  resources/migrations/     # Database migrations (22 versions × 2 drivers)
+    sqlite/                 # SQLite-dialect migrations
+    postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
   benchmarks/               # Performance benchmark suite
   Dockerfile                # Multi-stage Docker build
@@ -796,8 +811,9 @@ chengis/
 | Language | Clojure 1.12 | Core language |
 | Concurrency | core.async | Parallel steps, SSE event bus |
 | Process execution | babashka/process | Shell command runner |
-| Database | SQLite + next.jdbc + HoneySQL | Persistence |
-| Migrations | Migratus | Schema evolution (22 versions) |
+| Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
+| Connection pool | HikariCP | PostgreSQL connection pooling |
+| Migrations | Migratus | Schema evolution (22 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -818,7 +834,7 @@ chengis/
 | Aspect | Chengis | Jenkins |
 |--------|---------|---------|
 | Runtime | Single JVM, optional agent nodes | Master + optional agent nodes |
-| Storage | Embedded SQLite | XML files on filesystem |
+| Storage | SQLite (default) or PostgreSQL | XML files on filesystem |
 | UI rendering | Server-side (Hiccup + htmx) | Server-side (Jelly/Groovy) + client JS |
 | Plugin system | Protocol-based (10 builtin plugins) | 1800+ plugins, complex classloader |
 | Pipeline formats | Clojure DSL + EDN + YAML | Groovy DSL (scripted/declarative) |
@@ -856,7 +872,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **283 tests, 1331 assertions, 0 failures**
+Current test suite: **319 tests, 1427 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction

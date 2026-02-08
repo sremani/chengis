@@ -2,6 +2,60 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [0.7.0] - 2026
+
+### PostgreSQL Dual-Driver Support
+
+**Database Abstraction**
+- Config-driven database selection: `{:type "sqlite"}` (default) or `{:type "postgresql"}`
+- SQLite remains zero-config default for development and small teams
+- PostgreSQL for production deployments with connection pooling
+- Backward-compatible API: `create-datasource` and `migrate!` accept both string paths and config maps
+
+**HikariCP Connection Pooling**
+- PostgreSQL connections managed via HikariCP with configurable pool size
+- Pool defaults: 10 max connections, auto-tuned for production workloads
+- Graceful shutdown via `close-datasource!` on server stop
+
+**Portable SQL**
+- `INSERT OR IGNORE` → `ON CONFLICT DO NOTHING` (works on both SQLite 3.24+ and PostgreSQL)
+- `datetime('now')` → `CURRENT_TIMESTAMP` across all runtime queries
+- `INTEGER PRIMARY KEY AUTOINCREMENT` → `SERIAL PRIMARY KEY` in PostgreSQL migrations
+- `TEXT` timestamps → `TIMESTAMPTZ` in PostgreSQL migrations
+
+**Separate Migration Directories**
+- `resources/migrations/sqlite/` — 22 versions (moved from `resources/migrations/`)
+- `resources/migrations/postgresql/` — 22 versions (new, dialect-specific DDL)
+- Migratus auto-selects directory based on configured `:type`
+
+**Conditional Backup Strategy**
+- SQLite: `VACUUM INTO` (unchanged)
+- PostgreSQL: `pg_dump` via shell with `PGPASSWORD` environment variable
+- `backup!` auto-detects database type from datasource
+
+**New Environment Variables**
+- `CHENGIS_DATABASE_TYPE` — `"sqlite"` or `"postgresql"`
+- `CHENGIS_DATABASE_HOST` — PostgreSQL host (default `localhost`)
+- `CHENGIS_DATABASE_PORT` — PostgreSQL port (default `5432`)
+- `CHENGIS_DATABASE_NAME` — PostgreSQL database name
+- `CHENGIS_DATABASE_USER` — PostgreSQL user
+- `CHENGIS_DATABASE_PASSWORD` — PostgreSQL password
+
+**New Dependencies**
+- `org.postgresql/postgresql 42.7.3`
+- `hikari-cp/hikari-cp 3.1.0`
+
+### Security Hardening (HF-01–03)
+- [HF-01] Whitespace-only tokens rejected as invalid authentication
+- [HF-02] Webhook saturation test: validates system handles high-volume webhook events
+- [HF-03] Metrics integration test: validates Prometheus endpoint under authenticated requests
+
+### Test Suite
+- 319 tests, 1427 assertions — all passing
+- New coverage: whitespace token rejection, webhook saturation, metrics integration
+
+---
+
 ## [0.6.0] - 2026
 
 ### Deployment Readiness & Operational Tooling
@@ -388,4 +442,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 283 passed, 1331 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 319 passed, 1427 assertions | varies | SUCCESS |

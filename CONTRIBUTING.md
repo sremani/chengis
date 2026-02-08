@@ -11,7 +11,8 @@ Thank you for your interest in contributing to Chengis! This guide covers everyt
 | Java | 21+ | Runtime (required for `--enable-native-access`) |
 | Leiningen | 2.9+ | Clojure build tool |
 | Git | 2.x | Source control + build integration |
-| SQLite | 3.x | Ships with the JDBC driver, no install needed |
+| SQLite | 3.x | Ships with the JDBC driver, no install needed (default) |
+| PostgreSQL | 14+ | Optional — for production deployments (configure via `CHENGIS_DATABASE_TYPE=postgresql`) |
 
 Optional (for running example pipelines):
 - Maven 3.x (for Java demo pipeline)
@@ -68,7 +69,7 @@ src/chengis/
     output.clj          # Formatted output helpers
 
   db/                   # Database layer (15 files)
-    connection.clj      # SQLite connection pool
+    connection.clj      # SQLite + PostgreSQL connection pool (HikariCP)
     migrate.clj         # Migratus migration runner
     job_store.clj       # Job CRUD
     build_store.clj     # Build + stage + step CRUD
@@ -141,7 +142,7 @@ src/chengis/
     agent_registry.clj  # In-memory agent registry
     dispatcher.clj      # Build dispatch (local vs remote)
     master_api.clj      # Master API handlers
-    build_queue.clj     # Persistent build queue (SQLite-backed)
+    build_queue.clj     # Persistent build queue (database-backed)
     queue_processor.clj # Queue processing worker
     circuit_breaker.clj # Agent communication circuit breaker
     orphan_monitor.clj  # Orphaned build detection
@@ -195,7 +196,7 @@ lein test chengis.engine.executor-test
 lein test chengis.dsl.chengisfile-test
 ```
 
-The test suite currently has **283 tests with 1331 assertions**. All tests must pass before submitting a PR.
+The test suite currently has **319 tests with 1427 assertions**. All tests must pass before submitting a PR.
 
 ### Test Organization
 
@@ -270,7 +271,7 @@ lein run -- init
 ### Migration Conventions
 
 - Use `IF NOT EXISTS` / `IF EXISTS` for idempotency
-- Use `TEXT` for timestamps (SQLite stores as ISO-8601 strings)
+- Use `TEXT` for timestamps in SQLite migrations (`TIMESTAMPTZ` in PostgreSQL migrations)
 - Use `TEXT` for IDs (UUIDs stored as strings)
 - Always provide both up and down migrations
 
@@ -382,7 +383,7 @@ Key design choices and their rationale:
 
 | Decision | Rationale |
 |----------|-----------|
-| SQLite over PostgreSQL | Zero setup, single-file database, sufficient for single-node CI |
+| SQLite default + PostgreSQL option | Zero setup for dev (SQLite), production-grade scaling with PostgreSQL via config switch |
 | htmx over React/ClojureScript | No build step, no JS bundler, simpler stack |
 | SSE over WebSocket | Simpler protocol, sufficient for unidirectional streaming |
 | core.async over Java threads | Lightweight channels, pub/sub for event distribution |
