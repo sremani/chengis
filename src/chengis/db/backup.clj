@@ -1,9 +1,12 @@
 (ns chengis.db.backup
   "Database backup and restore utilities.
-   Uses SQLite's VACUUM INTO for safe hot backups of a running database."
+   SQLite: Uses VACUUM INTO for safe hot backups of a running database.
+   PostgreSQL: Uses pg_dump for logical backups."
   (:require [next.jdbc :as jdbc]
+            [chengis.db.connection :as conn]
             [clojure.java.io :as io]
-            [taoensso.timbre :as log])
+            [taoensso.timbre :as log]
+            [babashka.process :as proc])
   (:import [java.time LocalDateTime]
            [java.time.format DateTimeFormatter]
            [java.io File]))
@@ -13,23 +16,27 @@
 
 (defn generate-backup-path
   "Generate a timestamped backup filename in the given directory.
+   Extension is .db for SQLite, .sql for PostgreSQL.
    Returns the full path string."
-  [base-dir]
-  (let [timestamp (.format (LocalDateTime/now) backup-timestamp-fmt)
-        filename (str "chengis-backup-" timestamp ".db")]
-    (.getAbsolutePath (io/file base-dir filename))))
+  ([base-dir]
+   (generate-backup-path base-dir :sqlite))
+  ([base-dir db-type]
+   (let [timestamp (.format (LocalDateTime/now) backup-timestamp-fmt)
+         ext (if (= db-type :postgresql) ".sql" ".db")
+         filename (str "chengis-backup-" timestamp ext)]
+     (.getAbsolutePath (io/file base-dir filename)))))
 
-(defn backup!
-  "Create a safe hot backup of the SQLite database using VACUUM INTO.
-   This is safe to call while the database is in use (WAL mode compatible).
-   Returns {:path output-path :size-bytes N :timestamp ISO-string}."
+;; ---------------------------------------------------------------------------
+;; SQLite backup
+;; ---------------------------------------------------------------------------
+
+(defn- backup-sqlite!
+  "Create a safe hot backup of the SQLite database using VACUUM INTO."
   [ds output-path]
   (let [out-file (io/file output-path)]
-    ;; Ensure parent directory exists
     (when-let [parent (.getParentFile out-file)]
       (.mkdirs parent))
-    ;; VACUUM INTO creates a clean, defragmented copy
-    (log/info "Creating database backup:" output-path)
+    (log/info "Creating SQLite backup:" output-path)
     (jdbc/execute! ds [(str "VACUUM INTO '" (.getAbsolutePath out-file) "'")])
     (let [size (.length out-file)]
       (log/info "Backup complete:" output-path "(" size "bytes)")
@@ -37,8 +44,58 @@
        :size-bytes size
        :timestamp (str (java.time.Instant/now))})))
 
+;; ---------------------------------------------------------------------------
+;; PostgreSQL backup
+;; ---------------------------------------------------------------------------
+
+(defn- backup-postgresql!
+  "Create a logical backup of PostgreSQL using pg_dump.
+   Requires pg_dump to be available on PATH.
+   Uses the system config to derive connection parameters."
+  [system output-path]
+  (let [db-cfg (get-in system [:config :database])
+        out-file (io/file output-path)]
+    (when-let [parent (.getParentFile out-file)]
+      (.mkdirs parent))
+    (log/info "Creating PostgreSQL backup via pg_dump:" output-path)
+    (let [result (proc/shell {:out output-path
+                              :extra-env {"PGPASSWORD" (get db-cfg :password "")}}
+                   "pg_dump"
+                   "-h" (get db-cfg :host "localhost")
+                   "-p" (str (get db-cfg :port 5432))
+                   "-U" (get db-cfg :user "chengis")
+                   "-d" (get db-cfg :dbname "chengis")
+                   "--no-owner" "--no-acl")]
+      (when (not= 0 (:exit result))
+        (throw (ex-info "pg_dump failed" {:exit (:exit result)
+                                          :stderr (slurp (:err result))})))
+      (let [size (.length out-file)]
+        (log/info "Backup complete:" output-path "(" size "bytes)")
+        {:path (.getAbsolutePath out-file)
+         :size-bytes size
+         :timestamp (str (java.time.Instant/now))}))))
+
+;; ---------------------------------------------------------------------------
+;; Public API
+;; ---------------------------------------------------------------------------
+
+(defn backup!
+  "Create a backup of the database.
+   For SQLite: uses VACUUM INTO (safe during live traffic).
+   For PostgreSQL: uses pg_dump (requires pg_dump on PATH).
+   Returns {:path output-path :size-bytes N :timestamp ISO-string}."
+  ([ds output-path]
+   ;; Legacy 2-arity: auto-detect from datasource type
+   (backup-sqlite! ds output-path))
+  ([ds output-path system]
+   ;; 3-arity: use system to determine DB type
+   (if (= :postgresql (conn/datasource-type ds))
+     (backup-postgresql! system output-path)
+     (backup-sqlite! ds output-path))))
+
 (defn restore!
   "Restore a database from a backup file by copying it to the target path.
+   For SQLite only — PostgreSQL restore should use psql directly.
    Safety: refuses to overwrite unless force? is true.
    Returns {:restored-from backup-path :target target-path}."
   [backup-path target-path & {:keys [force?] :or {force? false}}]
@@ -66,7 +123,8 @@
            (filter (fn [^File f]
                      (and (.isFile f)
                           (.startsWith (.getName f) "chengis-backup-")
-                          (.endsWith (.getName f) ".db"))))
+                          (or (.endsWith (.getName f) ".db")
+                              (.endsWith (.getName f) ".sql")))))
            (sort-by #(.lastModified ^File %) >)
            (mapv (fn [^File f]
                    {:path (.getAbsolutePath f)

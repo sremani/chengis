@@ -98,7 +98,7 @@
       (jdbc/execute-one! ds
         (sql/format {:update :secrets
                      :set {:encrypted-value encrypted
-                           :updated-at [:raw "datetime('now')"]}
+                           :updated-at [:raw "CURRENT_TIMESTAMP"]}
                      :where [:and [:= :scope scope] [:= :name secret-name]]}))
       ;; Insert
       (jdbc/execute-one! ds

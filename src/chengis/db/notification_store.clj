@@ -24,7 +24,7 @@
   (jdbc/execute-one! ds
     (sql/format {:update :build-notifications
                  :set (cond-> {:status (name status)}
-                        (= status :sent) (assoc :sent-at [:raw "datetime('now')"])
+                        (= status :sent) (assoc :sent-at [:raw "CURRENT_TIMESTAMP"])
                         details          (assoc :details details))
                  :where [:= :id notification-id]})))
 

@@ -53,9 +53,10 @@
         _ (logging/configure-logging! cfg)
         ;; Validate configuration before proceeding
         _ (validate-config! cfg)
-        db-path (get-in cfg [:database :path])
-        _ (migrate/migrate! db-path)
-        ds (conn/create-datasource db-path)
+        db-cfg (get cfg :database)
+        db-path (get db-cfg :path)
+        _ (migrate/migrate! db-cfg)
+        ds (conn/create-datasource db-cfg)
         ;; Initialize metrics registry (nil when disabled — all record-* fns no-op)
         metrics-registry (when (get-in cfg [:metrics :enabled])
                            (try

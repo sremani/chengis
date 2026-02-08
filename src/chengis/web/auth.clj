@@ -111,7 +111,7 @@
   [ds jti user-id expires-at reason]
   (try
     (jdbc/execute-one! ds
-      ["INSERT OR IGNORE INTO jwt_blacklist (jti, user_id, expires_at, reason) VALUES (?, ?, ?, ?)"
+      ["INSERT INTO jwt_blacklist (jti, user_id, expires_at, reason) VALUES (?, ?, ?, ?) ON CONFLICT (jti) DO NOTHING"
        jti user-id expires-at reason])
     (catch Exception e
       (log/warn "Failed to blacklist JWT:" (.getMessage e)))))
@@ -132,7 +132,7 @@
   "Remove expired entries from the JWT blacklist."
   [ds]
   (let [result (jdbc/execute-one! ds
-                 ["DELETE FROM jwt_blacklist WHERE expires_at < datetime('now')"])]
+                 ["DELETE FROM jwt_blacklist WHERE expires_at < CURRENT_TIMESTAMP"])]
     (:next.jdbc/update-count result 0)))
 
 (defn verify-jwt

@@ -4,7 +4,17 @@
             [clojure.string :as str]))
 
 (def default-config
-  {:database {:path "chengis.db"}
+  {:database {:type "sqlite"    ;; "sqlite" or "postgresql"
+              :path "chengis.db"  ;; SQLite file path (used when type=sqlite)
+              ;; PostgreSQL connection (used when type=postgresql)
+              :host "localhost"
+              :port 5432
+              :dbname "chengis"
+              :user "chengis"
+              :password nil
+              ;; HikariCP pool settings (PostgreSQL only)
+              :pool {:minimum-idle 2
+                     :maximum-pool-size 10}}
    :workspace {:root "workspaces"}
    :scheduler {:enabled false}
    :server {:port 8080 :host "0.0.0.0"}
@@ -101,7 +111,13 @@
 (def ^:private env-key-map
   "Explicit mapping of environment variable names to config paths.
    Only variables listed here are recognized — no automatic wildcard scanning."
-  {"CHENGIS_DATABASE_PATH"                      [:database :path]
+  {"CHENGIS_DATABASE_TYPE"                       [:database :type]
+   "CHENGIS_DATABASE_PATH"                      [:database :path]
+   "CHENGIS_DATABASE_HOST"                      [:database :host]
+   "CHENGIS_DATABASE_PORT"                      [:database :port]
+   "CHENGIS_DATABASE_NAME"                      [:database :dbname]
+   "CHENGIS_DATABASE_USER"                      [:database :user]
+   "CHENGIS_DATABASE_PASSWORD"                  [:database :password]
    "CHENGIS_WORKSPACE_ROOT"                     [:workspace :root]
    "CHENGIS_ARTIFACTS_ROOT"                     [:artifacts :root]
    "CHENGIS_SERVER_PORT"                        [:server :port]
@@ -189,3 +205,13 @@
     (if (.isAbsolute f)
       (.getAbsolutePath f)
       (.getAbsolutePath (io/file base path)))))
+
+(defn sqlite?
+  "Returns true if the database config specifies SQLite (the default)."
+  [cfg]
+  (not= "postgresql" (get-in cfg [:database :type])))
+
+(defn postgresql?
+  "Returns true if the database config specifies PostgreSQL."
+  [cfg]
+  (= "postgresql" (get-in cfg [:database :type])))

@@ -8,6 +8,8 @@
                  [com.github.seancorfield/next.jdbc "1.3.939"]
                  [com.github.seancorfield/honeysql "2.6.1147"]
                  [org.xerial/sqlite-jdbc "3.45.1.0"]
+                 [org.postgresql/postgresql "42.7.3"]
+                 [hikari-cp/hikari-cp "3.1.0"]
                  [migratus/migratus "1.5.6"]
                  [com.taoensso/timbre "6.6.1"]
                  [jarohen/chime "0.3.3"]
