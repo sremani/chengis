@@ -20,13 +20,14 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- check-auth
-  "Validate the auth token from request headers."
+  "Validate the auth token from request headers.
+   Requires a configured token — rejects all requests if token is nil."
   [req system]
   (let [expected (get-in system [:config :distributed :auth-token])
         provided (some-> (get-in req [:headers "authorization"])
                          (str/replace #"^Bearer " ""))]
-    (or (nil? expected) ;; No auth required if no token configured
-        (= expected provided))))
+    (and (some? expected)
+         (= expected provided))))
 
 (defn- json-response [status body]
   {:status status

@@ -389,3 +389,91 @@
   (testing "returns user when present"
     (let [user {:id "u1" :username "test" :role :admin}]
       (is (= user (auth/current-user {:auth/user user}))))))
+
+;; ---------------------------------------------------------------------------
+;; Role downgrade invalidation tests (CQ-01)
+;; ---------------------------------------------------------------------------
+
+(deftest role-downgrade-invalidates-session-test
+  (let [ds (conn/create-datasource test-db-path)
+        config {:auth {:enabled true
+                       :jwt-secret "test-jwt-secret-32-chars-min!!!!!"}}
+        system {:config config :db ds}
+        admin-handler (auth/wrap-require-role :admin
+                        (fn [req] {:status 200 :body (:auth/user req)}))
+        wrapped (auth/wrap-auth admin-handler system)
+        ;; Create admin user
+        user (user-store/create-user! ds {:username "admin-alice" :password "password1" :role "admin"})
+        db-user (user-store/get-user-by-username ds "admin-alice")
+        session-user {:id (:id user) :username "admin-alice" :role :admin
+                      :session-version (:session-version db-user)}]
+
+    (testing "admin session can access admin route"
+      (let [resp (wrapped {:uri "/admin-action" :request-method :get :headers {}
+                           :session {:user session-user}})]
+        (is (= 200 (:status resp)))))
+
+    ;; Downgrade admin to viewer
+    (user-store/update-user! ds (:id user) {:role "viewer"})
+
+    (testing "session is rejected after role downgrade (session-version bumped)"
+      (let [resp (wrapped {:uri "/admin-action" :request-method :get :headers {}
+                           :session {:user session-user}})]
+        ;; Session version was bumped by update-user!, so session is invalidated
+        ;; returning 303 redirect to login (unauthenticated non-API request)
+        (is (= 303 (:status resp)))))))
+
+(deftest role-downgrade-invalidates-jwt-test
+  (let [ds (conn/create-datasource test-db-path)
+        config {:auth {:enabled true
+                       :jwt-secret "test-jwt-secret-32-chars-min!!!!!"}}
+        system {:config config :db ds}
+        admin-handler (auth/wrap-require-role :admin
+                        (fn [req] {:status 200 :body (:auth/user req)}))
+        wrapped (auth/wrap-auth admin-handler system)
+        ;; Create admin user and generate JWT
+        user (user-store/create-user! ds {:username "admin-bob" :password "password1" :role "admin"})
+        db-user (user-store/get-user-by-username ds "admin-bob")
+        jwt-user {:id (:id user) :username "admin-bob" :role "admin"
+                  :session-version (:session-version db-user)}
+        token (auth/generate-jwt jwt-user config)]
+
+    (testing "admin JWT can access admin route"
+      (let [resp (wrapped {:uri "/api/admin-action" :request-method :get
+                           :headers {"authorization" (str "Bearer " token)
+                                     "accept" "application/json"}})]
+        (is (= 200 (:status resp)))))
+
+    ;; Downgrade admin to viewer
+    (user-store/update-user! ds (:id user) {:role "viewer"})
+
+    (testing "JWT is rejected after role downgrade (session-version bumped)"
+      (let [resp (wrapped {:uri "/api/admin-action" :request-method :get
+                           :headers {"authorization" (str "Bearer " token)
+                                     "accept" "application/json"}})]
+        ;; Session version was bumped → JWT invalidated → 401
+        (is (= 401 (:status resp)))))))
+
+;; ---------------------------------------------------------------------------
+;; Custom metrics path tests (CQ-06)
+;; ---------------------------------------------------------------------------
+
+(deftest custom-metrics-path-is-public-test
+  (let [ds (conn/create-datasource test-db-path)
+        config {:auth {:enabled true
+                       :jwt-secret "test-jwt-secret-32-chars-min!!!!!"}
+                :metrics {:path "/custom-metrics"
+                          :enabled true
+                          :auth-required false}}
+        system {:config config :db ds}
+        handler (fn [req] {:status 200 :body "ok"})
+        wrapped (auth/wrap-auth handler system)]
+
+    (testing "custom metrics path is public (no auth required)"
+      (let [resp (wrapped {:uri "/custom-metrics" :request-method :get :headers {}})]
+        (is (= 200 (:status resp)))))
+
+    (testing "default /metrics path requires auth when custom path is configured"
+      (let [resp (wrapped {:uri "/metrics" :request-method :get :headers {}})]
+        ;; /metrics is not a public path when custom path is set
+        (is (= 303 (:status resp)))))))

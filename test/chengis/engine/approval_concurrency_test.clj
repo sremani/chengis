@@ -1,10 +1,12 @@
 (ns chengis.engine.approval-concurrency-test
   "Concurrency tests for approval gate resolution.
-   Verifies single-winner semantics under concurrent approve/reject races."
+   Verifies single-winner semantics under concurrent approve/reject races.
+   Also tests fail-closed behavior when gate creation fails (CQ-02)."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [chengis.db.connection :as conn]
             [chengis.db.migrate :as migrate]
             [chengis.db.approval-store :as approval-store]
+            [chengis.engine.approval :as approval]
             [chengis.web.auth :as auth]
             [chengis.web.handlers :as handlers]
             [clojure.java.io :as io]))
@@ -153,3 +155,22 @@
         (is (= 1 winners) "Exactly one approve should succeed")
         (let [gate (approval-store/get-gate ds gate-id)]
           (is (= "approved" (:status gate))))))))
+
+;; ---------------------------------------------------------------------------
+;; Test 7: Approval gate fails closed on DB error (CQ-02)
+;; ---------------------------------------------------------------------------
+
+(deftest approval-gate-fails-closed-on-db-error-test
+  (testing "check-stage-approval! returns {:proceed false} when gate creation fails"
+    (let [ds (conn/create-datasource test-db-path)
+          system {:db ds :config {} :metrics nil}
+          build-ctx {:build-id "build-fail" :cancelled? (atom false)}
+          stage-def {:stage-name "deploy"
+                     :approval {:message "Approve deploy?" :role "admin"}}]
+      ;; Mock create-gate! to return nil (simulates DB failure)
+      (with-redefs [approval-store/create-gate! (fn [_ _] nil)]
+        (let [result (approval/check-stage-approval! system build-ctx stage-def)]
+          (is (false? (:proceed result))
+              "Must fail closed — proceed must be false when gate creation fails")
+          (is (string? (:reason result))
+              "Should include a reason string"))))))

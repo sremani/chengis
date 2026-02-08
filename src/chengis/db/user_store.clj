@@ -69,11 +69,17 @@
     {:builder-fn rs/as-unqualified-kebab-maps}))
 
 (defn update-user!
-  "Update a user's role and/or active status."
+  "Update a user's role and/or active status.
+   Bumps session_version on role or active changes to invalidate
+   existing JWTs and force session re-read from DB."
   [ds user-id {:keys [role active]}]
   (let [updates (cond-> {:updated-at [:datetime "now"]}
                   role   (assoc :role role)
-                  (some? active) (assoc :active (if active 1 0)))]
+                  (some? active) (assoc :active (if active 1 0))
+                  ;; Bump session_version on role or active changes
+                  ;; to invalidate existing JWTs
+                  (or role (some? active))
+                  (assoc :session-version [:+ :session-version 1]))]
     (jdbc/execute-one! ds
       (sql/format {:update :users
                    :set updates
@@ -90,11 +96,13 @@
                  :where [:= :id user-id]})))
 
 (defn delete-user!
-  "Soft-delete a user by setting active=0."
+  "Soft-delete a user by setting active=0 and bumping session_version
+   to invalidate existing JWTs."
   [ds user-id]
   (jdbc/execute-one! ds
     (sql/format {:update :users
                  :set {:active 0
+                       :session-version [:+ :session-version 1]
                        :updated-at [:datetime "now"]}
                  :where [:= :id user-id]})))
 

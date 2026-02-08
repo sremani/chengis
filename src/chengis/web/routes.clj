@@ -112,12 +112,14 @@
       (handler req))))
 
 (defn- metrics-route
-  "Build the /metrics route if metrics are enabled, otherwise nil."
+  "Build the metrics route if metrics are enabled, otherwise nil.
+   Uses :metrics :path from config (default \"/metrics\")."
   [system]
   (when-let [registry (:metrics system)]
-    ["/metrics" {:get {:handler (if (get-in (:config system) [:metrics :auth-required])
-                                  (auth/wrap-require-role :viewer (metrics/metrics-handler registry))
-                                  (metrics/metrics-handler registry))}}]))
+    (let [path (get-in (:config system) [:metrics :path] "/metrics")]
+      [path {:get {:handler (if (get-in (:config system) [:metrics :auth-required])
+                              (auth/wrap-require-role :viewer (metrics/metrics-handler registry))
+                              (metrics/metrics-handler registry))}}])))
 
 (defn app-routes
   "Build the Ring handler with all routes."

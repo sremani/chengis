@@ -31,11 +31,15 @@
                          (not (.waitFor java-proc timeout TimeUnit/MILLISECONDS)))
             _ (when timed-out?
                 (log/warn "Command timed out after" timeout "ms:" command)
-                (bp/destroy-tree proc)
+                (try (bp/destroy-tree proc)
+                     (catch Exception e
+                       (log/warn "destroy-tree failed, falling back:" (.getMessage e))))
                 ;; Force kill if still alive after grace period
                 (when-not (.waitFor java-proc 5 TimeUnit/SECONDS)
                   (log/warn "Force killing process:" command)
-                  (.destroyForcibly java-proc)))
+                  (try (.destroyForcibly java-proc)
+                       (catch Exception e
+                         (log/warn "destroyForcibly failed:" (.getMessage e))))))
             result (if timed-out?
                      (let [partial-stderr (try (slurp (.getErrorStream java-proc))
                                            (catch Exception _ ""))]
@@ -60,9 +64,13 @@
         final-result)
       (catch InterruptedException _
         (log/warn "Command interrupted (build cancelled):" command)
-        (bp/destroy-tree proc)
+        (try (bp/destroy-tree proc)
+             (catch Exception e
+               (log/warn "destroy-tree failed on cancel, falling back:" (.getMessage e))))
         (when-not (.waitFor java-proc 5 TimeUnit/SECONDS)
-          (.destroyForcibly java-proc))
+          (try (.destroyForcibly java-proc)
+               (catch Exception e
+                 (log/warn "destroyForcibly failed on cancel:" (.getMessage e)))))
         {:exit-code -2
          :stdout ""
          :stderr "Build cancelled"

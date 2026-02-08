@@ -90,9 +90,12 @@
                        :message message
                        :timeout-minutes timeout})]
         (if-not gate-id
-          ;; Gate creation failed — proceed anyway (fail open, log warning)
-          (do (log/warn "Could not create approval gate for" stage-name "— proceeding")
-              {:proceed true})
+          ;; Gate creation failed — fail closed (abort stage for safety)
+          (do (log/warn "Could not create approval gate for" stage-name
+                        "— aborting stage (fail-closed)")
+              (try (metrics/record-approval-resolved! registry "error")
+                   (catch Exception _))
+              {:proceed false :reason "Approval gate creation failed — stage aborted for safety"})
           (do
             (log/info "Approval gate created:" gate-id "for stage" stage-name
                       "in build" build-id)

@@ -189,12 +189,13 @@
 
 (defn- public-path?
   "Check if the request path is a public (no-auth) path.
-   /metrics is conditionally public based on :metrics :auth-required config."
+   Metrics endpoint is conditionally public based on :metrics :auth-required config.
+   Uses :metrics :path from config (default \"/metrics\")."
   [uri config]
   (or (contains? public-paths uri)
       (some #(str/starts-with? uri %) public-prefixes)
-      ;; /metrics is public unless :metrics :auth-required is true
-      (and (= uri "/metrics")
+      ;; Metrics path is public unless :metrics :auth-required is true
+      (and (= uri (get-in config [:metrics :path] "/metrics"))
            (not (get-in config [:metrics :auth-required] false)))))
 
 ;; ---------------------------------------------------------------------------
@@ -265,7 +266,8 @@
 (defn- try-session-auth
   "Try to authenticate via session cookie. Returns user map or nil.
    Validates active status and session_version against the DB to enforce
-   deactivation and password-reset invalidation."
+   deactivation, password-reset, and role-change invalidation.
+   Always derives role from DB to prevent stale privilege retention."
   [req ds]
   (when-let [session-user (get-in req [:session :user])]
     (if-let [user-id (:id session-user)]
@@ -284,9 +286,9 @@
                         "— session version mismatch")
               nil)
 
-          ;; All checks pass
+          ;; All checks pass — derive role from DB (not stale session)
           :else
-          session-user)
+          (assoc session-user :role (keyword (:role db-user))))
         ;; User deleted from DB
         nil)
       ;; No user-id in session (legacy/anonymous) — pass through
@@ -313,11 +315,11 @@
                         "— session version mismatch")
               nil)
 
-          ;; All checks pass
+          ;; All checks pass — derive role from DB (not stale JWT claims)
           :else
           {:id (:user-id claims)
            :username (:username claims)
-           :role (keyword (:role claims))})
+           :role (keyword (:role db-user))})
         ;; User not found — reject JWT
         (do (log/info "JWT rejected — user not found:" (:username claims))
             nil)))))

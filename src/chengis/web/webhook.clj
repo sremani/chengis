@@ -251,7 +251,10 @@
                                       :completed-at (str (java.time.Instant/now)))))))
                             (swap! triggered inc)
                             (catch RejectedExecutionException _
-                              (log/warn "Build queue full, cannot trigger for" (:name job))))))
+                              (log/warn "Build queue full, cannot trigger for" (:name job)
+                                        "— marking build" build-id "as failed")
+                              (build-store/update-build-status! ds build-id :failure
+                                :completed-at (str (java.time.Instant/now)))))))
                       (let [duration (- (System/currentTimeMillis) start-ms)]
                         (log-webhook-event! ds registry
                           {:provider provider :event-type event-type

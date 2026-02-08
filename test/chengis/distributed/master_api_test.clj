@@ -2,6 +2,7 @@
   (:require [clojure.test :refer :all]
             [chengis.distributed.master-api :as api]
             [chengis.distributed.agent-registry :as agent-reg]
+            [chengis.web.server :as server]
             [clojure.data.json :as json]
             [clojure.java.io :as io]))
 
@@ -49,15 +50,17 @@
 (deftest heartbeat-handler-test
   (testing "heartbeat for registered agent"
     (let [agent (agent-reg/register-agent! {:name "hb" :url "http://hb:9090"})
-          system {:config {}}
+          system {:config {:distributed {:auth-token "test-token"}}}
           handler (api/heartbeat-handler system)
-          resp (handler (make-req {} :path-params {:id (:id agent)}))]
+          resp (handler (make-req {} :path-params {:id (:id agent)}
+                          :headers {"authorization" "Bearer test-token"}))]
       (is (= 200 (:status resp)))))
 
   (testing "heartbeat for unknown agent returns 404"
-    (let [system {:config {}}
+    (let [system {:config {:distributed {:auth-token "test-token"}}}
           handler (api/heartbeat-handler system)
-          resp (handler (make-req {} :path-params {:id "nonexistent"}))]
+          resp (handler (make-req {} :path-params {:id "nonexistent"}
+                          :headers {"authorization" "Bearer test-token"}))]
       (is (= 404 (:status resp))))))
 
 ;; ---------------------------------------------------------------------------
@@ -97,9 +100,63 @@
   (testing "returns list of agents and summary"
     (agent-reg/register-agent! {:name "list-a1" :url "http://a1:9090"})
     (agent-reg/register-agent! {:name "list-a2" :url "http://a2:9090"})
-    (let [handler (api/list-agents-handler {})
-          resp (handler {})
+    (let [system {:config {:distributed {:auth-token "test-token"}}}
+          handler (api/list-agents-handler system)
+          resp (handler {:headers {"authorization" "Bearer test-token"}})
           body (parse-response resp)]
       (is (= 200 (:status resp)))
       (is (= 2 (count (:agents body))))
       (is (= 2 (get-in body [:summary :total]))))))
+
+;; ---------------------------------------------------------------------------
+;; CQ-03: Nil auth token must reject requests
+;; ---------------------------------------------------------------------------
+
+(deftest nil-token-rejects-request-test
+  (testing "heartbeat rejects request when auth-token is nil"
+    (let [agent (agent-reg/register-agent! {:name "nil-auth" :url "http://a:9090"})
+          system {:config {:distributed {}}}  ;; no :auth-token
+          handler (api/heartbeat-handler system)
+          resp (handler (make-req {} :path-params {:id (:id agent)}))]
+      (is (= 401 (:status resp))
+          "Nil auth-token must reject all requests")))
+
+  (testing "heartbeat rejects request when auth-token is empty string"
+    (let [agent (agent-reg/register-agent! {:name "empty-auth" :url "http://a:9090"})
+          system {:config {:distributed {:auth-token ""}}}
+          handler (api/heartbeat-handler system)
+          resp (handler (make-req {} :path-params {:id (:id agent)}))]
+      (is (= 401 (:status resp))
+          "Empty auth-token must reject all requests")))
+
+  (testing "heartbeat accepts request with valid matching token"
+    (let [agent (agent-reg/register-agent! {:name "valid-auth" :url "http://a:9090"})
+          system {:config {:distributed {:auth-token "my-secret"}}}
+          handler (api/heartbeat-handler system)
+          resp (handler (make-req {} :path-params {:id (:id agent)}
+                          :headers {"authorization" "Bearer my-secret"}))]
+      (is (= 200 (:status resp))
+          "Matching auth-token must accept request"))))
+
+;; ---------------------------------------------------------------------------
+;; CQ-03: validate-config! rejects distributed mode without auth-token
+;; ---------------------------------------------------------------------------
+
+(deftest distributed-mode-requires-auth-token-test
+  (testing "validate-config! throws when distributed enabled + no auth-token"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+          #"auth-token"
+          (server/validate-config! {:distributed {:enabled true}}))))
+
+  (testing "validate-config! throws when distributed enabled + empty auth-token"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+          #"auth-token"
+          (server/validate-config! {:distributed {:enabled true :auth-token ""}}))))
+
+  (testing "validate-config! passes when distributed enabled + token set"
+    (is (nil? (server/validate-config!
+                {:distributed {:enabled true :auth-token "secret"}}))))
+
+  (testing "validate-config! passes when distributed disabled"
+    (is (nil? (server/validate-config!
+                {:distributed {:enabled false}})))))

@@ -36,12 +36,22 @@
        :headers {"Location" target-url}
        :body ""})))
 
+(defn validate-config!
+  "Validate configuration at startup. Throws on invalid config."
+  [cfg]
+  (when (and (get-in cfg [:distributed :enabled])
+             (not (seq (get-in cfg [:distributed :auth-token]))))
+    (throw (ex-info "Distributed mode enabled but :distributed :auth-token is not set. Set CHENGIS_DISTRIBUTED_AUTH_TOKEN or disable distributed mode."
+                    {:type :config-validation-error}))))
+
 (defn start!
   "Start the Chengis web server."
   [& _args]
   (let [cfg (config/load-config)
         ;; Configure logging first (before any log calls)
         _ (logging/configure-logging! cfg)
+        ;; Validate configuration before proceeding
+        _ (validate-config! cfg)
         db-path (get-in cfg [:database :path])
         _ (migrate/migrate! db-path)
         ds (conn/create-datasource db-path)
