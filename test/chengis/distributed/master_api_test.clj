@@ -129,6 +129,15 @@
       (is (= 401 (:status resp))
           "Empty auth-token must reject all requests")))
 
+  (testing "heartbeat rejects request when auth-token is whitespace-only"
+    (let [agent (agent-reg/register-agent! {:name "ws-auth" :url "http://a:9090"})
+          system {:config {:distributed {:auth-token "   "}}}
+          handler (api/heartbeat-handler system)
+          resp (handler (make-req {} :path-params {:id (:id agent)}
+                          :headers {"authorization" "Bearer    "}))]
+      (is (= 401 (:status resp))
+          "Whitespace-only auth-token must reject all requests")))
+
   (testing "heartbeat accepts request with valid matching token"
     (let [agent (agent-reg/register-agent! {:name "valid-auth" :url "http://a:9090"})
           system {:config {:distributed {:auth-token "my-secret"}}}
@@ -152,6 +161,11 @@
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
           #"auth-token"
           (server/validate-config! {:distributed {:enabled true :auth-token ""}}))))
+
+  (testing "validate-config! throws when distributed enabled + whitespace-only auth-token"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+          #"auth-token"
+          (server/validate-config! {:distributed {:enabled true :auth-token "   "}}))))
 
   (testing "validate-config! passes when distributed enabled + token set"
     (is (nil? (server/validate-config!

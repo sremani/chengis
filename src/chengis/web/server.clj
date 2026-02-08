@@ -13,6 +13,7 @@
             [chengis.plugin.loader :as plugin-loader]
             [chengis.web.audit :as audit]
             [chengis.web.routes :as routes]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 
 (declare stop!)
@@ -40,7 +41,7 @@
   "Validate configuration at startup. Throws on invalid config."
   [cfg]
   (when (and (get-in cfg [:distributed :enabled])
-             (not (seq (get-in cfg [:distributed :auth-token]))))
+             (str/blank? (get-in cfg [:distributed :auth-token])))
     (throw (ex-info "Distributed mode enabled but :distributed :auth-token is not set. Set CHENGIS_DISTRIBUTED_AUTH_TOKEN or disable distributed mode."
                     {:type :config-validation-error}))))
 

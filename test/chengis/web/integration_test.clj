@@ -5,15 +5,19 @@
             [chengis.db.connection :as conn]
             [chengis.db.migrate :as migrate]
             [chengis.db.user-store :as user-store]
+            [chengis.db.job-store :as job-store]
+            [chengis.db.build-store :as build-store]
             [chengis.web.auth :as auth]
             [chengis.web.routes :as routes]
+            [chengis.web.webhook :as webhook]
             [chengis.metrics :as metrics]
             [chengis.distributed.agent-registry :as agent-reg]
             [clojure.core.async :as async]
             [clojure.data.json :as json]
             [clojure.java.io :as io])
   (:import [javax.crypto Mac]
-           [javax.crypto.spec SecretKeySpec]))
+           [javax.crypto.spec SecretKeySpec]
+           [java.util.concurrent ThreadPoolExecutor TimeUnit SynchronousQueue]))
 
 ;; ---------------------------------------------------------------------------
 ;; Test infrastructure
@@ -280,3 +284,98 @@
                            :body (io/input-stream (.getBytes body-str "UTF-8"))})]
         (is (= 200 (:status resp))
             "Without secret configured, all webhooks should pass signature check")))))
+
+;; ---------------------------------------------------------------------------
+;; Test 4: Webhook queue saturation marks build as failed (HF-02)
+;; ---------------------------------------------------------------------------
+
+(deftest webhook-queue-saturation-marks-build-failed-test
+  (let [webhook-secret "saturation-secret"
+        system (make-system {:auth {:enabled false}
+                             :webhook {:secret webhook-secret}})
+        ds (:db system)
+        ;; Create a job whose source URL matches the webhook payload
+        repo-url "https://github.com/test/saturate.git"
+        _ (job-store/create-job! ds {:pipeline-name "saturate-test"
+                                     :source {:type :git :url repo-url}
+                                     :stages [{:stage-name "build"
+                                               :steps [{:name "echo" :type :shell
+                                                        :command "echo hi"}]}]})
+        ;; Create a saturated executor: 1 thread, SynchronousQueue (no buffering)
+        saturated-executor (ThreadPoolExecutor. 1 1 0 TimeUnit/SECONDS
+                                               (SynchronousQueue.))
+        ;; Block the only thread so next submit is rejected
+        blocker (promise)
+        _ (.submit saturated-executor ^Runnable (fn [] @blocker))
+        ;; Build the webhook handler directly with our saturated executor
+        handler (webhook/webhook-handler system saturated-executor)
+        body-str (json/write-str {:ref "refs/heads/main"
+                                  :head_commit {:id "abc123"
+                                                :author {:name "dev"}
+                                                :message "test"}
+                                  :repository {:clone_url repo-url
+                                               :full_name "test/saturate"}})
+        signature (hmac-sha256 webhook-secret body-str)]
+
+    (testing "webhook returns 200 but triggered count is 0 when queue is full"
+      (let [resp (handler {:uri "/api/webhook"
+                           :request-method :post
+                           :headers {"x-github-event" "push"
+                                     "x-hub-signature-256" signature
+                                     "content-type" "application/json"}
+                           :body (io/input-stream (.getBytes body-str "UTF-8"))})]
+        (is (= 200 (:status resp)))
+        (is (= 0 (:triggered (json-body resp)))
+            "No builds should be triggered when executor is saturated")))
+
+    (testing "rejected build is marked as failed in DB"
+      (let [job (job-store/get-job ds "saturate-test")
+            builds (build-store/list-builds ds (:id job))]
+        (is (= 1 (count builds))
+            "One build record should exist from the webhook")
+        (let [build (first builds)]
+          (is (= :failure (:status build))
+              "Build must be marked as :failure when executor rejects")
+          (is (some? (:completed-at build))
+              "completed-at must be set for rejected build"))))
+
+    ;; Cleanup
+    (deliver blocker :done)
+    (.shutdownNow saturated-executor)))
+
+;; ---------------------------------------------------------------------------
+;; Test 5: Custom metrics path routing (HF-03)
+;; ---------------------------------------------------------------------------
+
+(deftest custom-metrics-path-routing-test
+  (testing "custom metrics path serves Prometheus metrics"
+    (let [system (make-system {:auth {:enabled false}
+                               :metrics {:path "/custom-metrics"
+                                         :auth-required false}})
+          handler (make-handler system)
+          resp (handler {:uri "/custom-metrics" :request-method :get})]
+      (is (= 200 (:status resp))
+          "Custom metrics path should return 200")
+      (is (clojure.string/includes?
+            (get-in resp [:headers "Content-Type"] "")
+            "text/plain")
+          "Metrics response should be Prometheus text format")))
+
+  (testing "default /metrics path returns 404 when custom path is configured"
+    (let [system (make-system {:auth {:enabled false}
+                               :metrics {:path "/custom-metrics"
+                                         :auth-required false}})
+          handler (make-handler system)
+          resp (handler {:uri "/metrics" :request-method :get})]
+      (is (= 404 (:status resp))
+          "/metrics should be 404 when custom path overrides it")))
+
+  (testing "custom metrics path with auth-required=true rejects unauthenticated"
+    (let [system (make-system {:auth {:enabled true
+                                      :jwt-secret "test-key-12345678"}
+                               :metrics {:path "/custom-metrics"
+                                         :auth-required true}})
+          handler (make-handler system)
+          resp (handler {:uri "/custom-metrics" :request-method :get :headers {}})]
+      (is (#{401 303} (:status resp))
+          "Custom metrics path should require auth when auth-required=true"))))
