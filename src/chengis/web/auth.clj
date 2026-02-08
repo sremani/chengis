@@ -285,24 +285,33 @@
 
 (defn- try-jwt-auth
   "Try to authenticate via JWT bearer token. Returns user map or nil.
-   Passes ds for JWT blacklist checking and session-version validation."
+   Passes ds for JWT blacklist checking, session-version validation,
+   and active-status verification."
   [token config ds]
   (when-let [claims (verify-jwt token config ds)]
     ;; Validate session-version against DB to enforce password-change invalidation
     (let [jwt-version (or (:session-version claims) 0)]
       (if-let [db-user (when (:user-id claims) (user-store/get-user ds (:user-id claims)))]
-        (let [db-version (or (:session-version db-user) 0)]
-          (if (= jwt-version db-version)
-            {:id (:user-id claims)
-             :username (:username claims)
-             :role (keyword (:role claims))}
-            (do (log/info "JWT invalidated for" (:username claims)
-                          "— session version mismatch")
-                nil)))
-        ;; No ds or user not found — fall back to claims only (backward compat)
-        {:id (:user-id claims)
-         :username (:username claims)
-         :role (keyword (:role claims))}))))
+        (cond
+          ;; User deactivated — reject
+          (and (some? (:active db-user)) (zero? (:active db-user)))
+          (do (log/info "JWT rejected — user deactivated:" (:username claims))
+              nil)
+
+          ;; Session version mismatch — reject
+          (not= jwt-version (or (:session-version db-user) 0))
+          (do (log/info "JWT invalidated for" (:username claims)
+                        "— session version mismatch")
+              nil)
+
+          ;; All checks pass
+          :else
+          {:id (:user-id claims)
+           :username (:username claims)
+           :role (keyword (:role claims))})
+        ;; User not found — reject JWT
+        (do (log/info "JWT rejected — user not found:" (:username claims))
+            nil)))))
 
 (defn- try-api-token-auth
   "Try to authenticate via API token. Returns user map or nil."

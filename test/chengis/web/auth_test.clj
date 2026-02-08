@@ -168,7 +168,8 @@
         (is (= "bob" (:username (:body resp))))))
 
     (testing "JWT bearer auth works"
-      (let [user {:id "u2" :username "alice" :role "admin"}
+      (let [alice (user-store/create-user! ds {:username "alice" :password "password1" :role "admin"})
+            user {:id (:id alice) :username "alice" :role "admin" :session-version 1}
             token (auth/generate-jwt user config)
             resp (wrapped {:uri "/api/jobs" :request-method :get
                            :headers {"authorization" (str "Bearer " token)}})]
@@ -270,6 +271,39 @@
                            :headers {"authorization" (str "Bearer " token)
                                      "accept" "application/json"}})]
         ;; JWT session-version (old) != DB session-version (new) → rejected
+        (is (= 401 (:status resp)))))))
+
+;; ---------------------------------------------------------------------------
+;; Deactivated user JWT rejection test
+;; ---------------------------------------------------------------------------
+
+(deftest deactivated-user-jwt-rejected-test
+  (let [ds (conn/create-datasource test-db-path)
+        config {:auth {:enabled true
+                       :jwt-secret "test-jwt-secret-32-chars-min!!!!!"}}
+        system {:config config :db ds}
+        handler (fn [req] {:status 200 :body (:auth/user req)})
+        wrapped (auth/wrap-auth handler system)
+        ;; Create and then deactivate a user
+        user (user-store/create-user! ds {:username "dave" :password "password1" :role "developer"})
+        db-user (user-store/get-user-by-username ds "dave")
+        jwt-user {:id (:id user) :username "dave" :role "developer"
+                  :session-version (:session-version db-user)}
+        token (auth/generate-jwt jwt-user config)]
+
+    (testing "JWT works before deactivation"
+      (let [resp (wrapped {:uri "/api/test" :request-method :get
+                           :headers {"authorization" (str "Bearer " token)
+                                     "accept" "application/json"}})]
+        (is (= 200 (:status resp)))))
+
+    ;; Deactivate the user
+    (user-store/delete-user! ds (:id user))
+
+    (testing "JWT is rejected after user deactivation"
+      (let [resp (wrapped {:uri "/api/test" :request-method :get
+                           :headers {"authorization" (str "Bearer " token)
+                                     "accept" "application/json"}})]
         (is (= 401 (:status resp)))))))
 
 ;; ---------------------------------------------------------------------------

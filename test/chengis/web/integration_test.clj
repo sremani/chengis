@@ -127,7 +127,9 @@
             "Register should require RBAC auth, not distributed auth")))
 
     (testing "agent register with admin JWT succeeds"
-      (let [admin-user {:id "u1" :username "admin1" :role "admin"}
+      (let [db-admin (user-store/get-user-by-username ds "admin1")
+            admin-user {:id (:id db-admin) :username "admin1" :role "admin"
+                        :session-version (:session-version db-admin)}
             jwt (auth/generate-jwt admin-user (:config system))
             resp (handler {:uri "/api/agents/register"
                            :request-method :post
@@ -177,7 +179,9 @@
           ds (:db system)
           handler (make-handler system)]
       (user-store/create-user! ds {:username "viewer2" :password "password123" :role "viewer"})
-      (let [user {:id "u2" :username "viewer2" :role "viewer"}
+      (let [db-viewer (user-store/get-user-by-username ds "viewer2")
+            user {:id (:id db-viewer) :username "viewer2" :role "viewer"
+                  :session-version (:session-version db-viewer)}
             jwt (auth/generate-jwt user (:config system))
             resp (handler {:uri "/metrics" :request-method :get
                            :headers {"authorization" (str "Bearer " jwt)}})]

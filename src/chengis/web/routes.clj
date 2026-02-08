@@ -199,7 +199,7 @@
          ["/register" {:post {:handler (auth/wrap-require-role :admin (master-api/register-agent-handler system))}}]
          ["/:id/heartbeat" {:post {:handler (master-api/heartbeat-handler system)}}]]
         ["/webhook" {:post {:handler (webhook/webhook-handler system build-runner/build-executor)}}]
-        ["/approvals/pending" {:get {:handler (h/api-pending-approvals system)}}]]]))
+        ["/approvals/pending" {:get {:handler (auth/wrap-require-role :developer (h/api-pending-approvals system))}}]]]))
     (ring/create-default-handler
       {:not-found (constantly {:status 404
                                :headers {"Content-Type" "text/html"}
