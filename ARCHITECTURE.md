@@ -60,20 +60,30 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |                        Web Layer                              |
 |   routes.clj   handlers.clj   sse.clj   webhook.clj          |
 |   views/  (layout, dashboard, jobs, builds, admin,            |
-|            trigger, agents)                                   |
+|            trigger, agents, login, users, tokens, audit,      |
+|            approvals, templates, webhooks)                     |
 |   distributed/master_api.clj                                  |
++---------------------------------------------------------------+
+|                    Auth & Security Layer                       |
+|   auth.clj          rate_limit.clj     account_lockout.clj    |
+|   audit.clj         alerts.clj         metrics_middleware.clj |
 +---------------------------------------------------------------+
 |                        Engine Layer                            |
 |   build_runner.clj   executor.clj   process.clj              |
 |   git.clj   workspace.clj   artifacts.clj   notify.clj       |
 |   events.clj   scheduler.clj   cleanup.clj   log_masker.clj  |
-|   docker.clj                                                  |
+|   docker.clj   matrix.clj   retention.clj   approval.clj     |
+|   scm_status.clj                                              |
++---------------------------------------------------------------+
+|                    Metrics & Observability Layer               |
+|   metrics.clj   logging.clj                                  |
 +---------------------------------------------------------------+
 |                        Plugin Layer                           |
 |   plugin/protocol.clj   plugin/registry.clj                  |
 |   plugin/loader.clj                                           |
-|   builtin/  (shell, docker, console, slack, git,              |
-|              local-artifacts, yaml-format)                     |
+|   builtin/  (shell, docker, docker-compose, console, slack,   |
+|              email, git, local-artifacts, yaml-format,         |
+|              github-status, gitlab-status)                     |
 +---------------------------------------------------------------+
 |                        DSL Layer                              |
 |   dsl/core.clj (defpipeline macro)                            |
@@ -81,6 +91,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   dsl/yaml.clj (Pipeline as Code — YAML)                     |
 |   dsl/expressions.clj (${{ }} resolver)                       |
 |   dsl/docker.clj (Docker DSL helpers)                         |
+|   dsl/templates.clj (Pipeline templates)                      |
 +---------------------------------------------------------------+
 |                        Agent Layer                            |
 |   agent/core.clj     agent/worker.clj                        |
@@ -90,12 +101,21 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   distributed/agent_registry.clj                              |
 |   distributed/dispatcher.clj                                  |
 |   distributed/master_api.clj                                  |
+|   distributed/build_queue.clj                                 |
+|   distributed/queue_processor.clj                             |
+|   distributed/circuit_breaker.clj                             |
+|   distributed/orphan_monitor.clj                              |
+|   distributed/artifact_transfer.clj                           |
 +---------------------------------------------------------------+
 |                        Data Layer                             |
 |   db/connection.clj   db/migrate.clj                          |
 |   db/job_store.clj    db/build_store.clj                      |
 |   db/secret_store.clj db/artifact_store.clj                   |
-|   db/notification_store.clj                                   |
+|   db/notification_store.clj  db/user_store.clj                |
+|   db/audit_store.clj  db/audit_export.clj                     |
+|   db/webhook_log.clj  db/secret_audit.clj                     |
+|   db/approval_store.clj  db/template_store.clj                |
+|   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |
 |   config.clj   util.clj   model/spec.clj                     |
@@ -146,10 +166,22 @@ Executor: Container Propagation
   |-- Stage-level :container config → shell steps converted to :docker
   |
   v
+Executor: Matrix Expansion
+  |-- If :matrix config present, expand stages × combinations
+  |-- Stage "Build" × {os: [linux, macos]} → "Build [os=linux]", "Build [os=macos]"
+  |-- Each expanded stage gets MATRIX_* env vars injected into steps
+  |-- Max combinations enforced (default 25) to prevent explosion
+  |
+  v
 Executor: Stage Execution (sequential)
   |
   |  For each stage:
   |    |-- Check cancellation flag
+  |    |-- Check approval gate (if configured)
+  |    |    |-- Create approval record in DB
+  |    |    |-- Emit :approval-required event (shown in UI)
+  |    |    |-- Wait for approve/reject/timeout
+  |    |    |-- If rejected or timed out: mark build as failed
   |    |-- Emit :stage-started event
   |    |
   |    |  For each step (sequential or parallel):
@@ -181,8 +213,13 @@ Executor: Artifact Collection
   v
 Executor: Notifications
   |-- Look up Notifier plugin by :type (via registry)
-  |-- Dispatch to configured notifiers (console, Slack)
+  |-- Dispatch to configured notifiers (console, Slack, email)
   |-- Record notification events in DB
+  |
+  v
+Executor: SCM Status Reporting
+  |-- Look up ScmStatusReporter plugin by provider
+  |-- Report build status back to GitHub/GitLab (commit status API)
   |
   v
 Build Runner: Finalization
@@ -204,8 +241,11 @@ Build Runner: Finalization
 |  :pipeline-formats "yaml" → YamlFormat   |
 |  :notifiers        :console → ConsoleN   |
 |                    :slack → SlackN        |
+|                    :email → EmailN        |
 |  :artifact-handlers "local" → LocalAH   |
 |  :scm-providers    :git → GitSCM         |
+|  :scm-status       :github → GHStatus    |
+|                    :gitlab → GLStatus     |
 +-------------------------------------------+
            ^                    |
            |  register!         |  lookup
@@ -230,25 +270,28 @@ Build Runner: Finalization
 ```clojure
 ;; Step execution (shell, docker, etc.)
 (defprotocol StepExecutor
-  (execute-step [this step-def build-ctx]))
+  (execute-step [this build-ctx step-def]))
 
 ;; Pipeline file format (EDN, YAML, etc.)
 (defprotocol PipelineFormat
-  (can-parse? [this file-path])
-  (parse-pipeline [this file-path]))
+  (parse-pipeline [this file-path])
+  (detect-file [this workspace-dir]))
 
-;; Build notifications (console, slack, etc.)
+;; Build notifications (console, slack, email, etc.)
 (defprotocol Notifier
   (send-notification [this build-result config]))
 
 ;; Artifact storage (local, S3, etc.)
 (defprotocol ArtifactHandler
-  (store-artifact [this artifact-info])
-  (retrieve-artifact [this artifact-id]))
+  (collect-artifacts [this workspace-dir artifact-dir patterns]))
 
 ;; Source code management (git, etc.)
 (defprotocol ScmProvider
-  (clone-repo [this source-config workspace]))
+  (checkout-source [this source-config workspace-dir commit-override]))
+
+;; SCM commit status reporting (GitHub, GitLab, etc.)
+(defprotocol ScmStatusReporter
+  (report-status [this build-info config]))
 ```
 
 ### Builtin Plugins
@@ -260,9 +303,58 @@ Build Runner: Finalization
 | Docker Compose Executor | StepExecutor | `:docker-compose` |
 | Console Notifier | Notifier | `:console` |
 | Slack Notifier | Notifier | `:slack` |
+| Email Notifier | Notifier | `:email` |
 | Local Artifacts | ArtifactHandler | `"local"` |
 | Git SCM | ScmProvider | `:git` |
 | YAML Format | PipelineFormat | `"yaml"`, `"yml"` |
+| GitHub Status | ScmStatusReporter | `:github` |
+| GitLab Status | ScmStatusReporter | `:gitlab` |
+
+## Authentication & Security
+
+### Auth Architecture
+
+```
+Request
+  |
+  v
+wrap-auth middleware
+  |
+  +-- Auth disabled? → attach admin user (backward compat)
+  |
+  +-- Public path? (/login, /health, /ready) → pass through
+  |
+  +-- Distributed agent path? → bypass (handler-level check-auth)
+  |
+  +-- Session cookie? → validate session version against DB
+  |
+  +-- Bearer token? → try JWT → try API token
+  |       |
+  |       +-- JWT: verify signature, check expiry, check blacklist,
+  |       |        validate session version against DB
+  |       |
+  |       +-- API token: lookup in DB, return user
+  |
+  +-- No credentials → 401 (API) or redirect to /login (browser)
+```
+
+### RBAC
+
+```
+admin (level 3)     → full access, user management, settings
+developer (level 2) → trigger builds, manage secrets, approve gates
+viewer (level 1)    → read-only access to builds and jobs
+```
+
+### Security Features
+
+- **JWT blacklist** — Tokens can be revoked (password change, forced logout)
+- **Session versioning** — Password reset increments version, invalidating all sessions/tokens
+- **Account lockout** — Configurable failed attempt threshold and lockout duration
+- **Rate limiting** — Request-level middleware to prevent abuse
+- **CSRF protection** — Anti-forgery tokens on all form endpoints
+- **Constant-time comparison** — Webhook signatures and tokens use timing-safe comparison
+- **Input sanitization** — Agent registration, Docker commands, and webhook payloads validated
 
 ## Docker Integration
 
@@ -300,9 +392,12 @@ Pipeline level                    Stage level                 Step level
 
 ```
 Master (Chengis Web)          Agent Node 1           Agent Node 2
-  Build Dispatch    ───HTTP──>  Executor Engine        Executor Engine
-  Agent Registry    <──HTTP───  Event Streaming        Event Streaming
-  Event Collector               Local Workspace        Local Workspace
+  Build Queue         ───────>  Executor Engine        Executor Engine
+  Build Dispatch      ───HTTP─>  Event Streaming        Event Streaming
+  Agent Registry      <──HTTP──  Artifact Upload        Artifact Upload
+  Event Collector                Local Workspace        Local Workspace
+  Circuit Breaker
+  Orphan Monitor
   SQLite DB
 ```
 
@@ -321,18 +416,27 @@ Master (Chengis Web)          Agent Node 1           Agent Node 2
 3. Dispatch:   Master POST → agent/builds
                  Body: {pipeline, build-id, job-id, parameters, env}
                  Agent returns 202 Accepted
+                 Circuit breaker wraps this call
 
 4. Events:     Agent POST → master/api/builds/:id/agent-events
                  Body: build event (fed into SSE bus)
 
 5. Result:     Agent POST → master/api/builds/:id/result
                  Body: {build-status, stage-results, error}
+
+6. Artifacts:  Agent POST → master/api/builds/:id/artifacts
+                 Body: multipart file upload
 ```
 
 ### Dispatch Strategy
 
 ```
 Trigger Build
+  |
+  v
+Queue enabled? → Enqueue in persistent build_queue table
+  |                with priority (default: :normal)
+  |                Queue processor picks up periodically
   |
   v
 Is distributed enabled?
@@ -342,21 +446,52 @@ Is distributed enabled?
                |-- Capacity check: current-builds < max-builds
                |-- Heartbeat fresh: < 90s since last heartbeat
                |-- Selection: least-loaded agent
+               |-- Circuit breaker: skip agents in :open state
                |
                v
             Agent found?
-               |-- Yes → HTTP dispatch to agent
+               |-- Yes → HTTP dispatch to agent (via circuit breaker)
                |-- No → fallback-local enabled?
                           |-- Yes → Run locally
                           |-- No → Error: no agent available
 ```
+
+### Reliability
+
+- **Circuit breaker** — Wraps agent HTTP calls. Opens after N consecutive failures, half-opens after timeout for probe requests, closes on success
+- **Orphan monitor** — Periodically checks for builds dispatched to agents that have gone offline. Auto-fails orphaned builds after configurable timeout
+- **Build queue** — Persistent SQLite-backed queue ensures builds survive master restarts. Priority levels: `:high`, `:normal`, `:low`
 
 ### Security
 
 - Shared-secret authentication via Bearer token
 - All API endpoints require auth when token is configured
 - Agent registration validates and sanitizes input fields
+- SSE event endpoints require user authentication (not bypassed in distributed mode)
 - Secrets encrypted with AES-256-GCM in transit
+
+## Matrix Builds
+
+### Expansion
+
+```
+Matrix Config                     Expanded Stages
++-------------------+             +----------------------------------+
+| :os [linux macos] |    →        | Build [jdk=11, os=linux]         |
+| :jdk [11 17]      |             | Build [jdk=17, os=linux]         |
+|                   |             | Build [jdk=11, os=macos]         |
+| :exclude          |             | Build [jdk=17, os=macos]         |
+| [{:os macos       |             +----------------------------------+
+|   :jdk 11}]       |             (exclude removes os=macos, jdk=11)
++-------------------+
+```
+
+Matrix expansion happens after container propagation but before stage execution. Each expanded stage gets:
+- Suffixed name: `"Build [os=linux, jdk=11]"`
+- `MATRIX_*` env vars injected into all steps: `MATRIX_OS=linux`, `MATRIX_JDK=11`
+- `:matrix-combination` metadata for UI rendering
+
+Maximum combinations enforced (default 25) to prevent combinatorial explosion.
 
 ## YAML Pipeline Format
 
@@ -454,7 +589,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis uses SQLite with 10 migration versions:
+Chengis uses SQLite with 22 migration versions:
 
 ### Core Tables (Migration 001)
 
@@ -497,6 +632,23 @@ build_logs        -- Structured log entries
 -- 008: Plugin tracking (plugins)
 -- 009: Docker container columns (container_image, container_id on build_steps)
 -- 010: Agent management (agents table, agent_id/dispatched_at on builds)
+```
+
+### Enterprise Tables (Migrations 011-022)
+
+```sql
+-- 011: User management (users table — username, password_hash, role, active)
+-- 012: API tokens (api_tokens table — token_hash, user_id, name, expires_at)
+-- 013: Audit logging (audit_logs table — username, action, resource, ip, timestamp)
+-- 014: Build queue (build_queue table — job_id, priority, status, queued_at)
+-- 015: Token revocation (revoked_at column on api_tokens)
+-- 016: JWT blacklist (jwt_blacklist table — jti, user_id, expires_at, reason)
+-- 017: Session versioning (session_version column on users, default 1)
+-- 018: Webhook events (webhook_events table — provider, status, repo, branch, payload_size)
+-- 019: Secret access audit (secret_access_log table — secret_name, user, action, timestamp)
+-- 020: Account lockout (failed_attempts, locked_until columns on users)
+-- 021: Approval gates (build_approvals table — build_id, stage, status, approver, timeout)
+-- 022: Pipeline templates (pipeline_templates table — name, description, pipeline_data)
 ```
 
 ## Secrets Management
@@ -544,6 +696,7 @@ The key insight: **pipelines are just data**. The DSL macro is syntactic sugar; 
 - Pipelines can be serialized, stored in the database, and transmitted over the wire (to agents)
 - Testing the executor requires only constructing maps, not evaluating macros
 - New pipeline formats (YAML, TOML, etc.) only need to produce the same data map
+- Matrix expansion operates purely on the data map, duplicating stages with injected env vars
 
 ## Web UI Architecture
 
@@ -598,19 +751,54 @@ Process: .waitFor() is interrupted
   |-- Step marked as :aborted
 ```
 
+## Observability
+
+### Prometheus Metrics
+
+When enabled (`:metrics {:enabled true}`), Chengis exposes a `/metrics` endpoint with:
+
+- **Build metrics** — `chengis_builds_total`, `chengis_build_duration_seconds`
+- **Auth metrics** — `chengis_login_total`, `chengis_token_auth_total`
+- **Webhook metrics** — `chengis_webhooks_received_total`, `chengis_webhook_processing_seconds`
+- **Retention metrics** — `chengis_retention_cleaned_total`
+- **HTTP metrics** — request count, duration, status codes (via middleware)
+
+### Alert System
+
+The alert system monitors system health and auto-resolves when conditions clear:
+
+```
+Alert Sources                   Alert Manager              UI
+  |                                |                        |
+  |-- System health check -------->|                        |
+  |-- Build queue overflow ------->|  Active alerts (atom)  |
+  |-- Agent offline detected ----->|                        |
+  |                                |-- GET /api/alerts ---->|
+  |                                |   (polled by htmx)     |
+```
+
+### Data Retention
+
+The retention scheduler runs periodically (default every 24 hours) and cleans up:
+- Audit logs older than N days (default 90)
+- Webhook events older than N days (default 30)
+- Secret access logs older than N days
+- Expired JWT blacklist entries
+- Old workspaces
+
 ## File Organization Rationale
 
-| Directory | Responsibility | Key Principle |
-|-----------|---------------|---------------|
-| `agent/` | Agent node lifecycle | Separate process entry point |
-| `cli/` | User-facing CLI commands | Thin layer over engine |
-| `db/` | Data access (stores) | One file per table/concern |
-| `distributed/` | Master-side coordination | Registry, dispatch, API |
-| `dsl/` | Pipeline definition | Macros and parsers → data |
-| `engine/` | Build orchestration | Core business logic |
-| `model/` | Data validation (specs) | Schema definitions |
-| `plugin/` | Extension infrastructure | Protocols + registry + loader |
-| `web/` | HTTP handling and views | MVC without the framework |
-| `web/views/` | Hiccup templates | One file per page/component |
+| Directory | Responsibility | Key Principle | Files |
+|-----------|---------------|---------------|-------|
+| `agent/` | Agent node lifecycle | Separate process entry point | 5 |
+| `cli/` | User-facing CLI commands | Thin layer over engine | 3 |
+| `db/` | Data access (stores) | One file per table/concern | 15 |
+| `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability | 8 |
+| `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
+| `engine/` | Build orchestration | Core business logic | 16 |
+| `model/` | Data validation (specs) | Schema definitions | 1 |
+| `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 13 |
+| `web/` | HTTP handling | Handlers + middleware | 11 |
+| `web/views/` | Hiccup templates | One file per page/component | 15 |
 
-Dependencies flow downward: `web` -> `engine` -> `db` -> `util`. The engine layer never imports web concerns, and the database layer never imports engine concerns. The plugin layer is cross-cutting but only depends on foundation.
+Dependencies flow downward: `web` -> `engine` -> `db` -> `util`. The engine layer never imports web concerns, and the database layer never imports engine concerns. The plugin layer is cross-cutting but only depends on foundation. The auth/security layer wraps web handlers and is applied via middleware composition in `routes.clj`.

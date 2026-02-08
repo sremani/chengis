@@ -57,15 +57,17 @@ lein run serve
 ```
 src/chengis/
   core.clj              # Entry point (-main)
-  config.clj            # Configuration loading
+  config.clj            # Configuration loading + env var overrides
+  logging.clj           # Structured logging setup
+  metrics.clj           # Prometheus metrics registry
   util.clj              # Shared utilities
 
   cli/                  # Command-line interface
     core.clj            # CLI dispatcher
-    commands.clj        # Job, build, status commands
+    commands.clj        # Job, build, secret, pipeline, backup commands
     output.clj          # Formatted output helpers
 
-  db/                   # Database layer
+  db/                   # Database layer (15 files)
     connection.clj      # SQLite connection pool
     migrate.clj         # Migratus migration runner
     job_store.clj       # Job CRUD
@@ -73,13 +75,25 @@ src/chengis/
     secret_store.clj    # Encrypted secrets
     artifact_store.clj  # Artifact metadata
     notification_store.clj  # Notification events
+    user_store.clj      # User accounts, API tokens, password hashing
+    audit_store.clj     # Audit log queries with filtering
+    audit_export.clj    # CSV/JSON audit export (streaming)
+    webhook_log.clj     # Webhook event logging
+    secret_audit.clj    # Secret access audit trail
+    approval_store.clj  # Approval gate records
+    template_store.clj  # Pipeline template CRUD
+    backup.clj          # Database backup (VACUUM INTO) + restore
 
-  dsl/                  # Pipeline definition
-    core.clj            # defpipeline macro + DSL functions
+  dsl/                  # Pipeline definition (6 files)
+    core.clj            # defpipeline macro + DSL functions (matrix, post, etc.)
     chengisfile.clj     # Chengisfile (EDN) parser
+    docker.clj          # Docker DSL helpers (docker-step, container)
+    yaml.clj            # YAML workflow parser
+    expressions.clj     # ${{ }} expression resolver
+    templates.clj       # Pipeline template DSL
 
-  engine/               # Build execution
-    executor.clj        # Core pipeline runner (408 lines)
+  engine/               # Build execution (16 files)
+    executor.clj        # Core pipeline runner
     build_runner.clj    # Build lifecycle + thread pool
     process.clj         # Shell command execution
     git.clj             # Git clone + metadata extraction
@@ -90,28 +104,82 @@ src/chengis/
     scheduler.clj       # Cron-based scheduling
     cleanup.clj         # Workspace/artifact cleanup
     log_masker.clj      # Secret masking in output
+    docker.clj          # Docker command generation + validation
+    matrix.clj          # Matrix build expansion (cartesian product)
+    retention.clj       # Data retention scheduler
+    approval.clj        # Approval gate engine
+    scm_status.clj      # SCM commit status reporting
 
   model/
     spec.clj            # Clojure specs for validation
 
-  web/                  # HTTP layer
+  plugin/               # Plugin system (13 files)
+    protocol.clj        # Plugin protocols (6: StepExecutor, PipelineFormat,
+                        #   Notifier, ArtifactHandler, ScmProvider, ScmStatusReporter)
+    registry.clj        # Central plugin registry (atom-based)
+    loader.clj          # Plugin discovery + lifecycle
+    builtin/            # 10 builtin plugins
+      shell.clj         # Shell step executor
+      docker.clj        # Docker step executor
+      docker_compose.clj # Docker Compose step executor
+      console.clj       # Console notifier
+      slack.clj         # Slack notifier (Block Kit)
+      email.clj         # Email notifier (SMTP)
+      git.clj           # Git SCM provider
+      local_artifacts.clj # Local artifact handler
+      yaml_format.clj   # YAML pipeline format
+      github_status.clj # GitHub commit status reporter
+      gitlab_status.clj # GitLab commit status reporter
+
+  agent/                # Agent node (5 files)
+    core.clj            # Agent entry point + HTTP server
+    client.clj          # HTTP client for master communication
+    heartbeat.clj       # Periodic heartbeat scheduler
+    worker.clj          # Build execution on agent
+
+  distributed/          # Distributed build coordination (8 files)
+    agent_registry.clj  # In-memory agent registry
+    dispatcher.clj      # Build dispatch (local vs remote)
+    master_api.clj      # Master API handlers
+    build_queue.clj     # Persistent build queue (SQLite-backed)
+    queue_processor.clj # Queue processing worker
+    circuit_breaker.clj # Agent communication circuit breaker
+    orphan_monitor.clj  # Orphaned build detection
+    artifact_transfer.clj # Agent-to-master artifact upload
+
+  web/                  # HTTP layer (26 files total)
     server.clj          # http-kit server startup
     routes.clj          # Reitit routes + middleware
     handlers.clj        # Request handlers
     sse.clj             # Server-Sent Events
     webhook.clj         # SCM webhook handler
-    views/              # Hiccup view templates
+    auth.clj            # JWT/session/API token auth + RBAC
+    audit.clj           # Audit logging middleware
+    alerts.clj          # System alert management
+    rate_limit.clj      # Request rate limiting
+    account_lockout.clj # Account lockout logic
+    metrics_middleware.clj # HTTP request metrics
+    views/              # Hiccup view templates (15 files)
       layout.clj        # Base HTML layout
       dashboard.clj     # Home page
       jobs.clj          # Job list + detail
-      builds.clj        # Build detail + logs
+      builds.clj        # Build detail + logs + matrix grid
       components.clj    # Reusable UI components
       admin.clj         # Admin dashboard
       trigger_form.clj  # Parameterized build form
+      agents.clj        # Agent management page
+      login.clj         # Login page
+      users.clj         # User management page
+      tokens.clj        # API token management
+      audit.clj         # Audit log viewer
+      approvals.clj     # Approval gates page
+      templates.clj     # Pipeline template management
+      webhooks.clj      # Webhook event viewer
 
-test/chengis/           # Test suite (mirrors src/ structure)
-resources/migrations/   # SQL migration files
-pipelines/              # Example pipeline definitions
+test/chengis/           # Test suite (47 files, mirrors src/ structure)
+resources/migrations/   # SQL migration files (22 versions)
+pipelines/              # Example pipeline definitions (5 files)
+benchmarks/             # Performance benchmark suite
 ```
 
 ## Running Tests
@@ -127,7 +195,7 @@ lein test chengis.engine.executor-test
 lein test chengis.dsl.chengisfile-test
 ```
 
-The test suite currently has **52 tests with 301 assertions**. All tests must pass before submitting a PR.
+The test suite currently has **283 tests with 1331 assertions**. All tests must pass before submitting a PR.
 
 ### Test Organization
 
@@ -137,9 +205,18 @@ Tests mirror the source layout:
 |--------|------|
 | `dsl/core.clj` | `dsl/core_test.clj` |
 | `dsl/chengisfile.clj` | `dsl/chengisfile_test.clj` |
+| `dsl/yaml.clj` | `dsl/yaml_test.clj` |
 | `engine/executor.clj` | `engine/executor_test.clj` |
 | `engine/process.clj` | `engine/process_test.clj` |
+| `engine/matrix.clj` | `engine/matrix_test.clj` |
+| `engine/approval.clj` | `engine/approval_test.clj` |
+| `engine/docker.clj` | `engine/docker_test.clj` |
 | `db/build_store.clj` | `db/build_store_test.clj` |
+| `db/user_store.clj` | `db/user_store_test.clj` |
+| `web/auth.clj` | `web/auth_test.clj` |
+| `web/rate_limit.clj` | `web/rate_limit_test.clj` |
+| `distributed/circuit_breaker.clj` | `distributed/circuit_breaker_test.clj` |
+| `distributed/build_queue.clj` | `distributed/build_queue_test.clj` |
 | `web/views/*.clj` | `web/views_test.clj` |
 
 ### Writing Tests
@@ -166,21 +243,21 @@ Chengis uses [Migratus](https://github.com/yogthos/migratus) for schema evolutio
 
 ```
 resources/migrations/
-  008-my-feature.up.sql
-  008-my-feature.down.sql
+  023-my-feature.up.sql
+  023-my-feature.down.sql
 ```
 
 2. Write the SQL:
 
 ```sql
--- 008-my-feature.up.sql
+-- 023-my-feature.up.sql
 CREATE TABLE IF NOT EXISTS my_table (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
--- 008-my-feature.down.sql
+-- 023-my-feature.down.sql
 DROP TABLE IF EXISTS my_table;
 ```
 
@@ -201,7 +278,7 @@ lein run -- init
 
 ### Example: Adding a New Store
 
-1. **Migration**: Create `resources/migrations/008-widgets.up.sql`
+1. **Migration**: Create `resources/migrations/023-widgets.up.sql`
 2. **Store**: Create `src/chengis/db/widget_store.clj`
 3. **Engine integration**: Update `executor.clj` or create a new engine module
 4. **Web handler**: Add handler in `handlers.clj`
@@ -214,7 +291,15 @@ lein run -- init
 1. Add the function to `dsl/core.clj`
 2. Update `build-pipeline` to handle the new map type
 3. If it appears in Chengisfiles, update `dsl/chengisfile.clj`
-4. Add tests in `dsl/core_test.clj`
+4. If it appears in YAML, update `dsl/yaml.clj`
+5. Add tests in `dsl/core_test.clj`
+
+### Example: Adding a New Plugin
+
+1. Define a new protocol in `plugin/protocol.clj` (or reuse an existing one)
+2. Create `plugin/builtin/my_plugin.clj` implementing the protocol
+3. Register in `plugin/loader.clj` (add to `load-builtins!`)
+4. Add tests in `plugin/my_plugin_test.clj`
 
 ## Code Style
 
@@ -233,11 +318,13 @@ lein run -- init
 - **Handlers**: Closures over `system` map: `(defn my-handler [system] (fn [request] ...))`
 - **Views**: Pure functions returning Hiccup vectors
 - **Engine**: Functions take `build-ctx` map threaded through execution
+- **Middleware**: Ring middleware functions: `(defn wrap-something [handler system] (fn [req] ...))`
+- **Plugins**: Implement protocol, register via `plugin/registry.clj`
 
 ### Dependencies
 
 - Prefer existing dependencies over adding new ones
-- The project intentionally has a minimal dependency footprint (18 libraries)
+- The project intentionally has a minimal dependency footprint (~20 libraries)
 - If you must add a dependency, justify it in the PR description
 
 ## Common Development Tasks
@@ -286,7 +373,7 @@ SELECT id, build_number, status FROM builds ORDER BY started_at DESC LIMIT 10;
 1. **One feature per PR** &mdash; Keep changes focused
 2. **All tests pass** &mdash; Run `lein test` before submitting
 3. **Include tests** &mdash; New features should have test coverage
-4. **Update docs** &mdash; If changing the DSL or CLI, update README.md
+4. **Update docs** &mdash; If changing the DSL, CLI, or config, update README.md
 5. **Descriptive commit messages** &mdash; Explain the "why", not just the "what"
 
 ## Architecture Decisions
@@ -302,5 +389,8 @@ Key design choices and their rationale:
 | babashka/process over Runtime.exec | Better API, stream handling, timeout support |
 | Hiccup over Selmer | Clojure data structures for templates, compile-time safety |
 | EDN over YAML for Chengisfile | Native Clojure format, no parser dependency |
+| buddy-sign over manual JWT | Standard library, proven security, well-maintained |
+| bcrypt over SHA-256 | Adaptive hashing, industry standard for passwords |
+| iapetos over raw Prometheus | Clean Clojure wrapper for Prometheus metrics |
 
 For a detailed architecture deep-dive, see [ARCHITECTURE.md](ARCHITECTURE.md).

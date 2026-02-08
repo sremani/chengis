@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**100 tests | 493 assertions | 0 failures**
+**283 tests | 1331 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -86,6 +86,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Conditional execution** &mdash; `when-branch` and `when-param` for environment-aware pipelines
 - **Build cancellation** &mdash; Graceful cancellation with interrupt propagation
 - **Build retry** &mdash; One-click retry of failed builds
+- **Matrix builds** &mdash; Run pipelines across parameter combinations (e.g., OS x JDK), `MATRIX_*` env vars, exclude filters
 
 ### Docker Integration
 
@@ -106,9 +107,9 @@ Build #1 — SUCCESS (8.3 sec)
 
 ### Plugin System
 
-- **Protocol-based** &mdash; Extension points: `StepExecutor`, `PipelineFormat`, `Notifier`, `ArtifactHandler`, `ScmProvider`
+- **Protocol-based** &mdash; Extension points: `StepExecutor`, `PipelineFormat`, `Notifier`, `ArtifactHandler`, `ScmProvider`, `ScmStatusReporter`
 - **Central registry** &mdash; Register/lookup/introspect plugins at runtime
-- **Builtin plugins** &mdash; Shell, Docker, Git, Console, Slack, Local Artifacts, YAML Format
+- **Builtin plugins** &mdash; Shell, Docker, Git, Console, Slack, Email, Local Artifacts, YAML Format, GitHub Status, GitLab Status
 - **External plugins** &mdash; Load `.clj` files from plugins directory with lifecycle management
 
 ### Distributed Builds
@@ -118,29 +119,70 @@ Build #1 — SUCCESS (8.3 sec)
 - **Heartbeat monitoring** &mdash; Agents send periodic heartbeats; offline detection after 90s
 - **Local fallback** &mdash; If no remote agent matches, build runs locally on master
 - **Agent management UI** &mdash; Status badges, capacity metrics, real-time monitoring
+- **Persistent build queue** &mdash; Priority-based queue with configurable concurrency
+- **Circuit breaker** &mdash; Automatic fault detection with half-open recovery for agent communication
+- **Orphan monitor** &mdash; Auto-fail builds from agents that go offline
+- **Artifact transfer** &mdash; Agent-to-master HTTP upload for build artifacts
 
-### Security & Storage
+### Authentication & Security
 
+- **User management** &mdash; Admin/developer/viewer roles with RBAC
+- **JWT authentication** &mdash; Token-based auth with configurable expiry and blacklist support
+- **API tokens** &mdash; Generate and revoke API tokens per user for CI integrations
+- **Session management** &mdash; Secure cookie-based sessions with password-reset invalidation
+- **Account lockout** &mdash; Configurable threshold and duration after failed login attempts
 - **Encrypted secrets** &mdash; AES-256-GCM encryption at rest, automatic log masking with `***`
-- **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
-- **SQLite persistence** &mdash; Zero-config database with migration-based schema evolution (10 versions)
-- **Agent auth** &mdash; Shared-secret authentication for master-agent communication
+- **CSRF protection** &mdash; Anti-forgery tokens on all form endpoints
+- **Rate limiting** &mdash; Configurable request rate limiting middleware
+- **Audit logging** &mdash; All user actions logged with admin viewer and CSV/JSON export
 - **Input validation** &mdash; Docker command injection protection, agent registration field sanitization
+
+### Approval Gates
+
+- **Manual checkpoints** &mdash; Pause pipeline execution pending human approval
+- **Approve/reject** &mdash; One-click approval or rejection via web UI
+- **Timeout support** &mdash; Auto-fail builds if approval is not received within configured duration
+- **RBAC-gated** &mdash; Only authorized roles can approve or reject gates
+
+### Pipeline Templates
+
+- **Admin-defined** &mdash; Create reusable pipeline templates from the admin UI
+- **Create from template** &mdash; Quickly create new jobs based on existing templates
+- **Template management** &mdash; Edit, update, and delete templates
 
 ### Observability
 
 - **Live streaming** &mdash; SSE-powered real-time build output (no polling, no WebSocket)
-- **Build notifications** &mdash; Console and Slack notifications with Block Kit formatting
+- **Prometheus metrics** &mdash; `/metrics` endpoint with build, auth, webhook, and system metrics
+- **Build notifications** &mdash; Console, Slack, and email notifications
 - **Admin dashboard** &mdash; JVM stats, memory usage, executor pool status, disk usage breakdown
 - **Build history** &mdash; Full log retention with stage/step breakdown and timing
+- **Alert system** &mdash; System health alerts with auto-resolve
+- **Data retention** &mdash; Automated cleanup scheduler for audit logs, webhook events, and old data
+- **Database backup** &mdash; Hot backup via SQLite `VACUUM INTO`, CLI commands, and admin UI download
+- **Audit export** &mdash; Export audit logs as CSV or JSON for SIEM integration
+
+### Persistence
+
+- **SQLite database** &mdash; Zero-config database with migration-based schema evolution (22 versions)
+- **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
+- **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
+- **Secret access audit** &mdash; Track all secret reads with timestamp and user info
 
 ### User Interface
 
 - **Web UI** &mdash; htmx + Tailwind CSS, zero custom JavaScript, dark theme
 - **CLI** &mdash; Full command-line interface for headless/scripted usage
+- **Login page** &mdash; Username/password authentication with lockout protection
 - **Parameterized builds** &mdash; Dynamic trigger forms with text, choice, and boolean parameters
 - **SCM webhooks** &mdash; GitHub/GitLab webhook endpoint for push-triggered builds
 - **Agent page** &mdash; Agent status, capacity, labels, and system info
+- **User management** &mdash; Admin panel for creating, editing, and deactivating users
+- **Audit viewer** &mdash; Filterable audit log with date range, action type, and user filters
+- **Webhook viewer** &mdash; Admin page showing all incoming webhook events
+- **Approval dashboard** &mdash; View and act on pending approval gates
+- **Template management** &mdash; Create, edit, and delete pipeline templates
+- **API token management** &mdash; Generate and revoke personal API tokens
 
 ## Quick Start
 
@@ -166,6 +208,21 @@ lein run serve
 ```
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
+
+### Docker Deployment
+
+```bash
+# Build the Docker image
+docker build -t chengis:latest .
+
+# Run standalone
+docker run -p 8080:8080 -v chengis-data:/data chengis:latest
+
+# Run with docker-compose (master + 2 agents)
+docker compose up --build
+```
+
+The included `docker-compose.yml` sets up a master node with two agent nodes, shared-secret auth, and a persistent data volume. All configuration is via `CHENGIS_*` environment variables.
 
 ### Start an Agent (Distributed Mode)
 
@@ -395,6 +452,47 @@ notify:
 
 Parameters are injected as environment variables: `PARAM_ENVIRONMENT`, `PARAM_SKIP_TESTS`.
 
+### Matrix Builds
+
+Run a pipeline across multiple parameter combinations:
+
+**Clojure DSL:**
+```clojure
+(defpipeline cross-platform
+  {:description "Cross-platform build"}
+
+  (matrix {:os ["linux" "macos"] :jdk ["11" "17"]}
+          :exclude [{:os "macos" :jdk "11"}])
+
+  (stage "Build"
+    (step "Compile" (sh "echo Building on $MATRIX_OS with JDK $MATRIX_JDK"))))
+```
+
+**Chengisfile (EDN):**
+```clojure
+{:stages [{:name "Build"
+           :steps [{:name "Compile" :run "make build"}]}]
+ :matrix {:os ["linux" "macos"] :jdk ["11" "17"]}}
+```
+
+**YAML:**
+```yaml
+strategy:
+  matrix:
+    os: [linux, macos]
+    jdk: ["11", "17"]
+  exclude:
+    - os: macos
+      jdk: "11"
+stages:
+  - name: Build
+    steps:
+      - name: Compile
+        run: echo "Building on $MATRIX_OS with JDK $MATRIX_JDK"
+```
+
+Each combination gets its own stage copy with `MATRIX_*` environment variables injected. Stage names are suffixed: `Build [os=linux, jdk=11]`.
+
 ## CLI Reference
 
 ```
@@ -405,12 +503,31 @@ Database:
 
 Jobs:
   job create <pipeline.clj>     Create a job from a pipeline definition file
+  job create-repo <name> <url>  Create a job from a repo with Chengisfile
   job list                      List all registered jobs
+  job show <name>               Show job details
+  job delete <name>             Delete a job
 
 Builds:
   build trigger <job-name>      Trigger a new build
+  build cancel <build-id>       Cancel a running build
+  build retry <build-id>        Retry a completed build
+  build list [job-name]         List builds (optionally by job)
   build show <build-id>         Show build details
-  build log <build-id>          Show build logs
+  build log <build-id>          Show build step output
+
+Secrets:
+  secret set <name> <value>     Set a secret (--scope <job-id> for job-scoped)
+  secret list                   List secret names (--scope <job-id>)
+  secret delete <name>          Delete a secret (--scope <job-id>)
+
+Pipeline:
+  pipeline validate <file>      Validate a pipeline file (.clj)
+  pipeline validate-edn <file>  Validate a Chengisfile (EDN)
+
+Database:
+  backup [output-dir]           Create database backup
+  restore <backup-file>         Restore from backup (--force to overwrite)
 
 System:
   status                        Show system status (jobs, builds, queue)
@@ -425,13 +542,20 @@ Agent:
 
 ## Configuration
 
-Chengis uses sensible defaults. Override via `resources/config.edn`:
+Chengis uses sensible defaults. Override via `resources/config.edn` or environment variables:
 
 ```clojure
 {:database   {:path "chengis.db"}
  :workspace  {:root "workspaces"}
  :server     {:port 8080 :host "0.0.0.0"}
  :log        {:level :info}
+
+ ;; Authentication & RBAC
+ :auth       {:enabled false
+              :jwt-secret "your-jwt-signing-secret"
+              :jwt-expiry-hours 24
+              :session-secret "your-session-signing-key"
+              :seed-admin-password "initial-admin-password"}
 
  ;; Secrets encryption (required for secrets management)
  :secrets    {:master-key "your-32-byte-hex-key"}
@@ -441,7 +565,8 @@ Chengis uses sensible defaults. Override via `resources/config.edn`:
               :retention-builds 10}
 
  ;; Notifications
- :notifications {:slack {:default-webhook "https://hooks.slack.com/..."}}
+ :notifications {:slack {:default-webhook "https://hooks.slack.com/..."}
+                 :email {:host "smtp.example.com" :port 587 :from "ci@example.com"}}
 
  ;; Plugin system
  :plugins    {:directory "plugins"
@@ -459,7 +584,25 @@ Chengis uses sensible defaults. Override via `resources/config.edn`:
                :agent {:port 9090
                        :labels #{"linux" "docker"}
                        :max-builds 2}
-               :dispatch {:fallback-local true}}
+               :dispatch {:fallback-local true
+                          :queue-enabled false}}
+
+ ;; Prometheus metrics
+ :metrics    {:enabled false
+              :auth-required false}
+
+ ;; Rate limiting
+ :rate-limit {:enabled false}
+
+ ;; Data retention
+ :retention  {:enabled false
+              :interval-hours 24
+              :audit-days 90
+              :webhook-events-days 30
+              :secret-access-days 90}
+
+ ;; Matrix builds
+ :matrix     {:max-combinations 25}
 
  ;; Automatic cleanup
  :cleanup    {:enabled true
@@ -467,11 +610,31 @@ Chengis uses sensible defaults. Override via `resources/config.edn`:
               :retention-builds 10}}
 ```
 
+### Environment Variable Configuration
+
+All configuration can be overridden with `CHENGIS_*` environment variables. Nested keys use `_` separators:
+
+| Environment Variable | Config Path | Example |
+|---------------------|-------------|---------|
+| `CHENGIS_SERVER_PORT` | `[:server :port]` | `8080` |
+| `CHENGIS_AUTH_ENABLED` | `[:auth :enabled]` | `true` |
+| `CHENGIS_AUTH_JWT_SECRET` | `[:auth :jwt-secret]` | `my-secret` |
+| `CHENGIS_DATABASE_PATH` | `[:database :path]` | `/data/chengis.db` |
+| `CHENGIS_SECRETS_MASTER_KEY` | `[:secrets :master-key]` | `0123456789abcdef...` |
+| `CHENGIS_DISTRIBUTED_ENABLED` | `[:distributed :enabled]` | `true` |
+| `CHENGIS_METRICS_ENABLED` | `[:metrics :enabled]` | `true` |
+| `CHENGIS_RETENTION_ENABLED` | `[:retention :enabled]` | `true` |
+
+Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings become integers.
+
 ## Web UI Routes
 
 | Route | Description |
 |-------|-------------|
 | `GET /` | Dashboard with build stats and recent activity |
+| `GET /login` | Login page |
+| `POST /login` | Authenticate user |
+| `POST /logout` | Log out |
 | `GET /jobs` | List all registered jobs |
 | `GET /jobs/:name` | Job detail with build history |
 | `POST /jobs/:name/trigger` | Trigger a new build |
@@ -480,9 +643,23 @@ Chengis uses sensible defaults. Override via `resources/config.edn`:
 | `POST /builds/:id/cancel` | Cancel a running build |
 | `POST /builds/:id/retry` | Retry a failed build |
 | `GET /builds/:id/artifacts/:file` | Download a collected artifact |
+| `GET /approvals` | Approval gates dashboard |
+| `POST /approvals/:id/approve` | Approve a gate |
+| `POST /approvals/:id/reject` | Reject a gate |
 | `GET /agents` | Agent management page |
+| `GET /settings/tokens` | API token management |
 | `GET /admin` | Admin dashboard (JVM stats, disk usage) |
 | `POST /admin/cleanup` | Trigger workspace/artifact cleanup |
+| `POST /admin/retention` | Run data retention cleanup |
+| `POST /admin/backup` | Download database backup |
+| `GET /admin/audit` | Audit log viewer with filtering |
+| `GET /admin/audit/export` | Export audit logs (CSV/JSON) |
+| `GET /admin/webhooks` | Webhook event viewer |
+| `GET /admin/users` | User management |
+| `GET /admin/templates` | Pipeline template management |
+| `GET /health` | Health check endpoint |
+| `GET /ready` | Readiness check endpoint |
+| `GET /metrics` | Prometheus metrics endpoint |
 | `GET /api/builds/:id/events` | SSE stream for live build updates |
 | `POST /api/webhook` | SCM webhook endpoint (GitHub/GitLab) |
 | `POST /api/agents/register` | Agent registration (machine-to-machine) |
@@ -493,24 +670,48 @@ Chengis uses sensible defaults. Override via `resources/config.edn`:
 ```
 chengis/
   src/chengis/
-    agent/                  # Agent node (4 files)
+    agent/                  # Agent node (5 files)
       core.clj              # Agent entry point + HTTP server
       client.clj            # HTTP client for master communication
       heartbeat.clj         # Periodic heartbeat scheduler
       worker.clj            # Build execution on agent
     cli/                    # Command-line interface (3 files)
-    db/                     # SQLite persistence layer (8 files)
-    distributed/            # Distributed build coordination (3 files)
+      core.clj              # CLI dispatcher
+      commands.clj          # Job, build, secret, pipeline commands
+      output.clj            # Formatted output helpers
+    db/                     # SQLite persistence layer (15 files)
+      connection.clj        # SQLite connection pool
+      migrate.clj           # Migratus migration runner
+      job_store.clj         # Job CRUD
+      build_store.clj       # Build + stage + step CRUD
+      secret_store.clj      # Encrypted secrets
+      artifact_store.clj    # Artifact metadata
+      notification_store.clj # Notification events
+      user_store.clj        # User accounts + API tokens
+      audit_store.clj       # Audit log queries
+      audit_export.clj      # CSV/JSON audit export
+      webhook_log.clj       # Webhook event logging
+      secret_audit.clj      # Secret access audit
+      approval_store.clj    # Approval gate records
+      template_store.clj    # Pipeline template CRUD
+      backup.clj            # Database backup/restore
+    distributed/            # Distributed build coordination (8 files)
       agent_registry.clj    # In-memory agent registry
       dispatcher.clj        # Build dispatch (local vs remote)
       master_api.clj        # Master API handlers
-    dsl/                    # Pipeline DSL and formats (5 files)
+      build_queue.clj       # Persistent build queue
+      queue_processor.clj   # Queue processing worker
+      circuit_breaker.clj   # Agent communication circuit breaker
+      orphan_monitor.clj    # Orphaned build detection
+      artifact_transfer.clj # Agent-to-master artifact upload
+    dsl/                    # Pipeline DSL and formats (6 files)
       core.clj              # defpipeline macro + DSL helpers
       chengisfile.clj       # EDN Pipeline as Code parser
       docker.clj            # Docker DSL helpers
       yaml.clj              # YAML workflow parser
       expressions.clj       # ${{ }} expression resolver
-    engine/                 # Build execution engine (11 files)
+      templates.clj         # Pipeline template DSL
+    engine/                 # Build execution engine (16 files)
       executor.clj          # Core pipeline runner
       build_runner.clj      # Build lifecycle + thread pool
       docker.clj            # Docker command generation
@@ -522,24 +723,71 @@ chengis/
       events.clj            # core.async event bus
       workspace.clj         # Build workspace management
       scheduler.clj         # Cron scheduling
+      log_masker.clj        # Secret masking in output
+      matrix.clj            # Matrix build expansion
+      retention.clj         # Data retention scheduler
+      approval.clj          # Approval gate engine
+      scm_status.clj        # SCM commit status reporting
     model/                  # Data specs (1 file)
-    plugin/                 # Plugin system (9 files)
-      protocol.clj          # Plugin protocols
+      spec.clj              # Clojure specs for validation
+    plugin/                 # Plugin system (13 files)
+      protocol.clj          # Plugin protocols (6 protocols)
       registry.clj          # Central plugin registry
       loader.clj            # Plugin discovery + lifecycle
-      builtin/              # 7 builtin plugins
-    web/                    # HTTP server and UI (10 files)
-      views/                # Hiccup view templates
+      builtin/              # 10 builtin plugins
+        shell.clj           # Shell step executor
+        docker.clj          # Docker step executor
+        docker_compose.clj  # Docker Compose step executor
+        console.clj         # Console notifier
+        slack.clj           # Slack notifier
+        email.clj           # Email notifier (SMTP)
+        git.clj             # Git SCM provider
+        local_artifacts.clj # Local artifact handler
+        yaml_format.clj     # YAML pipeline format
+        github_status.clj   # GitHub commit status reporter
+        gitlab_status.clj   # GitLab commit status reporter
+    web/                    # HTTP server and UI (26 files)
+      server.clj            # http-kit server startup
+      routes.clj            # Reitit routes + middleware
+      handlers.clj          # Request handlers
+      sse.clj               # Server-Sent Events
+      webhook.clj           # SCM webhook handler
+      auth.clj              # JWT/session/API token authentication + RBAC
+      audit.clj             # Audit logging middleware
+      alerts.clj            # System alert management
+      rate_limit.clj        # Request rate limiting
+      account_lockout.clj   # Account lockout logic
+      metrics_middleware.clj # HTTP request metrics
+      views/                # Hiccup view templates (15 files)
+        layout.clj          # Base HTML layout
+        dashboard.clj       # Home page
+        jobs.clj            # Job list + detail
+        builds.clj          # Build detail + logs + matrix grid
+        components.clj      # Reusable UI components
+        admin.clj           # Admin dashboard
+        trigger_form.clj    # Parameterized build form
         agents.clj          # Agent management page
-    config.clj              # Configuration
+        login.clj           # Login page
+        users.clj           # User management page
+        tokens.clj          # API token management
+        audit.clj           # Audit log viewer
+        approvals.clj       # Approval gates page
+        templates.clj       # Pipeline template management
+        webhooks.clj        # Webhook event viewer
+    config.clj              # Configuration loading + env var overrides
+    logging.clj             # Structured logging setup
+    metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (21 files)
-  resources/migrations/     # SQLite migrations (10 versions)
+  test/chengis/             # Test suite (47 files)
+  resources/migrations/     # SQLite migrations (22 versions)
   pipelines/                # Example pipeline definitions (5 files)
+  benchmarks/               # Performance benchmark suite
+  Dockerfile                # Multi-stage Docker build
+  docker-compose.yml        # Master + 2 agents deployment
 ```
 
-**Codebase:** ~7,700 lines source + ~2,300 lines tests across 82 files
+**Codebase:** ~13,500 lines source + ~6,100 lines tests across 145 files
 
 ## Technology Stack
 
@@ -549,11 +797,14 @@ chengis/
 | Concurrency | core.async | Parallel steps, SSE event bus |
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + next.jdbc + HoneySQL | Persistence |
-| Migrations | Migratus | Schema evolution (10 versions) |
+| Migrations | Migratus | Schema evolution (22 versions) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
 | Frontend | htmx + Tailwind CSS | Reactive UI, zero custom JS |
+| Auth | buddy-sign (JWT) | Token-based authentication |
+| Metrics | iapetos (Prometheus) | Observability + `/metrics` endpoint |
+| HTTP client | clj-http | Agent communication |
 | YAML | clj-yaml (SnakeYAML) | YAML workflow parsing |
 | Scheduling | Chime | Cron-based triggers + heartbeats |
 | Logging | Timbre | Structured logging |
@@ -569,11 +820,12 @@ chengis/
 | Runtime | Single JVM, optional agent nodes | Master + optional agent nodes |
 | Storage | Embedded SQLite | XML files on filesystem |
 | UI rendering | Server-side (Hiccup + htmx) | Server-side (Jelly/Groovy) + client JS |
-| Plugin system | Protocol-based (7 builtin plugins) | 1800+ plugins, complex classloader |
+| Plugin system | Protocol-based (10 builtin plugins) | 1800+ plugins, complex classloader |
 | Pipeline formats | Clojure DSL + EDN + YAML | Groovy DSL (scripted/declarative) |
 | Container support | Docker steps (built-in) | Docker Pipeline plugin |
 | Distributed | HTTP master/agent (built-in) | JNLP/SSH agents |
 | API | Ring HTTP handlers + JSON API | REST API + Jenkins CLI |
+| Auth | JWT + sessions + API tokens with RBAC | Jenkins security realm + authorization strategy |
 
 ### When to Choose Chengis
 
@@ -588,7 +840,6 @@ chengis/
 ### When to Choose Jenkins
 
 - You need specific integrations (LDAP, Artifactory, Kubernetes, etc.)
-- You have complex approval workflows and RBAC requirements
 - You're in a large enterprise with existing Jenkins infrastructure
 - You need the ecosystem of 1800+ community plugins
 
@@ -605,19 +856,28 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **100 tests, 493 assertions, 0 failures**
+Current test suite: **283 tests, 1331 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
 - Chengisfile parsing and conversion
 - YAML parsing, validation, and expression resolution
 - Pipeline execution engine
+- Matrix build expansion
 - Docker command generation and input validation
 - Plugin registry and loader
 - Distributed agent registry, dispatcher, and master API
+- Build queue, circuit breaker, and orphan monitor
+- Approval gate engine
 - Post-build action handling
 - Build cancellation
+- Authentication, RBAC, and JWT handling
+- Account lockout and rate limiting
+- Audit logging and export
 - Database persistence and statistics
+- Webhook event logging
+- Configuration and environment variable loading
+- Prometheus metrics
 - Web view rendering
 
 ## Building an Uberjar
@@ -648,6 +908,6 @@ MIT
 
 ## Acknowledgments
 
-Built with these excellent Clojure libraries: [core.async](https://github.com/clojure/core.async), [babashka/process](https://github.com/babashka/process), [next.jdbc](https://github.com/seancorfield/next-jdbc), [HoneySQL](https://github.com/seancorfield/honeysql), [http-kit](https://github.com/http-kit/http-kit), [Reitit](https://github.com/metosin/reitit), [Hiccup](https://github.com/weavejester/hiccup), [Timbre](https://github.com/taoensso/timbre), [Migratus](https://github.com/yogthos/migratus), [Chime](https://github.com/jarohen/chime), [clj-yaml](https://github.com/clj-commons/clj-yaml).
+Built with these excellent Clojure libraries: [core.async](https://github.com/clojure/core.async), [babashka/process](https://github.com/babashka/process), [next.jdbc](https://github.com/seancorfield/next-jdbc), [HoneySQL](https://github.com/seancorfield/honeysql), [http-kit](https://github.com/http-kit/http-kit), [Reitit](https://github.com/metosin/reitit), [Hiccup](https://github.com/weavejester/hiccup), [Timbre](https://github.com/taoensso/timbre), [Migratus](https://github.com/yogthos/migratus), [Chime](https://github.com/jarohen/chime), [clj-yaml](https://github.com/clj-commons/clj-yaml), [buddy-sign](https://github.com/funcool/buddy-sign), [iapetos](https://github.com/clj-commons/iapetos), [clj-http](https://github.com/dakrone/clj-http).
 
 UI powered by [htmx](https://htmx.org/) and [Tailwind CSS](https://tailwindcss.com/).
