@@ -49,7 +49,7 @@
 
    Arguments:
      system        - system map with :config and :db
-     build-payload - map with :pipeline, :build-id, :job-id, :parameters, etc.
+     build-payload - map with :pipeline, :build-id, :job-id, :parameters, :org-id, etc.
      labels        - set of required agent labels (from pipeline or job config)
 
    Returns:
@@ -59,14 +59,19 @@
 
    When queue-enabled is true, builds are enqueued rather than dispatched directly.
    The queue processor handles actual dispatch with retry and circuit breaker.
-   If distributed is disabled or no agent matches, falls back to local."
+   If distributed is disabled or no agent matches, falls back to local.
+   Org-id from build-payload is used to select org-scoped or shared agents."
   [system build-payload labels]
   (let [dist-config (get-in system [:config :distributed])
         enabled? (:enabled dist-config)
         queue-enabled? (get-in dist-config [:dispatch :queue-enabled] false)
         fallback-local? (get-in dist-config [:dispatch :fallback-local] true)
         auth-token (get-in dist-config [:auth-token])
-        max-retries (get-in dist-config [:dispatch :max-retries] 3)]
+        max-retries (get-in dist-config [:dispatch :max-retries] 3)
+        org-id (:org-id build-payload)]
+    (when-not org-id
+      (log/warn "Build dispatched without org-id scoping"
+                {:build-id (:build-id build-payload)}))
     (cond
       ;; Distributed disabled — local execution
       (not enabled?)
@@ -83,7 +88,7 @@
 
       ;; Direct dispatch mode (legacy — no queue)
       :else
-      (let [agent (agent-reg/find-available-agent labels)]
+      (let [agent (agent-reg/find-available-agent labels :org-id org-id)]
         (if agent
           (let [result (dispatch-to-agent! agent build-payload auth-token)]
             (if (:dispatched? result)

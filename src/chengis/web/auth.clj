@@ -2,6 +2,7 @@
   "Authentication and authorization middleware.
    Config-gated: when :auth :enabled is false, all requests are treated as admin."
   (:require [chengis.db.user-store :as user-store]
+            [chengis.db.org-store :as org-store]
             [chengis.web.account-lockout :as lockout]
             [chengis.metrics :as metrics]
             [next.jdbc :as jdbc]
@@ -508,3 +509,52 @@
                    :username (:username user)
                    :role (keyword (:role user))
                    :session-version (or (:session-version user) 0)}})))))
+
+;; ---------------------------------------------------------------------------
+;; Organization context middleware
+;; ---------------------------------------------------------------------------
+
+(defn current-org
+  "Extract the current organization context from the request.
+   Returns {:id org-id :role org-role} or nil."
+  [req]
+  (:org/current req))
+
+(defn current-org-id
+  "Extract the current organization ID from the request. Returns nil if no org context."
+  [req]
+  (get-in req [:org/current :id]))
+
+(defn wrap-org-context
+  "Ring middleware: resolve the user's current org from session or default membership.
+   Attaches :org/current {:id org-id :role role} to the request.
+   When auth is disabled, uses the default org.
+   Must be applied AFTER wrap-auth."
+  [handler system]
+  (let [ds (:db system)
+        config (:config system)
+        auth-enabled? (get-in config [:auth :enabled] false)]
+    (fn [req]
+      (if-let [user (:auth/user req)]
+        (if (not auth-enabled?)
+          ;; Auth disabled — use default org with admin role
+          (handler (assoc req :org/current {:id org-store/default-org-id :role :admin}))
+          ;; Auth enabled — look up org membership
+          (let [;; Check session for explicit org selection
+                session-org-id (get-in req [:session :current-org-id])
+                ;; Or default to user's first org
+                user-orgs (when (:id user)
+                            (org-store/list-user-orgs ds (:id user)))
+                org-id (or session-org-id
+                           (:org-id (first user-orgs)))
+                membership (when (and org-id (:id user))
+                             (org-store/get-membership ds org-id (:id user)))]
+            (if membership
+              (handler (assoc req :org/current {:id org-id
+                                                :role (keyword (:role membership))}))
+              ;; No org membership — still allow request but with no org context
+              ;; (handlers will use default-org-id as fallback)
+              (handler (assoc req :org/current {:id org-store/default-org-id
+                                                :role (keyword (or (:role user) "viewer"))})))))
+        ;; No user (public path, distributed agent, etc.) — no org context
+        (handler req)))))

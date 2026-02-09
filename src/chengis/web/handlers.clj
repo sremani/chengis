@@ -31,6 +31,7 @@
             [chengis.web.account-lockout :as lockout]
             [chengis.db.approval-store :as approval-store]
             [chengis.db.template-store :as template-store]
+            [chengis.db.org-store :as org-store]
             [chengis.db.backup :as backup]
             [chengis.db.audit-export :as audit-export]
             [chengis.web.views.approvals :as v-approvals]
@@ -142,7 +143,8 @@
   (fn [req]
     (let [ds (:db system)
           job-name (get-in req [:path-params :name])
-          job (job-store/get-job ds job-name)
+          org-id (auth/current-org-id req)
+          job (job-store/get-job ds job-name :org-id org-id)
           form-params (:form-params req)
           build-params (extract-params-from-form form-params)]
       (if-not job
@@ -150,7 +152,8 @@
         (let [build-record (build-store/create-build! ds
                              {:job-id (:id job)
                               :trigger-type :manual
-                              :parameters build-params})
+                              :parameters build-params
+                              :org-id org-id})
               build-id (:id build-record)]
           (log/info "Web trigger: build #" (:build-number build-record) "for" job-name
                     "(id:" build-id ")" (when (seq build-params) (str "params:" build-params)))
@@ -183,13 +186,14 @@
 (defn build-detail-page [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           build-id (get-in req [:path-params :id])
-          build (build-store/get-build ds build-id)]
+          build (build-store/get-build ds build-id :org-id org-id)]
       (if-not build
         (not-found (str "Build not found: " build-id))
         (let [stages (build-store/get-build-stages ds build-id)
               steps (build-store/get-build-steps ds build-id)
-              job (job-store/get-job-by-id ds (:job-id build))
+              job (job-store/get-job-by-id ds (:job-id build) :org-id org-id)
               artifacts (artifact-store/list-artifacts ds build-id)
               notifications (notification-store/list-notifications ds build-id)]
           (html-response
@@ -204,8 +208,9 @@
 (defn build-log-page [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           build-id (get-in req [:path-params :id])
-          build (build-store/get-build ds build-id)]
+          build (build-store/get-build ds build-id :org-id org-id)]
       (if-not build
         (not-found (str "Build not found: " build-id))
         (let [steps (build-store/get-build-steps ds build-id)]
@@ -229,16 +234,18 @@
 (defn retry-build [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           build-id (get-in req [:path-params :id])
-          build (build-store/get-build ds build-id)]
+          build (build-store/get-build ds build-id :org-id org-id)]
       (if-not build
         (not-found (str "Build not found: " build-id))
-        (let [job (job-store/get-job-by-id ds (:job-id build))
+        (let [job (job-store/get-job-by-id ds (:job-id build) :org-id org-id)
               new-record (build-store/create-build! ds
                            {:job-id (:job-id build)
                             :trigger-type :retry
                             :parameters (:parameters build)
-                            :parent-build-id build-id})
+                            :parent-build-id build-id
+                            :org-id org-id})
               new-id (:id new-record)]
           (log/info "Retry build #" (:build-number new-record) "from" build-id)
           (try
@@ -396,8 +403,9 @@
 
 (defn agents-page [system]
   (fn [req]
-    (let [agents (agent-reg/list-agents)
-          summary (agent-reg/registry-summary)
+    (let [org-id (auth/current-org-id req)
+          agents (agent-reg/list-agents :org-id org-id)
+          summary (agent-reg/registry-summary :org-id org-id)
           cb-states (cb/get-all-states)
           queue-enabled? (get-in system [:config :distributed :dispatch :queue-enabled] false)
           queue-depth (when (and queue-enabled? (:db system))
@@ -831,10 +839,19 @@
   (fn [req]
     (let [ds (:db system)
           config (:config system)
-          gates (try (approval-store/list-pending-gates ds) (catch Exception _ []))
-          pending-count (try (approval-store/count-pending-gates ds) (catch Exception _ 0))]
+          org-id (auth/current-org-id req)
+          gates (try (approval-store/list-pending-gates ds :org-id org-id) (catch Exception _ []))
+          pending-count (try (approval-store/count-pending-gates ds :org-id org-id) (catch Exception _ 0))
+          ;; Enrich gates with response data for multi-approver display
+          gates-with-responses (mapv (fn [gate]
+                                       (if (and (:min-approvals gate) (> (:min-approvals gate) 1))
+                                         (assoc gate :responses
+                                                (try (approval-store/get-gate-responses ds (:id gate))
+                                                     (catch Exception _ [])))
+                                         gate))
+                                     gates)]
       (html-response
-        (v-approvals/render {:gates gates
+        (v-approvals/render {:gates gates-with-responses
                              :pending-count pending-count
                              :csrf-token (csrf-token req)
                              :user (auth/current-user req)
@@ -845,7 +862,8 @@
     (let [ds (:db system)
           gate-id (get-in req [:path-params :id])
           user (auth/current-user req)
-          gate (approval-store/get-gate ds gate-id)]
+          org-id (auth/current-org-id req)
+          gate (approval-store/get-gate ds gate-id :org-id org-id)]
       (cond
         (nil? gate)
         (not-found "Approval gate not found")
@@ -873,7 +891,8 @@
     (let [ds (:db system)
           gate-id (get-in req [:path-params :id])
           user (auth/current-user req)
-          gate (approval-store/get-gate ds gate-id)]
+          org-id (auth/current-org-id req)
+          gate (approval-store/get-gate ds gate-id :org-id org-id)]
       (cond
         (nil? gate)
         (not-found "Approval gate not found")
@@ -897,9 +916,10 @@
            :headers {"Location" "/approvals"}})))))
 
 (defn api-pending-approvals [system]
-  (fn [_req]
+  (fn [req]
     (let [ds (:db system)
-          gates (try (approval-store/list-pending-gates ds) (catch Exception _ []))]
+          org-id (auth/current-org-id req)
+          gates (try (approval-store/list-pending-gates ds :org-id org-id) (catch Exception _ []))]
       {:status 200
        :headers {"Content-Type" "application/json"}
        :body (json/write-str gates)})))
@@ -1008,3 +1028,31 @@
       (template-store/delete-template! ds template-id)
       (log/info "Template deleted:" template-id "by:" (:username (auth/current-user req)))
       {:status 303 :headers {"Location" "/admin/templates"}})))
+
+;; ---------------------------------------------------------------------------
+;; Organization switching
+;; ---------------------------------------------------------------------------
+
+(defn switch-org-handler
+  "Handle POST /orgs/:slug/switch — switch the user's current org context.
+   Stores the selected org ID in the session."
+  [system]
+  (fn [req]
+    (let [ds (:db system)
+          slug (get-in req [:path-params :slug])
+          user (auth/current-user req)
+          org (org-store/get-org-by-slug ds slug)]
+      (if (and org user)
+        (let [membership (org-store/get-membership ds (:id org) (:id user))]
+          (if membership
+            ;; Valid org + membership — store in session and redirect
+            (let [session (assoc (:session req) :current-org-id (:id org))]
+              {:status 303
+               :headers {"Location" "/"}
+               :session session})
+            ;; User is not a member of this org
+            {:status 403
+             :headers {"Content-Type" "text/html; charset=utf-8"}
+             :body "<h1>403 Forbidden</h1><p>You are not a member of this organization.</p>"}))
+        ;; Org not found
+        (not-found "Organization not found")))))

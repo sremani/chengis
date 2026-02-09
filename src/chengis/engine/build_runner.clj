@@ -96,9 +96,10 @@
         registry (:metrics system)
         pipeline (:pipeline job)
         build-record (build-store/create-build! ds
-                       {:job-id (:id job)
-                        :trigger-type trigger-type
-                        :parameters parameters})
+                       (cond-> {:job-id (:id job)
+                                :trigger-type trigger-type
+                                :parameters parameters}
+                         (:org-id job) (assoc :org-id (:org-id job))))
         build-id (:id build-record)
         build-number (:build-number build-record)
         cancelled-atom (atom false)

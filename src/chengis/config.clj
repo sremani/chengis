@@ -111,6 +111,9 @@
           :default-role "viewer"
           :auto-create-users true ;; JIT provision users on first OIDC login
           :provider-name nil}     ;; Display name, e.g., "Okta" (auto-detected if nil)
+   :multi-tenancy {:enabled true          ;; Enable org-based resource isolation
+                   :default-org-slug "default"  ;; Slug of the auto-created default org
+                   :auto-assign-default true}   ;; Auto-assign new users to default org
    :approvals {:enabled true
                :default-timeout-minutes 1440
                :poll-interval-ms 5000}

@@ -47,16 +47,18 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- validate-agent-registration
-  "Validate and sanitize agent registration body. Returns sanitized map or nil."
+  "Validate and sanitize agent registration body. Returns sanitized map or nil.
+   Accepts optional :org-id to assign the agent to a specific organization."
   [body]
   (when (map? body)
-    (let [allowed-keys #{:name :url :labels :max-builds :system-info}
+    (let [allowed-keys #{:name :url :labels :max-builds :system-info :org-id}
           sanitized (select-keys body allowed-keys)]
       (when (:url sanitized) ;; url is required
         (cond-> sanitized
           (:labels sanitized) (update :labels #(set (map str %)))
           (:max-builds sanitized) (update :max-builds #(min (max (int %) 1) 100))
-          (:name sanitized) (update :name #(subs (str %) 0 (min (count (str %)) 64))))))))
+          (:name sanitized) (update :name #(subs (str %) 0 (min (count (str %)) 64)))
+          (:org-id sanitized) (update :org-id str))))))
 
 (defn register-agent-handler
   "POST /api/agents/register — Register a new agent.
@@ -139,10 +141,12 @@
             (json-response 200 {:status "ok"})))))))
 
 (defn list-agents-handler
-  "GET /api/agents — List all registered agents."
+  "GET /api/agents — List all registered agents.
+   Accepts optional ?org-id query param to filter by organization."
   [system]
   (fn [req]
     (if-not (check-auth req system)
       (json-response 401 {:error "Unauthorized"})
-      (json-response 200 {:agents (agent-reg/list-agents)
-                          :summary (agent-reg/registry-summary)}))))
+      (let [org-id (get-in req [:query-params "org-id"])]
+        (json-response 200 {:agents (agent-reg/list-agents :org-id org-id)
+                            :summary (agent-reg/registry-summary :org-id org-id)})))))

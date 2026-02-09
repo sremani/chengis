@@ -52,10 +52,11 @@
 
 (defn- find-agent-with-circuit-breaker
   "Find an available agent, filtering out agents with open circuit breakers.
-   Uses the agent registry's list and filters by circuit breaker state."
-  [labels cb-reset-ms]
-  (let [;; Get all available agents that match labels
-        candidates (->> (agent-reg/list-agents)
+   Uses the agent registry's list and filters by circuit breaker state.
+   When org-id is provided, only considers agents for that org plus shared agents."
+  [labels cb-reset-ms & {:keys [org-id]}]
+  (let [;; Get all available agents that match labels (pre-filtered by org if provided)
+        candidates (->> (agent-reg/list-agents :org-id org-id)
                         (filter #(= :online (:status %)))
                         (filter #(< (:current-builds % 0) (:max-builds % 2)))
                         (filter (fn [agent]
@@ -87,7 +88,8 @@
         fallback-local? (get dispatch-config :fallback-local true)]
     (when-let [item (bq/dequeue-next! ds)]
       (let [labels (set (or (:labels item) []))
-            agent (find-agent-with-circuit-breaker labels cb-reset-ms)]
+            org-id (get-in item [:payload :org-id])
+            agent (find-agent-with-circuit-breaker labels cb-reset-ms :org-id org-id)]
         (if agent
           ;; Dispatch to agent
           (let [result (dispatch-to-agent! agent (:payload item) auth-token)]

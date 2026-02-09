@@ -70,6 +70,8 @@
 
 (defn check-stage-approval!
   "Check if a stage requires approval. If so, create a gate and wait.
+   Supports multi-approver via :approver-group and :min-approvals in the
+   stage's :approval map.
    Returns {:proceed true} or {:proceed false :reason \"...\"}."
   [system build-ctx stage-def]
   (let [approval (:approval stage-def)]
@@ -82,13 +84,17 @@
             message (or (:message approval) (str "Approve stage: " stage-name))
             role (or (:role approval) "developer")
             timeout (or (:timeout-minutes approval) 1440)
+            approver-group (:approver-group approval)
+            min-approvals (or (:min-approvals approval) 1)
             registry (:metrics system)
             gate-id (approval-store/create-gate! ds
                       {:build-id build-id
                        :stage-name stage-name
                        :required-role (name role)
                        :message message
-                       :timeout-minutes timeout})]
+                       :timeout-minutes timeout
+                       :approver-group approver-group
+                       :min-approvals min-approvals})]
         (if-not gate-id
           ;; Gate creation failed — fail closed (abort stage for safety)
           (do (log/warn "Could not create approval gate for" stage-name

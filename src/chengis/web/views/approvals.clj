@@ -1,5 +1,6 @@
 (ns chengis.web.views.approvals
-  "Approval gates list page — shows pending approvals for builds."
+  "Approval gates list page — shows pending approvals for builds.
+   Supports multi-approver workflows with approval progress display."
   (:require [chengis.web.views.layout :as layout]
             [chengis.web.views.components :as c]
             [hiccup.util :refer [escape-html]]))
@@ -15,6 +16,33 @@
                  "bg-gray-100 text-gray-800")]
     [:span {:class (str "px-2 py-0.5 text-xs font-medium rounded " colors)}
      status]))
+
+(defn- approval-progress
+  "Render approval progress for multi-approver gates."
+  [gate]
+  (let [min-approvals (or (:min-approvals gate) 1)
+        responses (or (:responses gate) [])
+        approved-count (count (filter #(= "approved" (:decision %)) responses))
+        rejected-count (count (filter #(= "rejected" (:decision %)) responses))]
+    (when (> min-approvals 1)
+      [:div {:class "mt-1"}
+       [:div {:class "flex items-center gap-2 text-xs"}
+        [:span {:class "text-green-600 font-medium"}
+         (str approved-count "/" min-approvals " approved")]
+        (when (pos? rejected-count)
+          [:span {:class "text-red-600"}
+           (str rejected-count " rejected")])]
+       ;; Show individual responses
+       (when (seq responses)
+         [:div {:class "flex flex-wrap gap-1 mt-1"}
+          (for [resp responses]
+            (let [decision (:decision resp)
+                  color (if (= "approved" decision)
+                          "bg-green-50 text-green-700 border-green-200"
+                          "bg-red-50 text-red-700 border-red-200")]
+              [:span {:class (str "inline-flex items-center px-1.5 py-0.5 rounded border text-xs " color)
+                      :title (str (:user-id resp) " — " decision)}
+               (escape-html (str (:user-id resp)))]))])])))
 
 (defn- gate-row
   "Single approval gate row."
@@ -32,7 +60,8 @@
     [:span {:class "px-2 py-0.5 text-xs font-medium rounded bg-blue-100 text-blue-800"}
      (:required-role gate)]]
    [:td {:class "py-3 px-4"}
-    (status-badge (:status gate))]
+    (status-badge (:status gate))
+    (approval-progress gate)]
    [:td {:class "py-3 px-4 text-xs text-gray-400"}
     (:created-at gate)]
    [:td {:class "py-3 px-4"}

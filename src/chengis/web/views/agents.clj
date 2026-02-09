@@ -46,6 +46,16 @@
        [:span {:class "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800"}
         (escape-html (str label))])]))
 
+(defn- org-badge
+  "Render org assignment badge — shared or org-specific."
+  [org-id]
+  (if org-id
+    [:span {:class "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800"
+            :title (str "Org: " org-id)}
+     (escape-html (str org-id))]
+    [:span {:class "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600"}
+     "Shared"]))
+
 (defn- system-info-row
   "Render a compact system resource line for an agent."
   [system-info]
@@ -134,6 +144,7 @@
          [:tr
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Name"]
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Status"]
+          [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Scope"]
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "URL"]
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Labels"]
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Builds"]
@@ -149,6 +160,8 @@
                (system-info-row (:system-info agent))]
               [:td {:class "px-6 py-4 whitespace-nowrap"}
                (status-badge (:status agent))]
+              [:td {:class "px-6 py-4 whitespace-nowrap"}
+               (org-badge (:org-id agent))]
               [:td {:class "px-6 py-4 whitespace-nowrap text-sm text-gray-500"}
                (escape-html (str (:url agent)))]
               [:td {:class "px-6 py-4"}

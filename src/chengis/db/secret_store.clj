@@ -74,11 +74,12 @@
 
 (defn- audit-secret!
   "Log a secret access event (non-blocking, swallows errors)."
-  [ds action secret-name scope {:keys [user-id ip-address registry]}]
+  [ds action secret-name scope {:keys [user-id ip-address registry org-id]}]
   (try
     (secret-audit/log-secret-access! ds
       {:secret-name secret-name :scope (or scope "global")
-       :action action :user-id user-id :ip-address ip-address})
+       :action action :user-id user-id :ip-address ip-address
+       :org-id org-id})
     (metrics/record-secret-access! registry action)
     (catch Exception _)))
 
@@ -88,14 +89,16 @@
 
 (defn set-secret!
   "Create or update a secret. Scope is 'global' or a job-id.
-   Optional :user-id, :ip-address, :registry for audit logging."
-  [ds config secret-name value & {:keys [scope user-id ip-address registry] :or {scope "global"}}]
+   Optional :user-id, :ip-address, :registry, :org-id for audit logging and org scoping."
+  [ds config secret-name value & {:keys [scope user-id ip-address registry org-id] :or {scope "global"}}]
   (let [key (get-master-key config)
         encrypted (encrypt key value)
+        where-conds (cond-> [:and [:= :scope scope] [:= :name secret-name]]
+                      org-id (conj [:= :org-id org-id]))
         existing (jdbc/execute-one! ds
                    (sql/format {:select [:id]
                                 :from :secrets
-                                :where [:and [:= :scope scope] [:= :name secret-name]]})
+                                :where where-conds})
                    {:builder-fn rs/as-unqualified-kebab-maps})]
     (if existing
       ;; Update
@@ -103,53 +106,61 @@
         (sql/format {:update :secrets
                      :set {:encrypted-value encrypted
                            :updated-at [:raw "CURRENT_TIMESTAMP"]}
-                     :where [:and [:= :scope scope] [:= :name secret-name]]}))
+                     :where where-conds}))
       ;; Insert
       (jdbc/execute-one! ds
         (sql/format {:insert-into :secrets
-                     :values [{:id (util/generate-id)
-                               :scope scope
-                               :name secret-name
-                               :encrypted-value encrypted}]})))
+                     :values [(cond-> {:id (util/generate-id)
+                                       :scope scope
+                                       :name secret-name
+                                       :encrypted-value encrypted}
+                                org-id (assoc :org-id org-id))]})))
     (audit-secret! ds :write secret-name scope
-      {:user-id user-id :ip-address ip-address :registry registry})))
+      {:user-id user-id :ip-address ip-address :registry registry :org-id org-id})))
 
 (defn get-secret
   "Get a decrypted secret value. Returns nil if not found.
-   Optional :user-id, :ip-address, :registry for audit logging."
-  [ds config secret-name & {:keys [scope user-id ip-address registry] :or {scope "global"}}]
-  (let [row (jdbc/execute-one! ds
+   Optional :user-id, :ip-address, :registry, :org-id for audit logging and org scoping."
+  [ds config secret-name & {:keys [scope user-id ip-address registry org-id] :or {scope "global"}}]
+  (let [where-conds (cond-> [:and [:= :scope scope] [:= :name secret-name]]
+                      org-id (conj [:= :org-id org-id]))
+        row (jdbc/execute-one! ds
               (sql/format {:select [:encrypted-value]
                            :from :secrets
-                           :where [:and [:= :scope scope] [:= :name secret-name]]})
+                           :where where-conds})
               {:builder-fn rs/as-unqualified-kebab-maps})]
     (when row
       (audit-secret! ds :read secret-name scope
-        {:user-id user-id :ip-address ip-address :registry registry})
+        {:user-id user-id :ip-address ip-address :registry registry :org-id org-id})
       (let [key (get-master-key config)]
         (decrypt key (:encrypted-value row))))))
 
 (defn list-secret-names
-  "List secret names (never values) for a scope. Returns a vector of name strings."
-  [ds & {:keys [scope] :or {scope "global"}}]
-  (mapv :name
-    (jdbc/execute! ds
-      (sql/format {:select [:name]
-                   :from :secrets
-                   :where [:= :scope scope]
-                   :order-by [[:name :asc]]})
-      {:builder-fn rs/as-unqualified-kebab-maps})))
+  "List secret names (never values) for a scope. Returns a vector of name strings.
+   When org-id is provided, scopes to that organization."
+  [ds & {:keys [scope org-id] :or {scope "global"}}]
+  (let [where-conds (cond-> [:and [:= :scope scope]]
+                      org-id (conj [:= :org-id org-id]))]
+    (mapv :name
+      (jdbc/execute! ds
+        (sql/format {:select [:name]
+                     :from :secrets
+                     :where where-conds
+                     :order-by [[:name :asc]]})
+        {:builder-fn rs/as-unqualified-kebab-maps}))))
 
 (defn delete-secret!
   "Delete a secret. Returns true if deleted, false if not found.
-   Optional :user-id, :ip-address, :registry for audit logging."
-  [ds secret-name & {:keys [scope user-id ip-address registry] :or {scope "global"}}]
-  (let [result (jdbc/execute-one! ds
+   Optional :user-id, :ip-address, :registry, :org-id for audit logging and org scoping."
+  [ds secret-name & {:keys [scope user-id ip-address registry org-id] :or {scope "global"}}]
+  (let [where-conds (cond-> [:and [:= :scope scope] [:= :name secret-name]]
+                      org-id (conj [:= :org-id org-id]))
+        result (jdbc/execute-one! ds
                  (sql/format {:delete-from :secrets
-                              :where [:and [:= :scope scope] [:= :name secret-name]]}))]
+                              :where where-conds}))]
     (when (pos? (:next.jdbc/update-count result 0))
       (audit-secret! ds :delete secret-name scope
-        {:user-id user-id :ip-address ip-address :registry registry}))
+        {:user-id user-id :ip-address ip-address :registry registry :org-id org-id}))
     (pos? (:next.jdbc/update-count result 0))))
 
 (defn get-secrets-for-build
@@ -158,21 +169,26 @@
    and the backend is not \"local\". Otherwise falls back to the local
    AES-256-GCM encrypted store.
    Merges global secrets with job-scoped secrets (job scope overrides global).
-   Logs each secret access as :build-read."
-  [ds config job-id]
+   Logs each secret access as :build-read.
+   When org-id is provided, scopes secrets to that organization."
+  [ds config job-id & {:keys [org-id]}]
   ;; Try plugin-based backend first (when configured as non-local)
   (let [backend-type (get-in config [:secrets :backend] "local")]
     (if (= "local" backend-type)
       ;; Local encrypted DB store (original behavior)
       (let [key (get-master-key config)
+            scope-conds [:or [:= :scope "global"] [:= :scope job-id]]
+            where-conds (if org-id
+                          [:and scope-conds [:= :org-id org-id]]
+                          scope-conds)
             rows (jdbc/execute! ds
                    (sql/format {:select [:scope :name :encrypted-value]
                                 :from :secrets
-                                :where [:or [:= :scope "global"] [:= :scope job-id]]
+                                :where where-conds
                                 :order-by [[:scope :asc]]}) ;; global first, then job overrides
                    {:builder-fn rs/as-unqualified-kebab-maps})]
         (doseq [row rows]
-          (audit-secret! ds :build-read (:name row) (:scope row) {}))
+          (audit-secret! ds :build-read (:name row) (:scope row) {:org-id org-id}))
         (reduce (fn [m row]
                   (assoc m (:name row) (decrypt key (:encrypted-value row))))
                 {}
@@ -183,7 +199,7 @@
                           (if fallback?
                             (do
                               (taoensso.timbre/warn "Secret backend" backend-type reason "— falling back to local")
-                              (get-secrets-for-build ds (assoc-in config [:secrets :backend] "local") job-id))
+                              (get-secrets-for-build ds (assoc-in config [:secrets :backend] "local") job-id :org-id org-id))
                             (throw (ex-info (str "Secret backend " backend-type " " reason " (fallback disabled)")
                                             {:backend backend-type}))))]
         (try

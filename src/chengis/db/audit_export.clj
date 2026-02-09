@@ -50,7 +50,8 @@
 (defn export-csv
   "Stream audit logs as CSV to a java.io.Writer.
    Writes header row followed by data rows in batches.
-   Filters are passed through to audit-store/query-audits."
+   Filters are passed through to audit-store/query-audits.
+   Supports :org-id in filters for org-scoped exports."
   [ds filters ^Writer writer]
   (.write writer csv-header)
   (.write writer "\n")
@@ -67,7 +68,8 @@
 (defn export-json
   "Stream audit logs as a JSON array to a java.io.Writer.
    Reads in batches for memory efficiency.
-   Filters are passed through to audit-store/query-audits."
+   Filters are passed through to audit-store/query-audits.
+   Supports :org-id in filters for org-scoped exports."
   [ds filters ^Writer writer]
   (.write writer "[")
   (loop [offset 0
@@ -86,6 +88,7 @@
   (.flush writer))
 
 (defn export-count
-  "Count the number of audit events matching the given filters."
+  "Count the number of audit events matching the given filters.
+   Supports :org-id in filters for org-scoped counts."
   [ds filters]
   (audit-store/count-audits ds filters))

@@ -6,25 +6,27 @@
             [chengis.util :as util]))
 
 (defn log-webhook-event!
-  "Insert a webhook event record. Returns the generated ID."
+  "Insert a webhook event record. Returns the generated ID.
+   When :org-id is provided, associates the event with that organization."
   [ds {:keys [provider event-type repo-url repo-name branch commit-sha
               signature-valid status matched-jobs triggered-builds
-              error payload-size processing-ms]}]
+              error payload-size processing-ms org-id]}]
   (let [id (util/generate-id)
-        row {:id id
-             :provider (if provider (name provider) "unknown")
-             :event-type event-type
-             :repo-url repo-url
-             :repo-name repo-name
-             :branch branch
-             :commit-sha commit-sha
-             :signature-valid (if (false? signature-valid) 0 1)
-             :status (if status (name status) "processed")
-             :matched-jobs (or matched-jobs 0)
-             :triggered-builds (or triggered-builds 0)
-             :error error
-             :payload-size payload-size
-             :processing-ms processing-ms}]
+        row (cond-> {:id id
+                     :provider (if provider (name provider) "unknown")
+                     :event-type event-type
+                     :repo-url repo-url
+                     :repo-name repo-name
+                     :branch branch
+                     :commit-sha commit-sha
+                     :signature-valid (if (false? signature-valid) 0 1)
+                     :status (if status (name status) "processed")
+                     :matched-jobs (or matched-jobs 0)
+                     :triggered-builds (or triggered-builds 0)
+                     :error error
+                     :payload-size payload-size
+                     :processing-ms processing-ms}
+              org-id (assoc :org-id org-id))]
     (try
       (jdbc/execute-one! ds
         (sql/format {:insert-into :webhook-events
@@ -36,12 +38,13 @@
 
 (defn list-webhook-events
   "List webhook events with optional filters and pagination.
-   Options: :provider, :status, :limit, :offset"
-  [ds & {:keys [provider status limit offset]
+   Options: :provider, :status, :org-id, :limit, :offset"
+  [ds & {:keys [provider status org-id limit offset]
          :or {limit 50 offset 0}}]
   (let [conditions (cond-> [:and]
                      provider (conj [:= :provider provider])
-                     status   (conj [:= :status status]))
+                     status   (conj [:= :status status])
+                     org-id   (conj [:= :org-id org-id]))
         where (if (> (count conditions) 1) conditions nil)
         query (cond-> {:select :*
                        :from :webhook-events
@@ -64,10 +67,11 @@
 
 (defn count-webhook-events
   "Count webhook events matching optional filters."
-  [ds & {:keys [provider status]}]
+  [ds & {:keys [provider status org-id]}]
   (let [conditions (cond-> [:and]
                      provider (conj [:= :provider provider])
-                     status   (conj [:= :status status]))
+                     status   (conj [:= :status status])
+                     org-id   (conj [:= :org-id org-id]))
         where (if (> (count conditions) 1) conditions nil)
         query (cond-> {:select [[[:count :*] :count]]
                        :from :webhook-events}

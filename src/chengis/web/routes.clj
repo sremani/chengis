@@ -165,6 +165,9 @@
         ["" {:get {:handler (auth/wrap-require-role :developer (h/approvals-page system))}}]
         ["/:id/approve" {:post {:handler (auth/wrap-require-role :developer (h/approve-gate-handler system))}}]
         ["/:id/reject" {:post {:handler (auth/wrap-require-role :developer (h/reject-gate-handler system))}}]]
+       ;; Organization switching
+       ["/orgs"
+        ["/:slug/switch" {:post {:handler (h/switch-org-handler system)}}]]
        ;; Settings routes (any authenticated user)
        ["/settings"
         ["/tokens" {:get {:handler (auth/wrap-require-role :viewer (h/tokens-page system))}
@@ -224,4 +227,5 @@
                        (assoc-in [:session :cookie-attrs :same-site] :lax))]
                   [wrap-restore-method]
                   [auth/wrap-auth system]
+                  [auth/wrap-org-context system]
                   [audit/wrap-audit (:audit-writer system)]]}))

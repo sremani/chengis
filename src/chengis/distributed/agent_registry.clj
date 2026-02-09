@@ -35,21 +35,25 @@
 
 (defn register-agent!
   "Register a new agent. Always generates a new agent ID.
+   When :org-id is provided, the agent is restricted to that organization.
+   When :org-id is nil (default), the agent is shared across all orgs.
    Returns the agent record."
-  [{:keys [name url labels max-builds system-info]}]
+  [{:keys [name url labels max-builds system-info org-id]}]
   (let [agent-id (util/generate-id)
         now (str (now-instant))
-        record {:id agent-id
-                :name (or name (str "agent-" (subs agent-id 0 8)))
-                :url url
-                :labels (set (or labels #{}))
-                :max-builds (or max-builds 2)
-                :status :online
-                :current-builds 0
-                :system-info system-info
-                :registered-at now
-                :last-heartbeat now}]
-    (log/info "Agent registered:" (:name record) "(" agent-id ")")
+        record (cond-> {:id agent-id
+                        :name (or name (str "agent-" (subs agent-id 0 8)))
+                        :url url
+                        :labels (set (or labels #{}))
+                        :max-builds (or max-builds 2)
+                        :status :online
+                        :current-builds 0
+                        :system-info system-info
+                        :registered-at now
+                        :last-heartbeat now}
+                 org-id (assoc :org-id org-id))]
+    (log/info "Agent registered:" (:name record) "(" agent-id ")"
+              (if org-id (str "org:" org-id) "shared"))
     (swap! agents assoc agent-id record)
     record))
 
@@ -81,16 +85,25 @@
   (get @agents agent-id))
 
 (defn list-agents
-  "List all registered agents with computed status based on heartbeat."
-  []
-  (mapv (fn [[_id agent]]
-          (let [elapsed (ms-since-str (:last-heartbeat agent))
-                status (if (and elapsed (> elapsed heartbeat-timeout-ms))
-                         :offline
-                         (:status agent))]
-            (assoc agent :status status
-                         :heartbeat-age-ms elapsed)))
-        @agents))
+  "List all registered agents with computed status based on heartbeat.
+   When org-id is provided, returns agents assigned to that org plus shared agents (nil org-id).
+   When org-id is nil, returns all agents."
+  [& {:keys [org-id]}]
+  (let [all-agents (mapv (fn [[_id agent]]
+                           (let [elapsed (ms-since-str (:last-heartbeat agent))
+                                 status (if (and elapsed (> elapsed heartbeat-timeout-ms))
+                                          :offline
+                                          (:status agent))]
+                             (assoc agent :status status
+                                          :heartbeat-age-ms elapsed)))
+                         @agents)]
+    (if org-id
+      ;; Filter: agents for this org + shared agents (nil org-id)
+      (filterv (fn [agent]
+                 (or (nil? (:org-id agent))
+                     (= org-id (:org-id agent))))
+               all-agents)
+      all-agents)))
 
 (defn- agent-available?
   "Check if an agent can accept a new build.
@@ -107,12 +120,20 @@
 ;; ---------------------------------------------------------------------------
 
 (defn find-available-agent
-  "Find an available agent matching the given labels.
+  "Find an available agent matching the given labels and org context.
+   When org-id is provided, considers agents assigned to that org plus shared agents (nil org-id).
+   When org-id is nil, considers all agents (backward compatible).
    Returns the agent record or nil if none available.
    Selection strategy: least loaded agent matching all labels."
-  [required-labels]
+  [required-labels & {:keys [org-id]}]
   (let [candidates (->> (vals @agents)
                         (filter agent-available?)
+                        ;; Filter by org context when provided
+                        (filter (fn [agent]
+                                  (if org-id
+                                    (or (nil? (:org-id agent))
+                                        (= org-id (:org-id agent)))
+                                    true)))
                         (filter (fn [agent]
                                   (if (seq required-labels)
                                     (every? (:labels agent) required-labels)
@@ -165,9 +186,10 @@
 
 (defn get-offline-agent-ids
   "Return IDs of all agents currently in :offline status (heartbeat timed out).
-   Used by the orphan monitor to find builds that may be stranded."
-  []
-  (->> (list-agents)
+   Used by the orphan monitor to find builds that may be stranded.
+   When org-id is provided, returns only offline agents visible to that org."
+  [& {:keys [org-id]}]
+  (->> (list-agents :org-id org-id)
        (filter #(= :offline (:status %)))
        (mapv :id)))
 
@@ -189,9 +211,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defn registry-summary
-  "Return a summary of the agent registry."
-  []
-  (let [all-agents (list-agents)]
+  "Return a summary of the agent registry.
+   When org-id is provided, summarizes agents visible to that org."
+  [& {:keys [org-id]}]
+  (let [all-agents (list-agents :org-id org-id)]
     {:total (count all-agents)
      :online (count (filter #(= :online (:status %)) all-agents))
      :offline (count (filter #(= :offline (:status %)) all-agents))

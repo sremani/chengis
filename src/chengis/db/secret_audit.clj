@@ -7,16 +7,18 @@
 
 (defn log-secret-access!
   "Log a secret access event. Action is one of: read, write, delete, build-read.
+   When :org-id is provided, associates the entry with that organization.
    Swallows errors (non-blocking) — table may not exist if migration hasn't run."
-  [ds {:keys [secret-name scope action user-id ip-address]}]
+  [ds {:keys [secret-name scope action user-id ip-address org-id]}]
   (try
     (let [id (util/generate-id)
-          row {:id id
-               :secret-name secret-name
-               :scope (or scope "global")
-               :action (if action (name action) "unknown")
-               :user-id user-id
-               :ip-address ip-address}]
+          row (cond-> {:id id
+                       :secret-name secret-name
+                       :scope (or scope "global")
+                       :action (if action (name action) "unknown")
+                       :user-id user-id
+                       :ip-address ip-address}
+                org-id (assoc :org-id org-id))]
       (jdbc/execute-one! ds
         (sql/format {:insert-into :secret-access-log
                      :values [row]}))
@@ -25,12 +27,14 @@
       nil)))
 
 (defn list-secret-accesses
-  "Query secret access log with optional filters and pagination."
-  [ds & {:keys [secret-name scope limit offset]
+  "Query secret access log with optional filters and pagination.
+   When :org-id is provided, scopes to that organization."
+  [ds & {:keys [secret-name scope org-id limit offset]
          :or {limit 50 offset 0}}]
   (let [conditions (cond-> [:and]
                      secret-name (conj [:= :secret-name secret-name])
-                     scope       (conj [:= :scope scope]))
+                     scope       (conj [:= :scope scope])
+                     org-id      (conj [:= :org-id org-id]))
         where (if (> (count conditions) 1) conditions nil)
         query (cond-> {:select :*
                        :from :secret-access-log
@@ -43,11 +47,13 @@
       {:builder-fn rs/as-unqualified-kebab-maps})))
 
 (defn count-secret-accesses
-  "Count secret access log entries."
-  [ds & {:keys [secret-name scope]}]
+  "Count secret access log entries.
+   When :org-id is provided, scopes to that organization."
+  [ds & {:keys [secret-name scope org-id]}]
   (let [conditions (cond-> [:and]
                      secret-name (conj [:= :secret-name secret-name])
-                     scope       (conj [:= :scope scope]))
+                     scope       (conj [:= :scope scope])
+                     org-id      (conj [:= :org-id org-id]))
         where (if (> (count conditions) 1) conditions nil)
         query (cond-> {:select [[[:count :*] :count]]
                        :from :secret-access-log}
