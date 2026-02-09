@@ -227,7 +227,9 @@
                       {:status 200
                        :headers {"Content-Type" "application/json"}
                        :body "{\"triggered\":0,\"message\":\"No matching jobs\"}"})
-                    (let [triggered (atom 0)]
+                    (let [triggered (atom 0)
+                          ;; Attribute webhook log to org of first matched job
+                          matched-org-id (:org-id (first jobs))]
                       (doseq [job jobs]
                         (let [build-record (build-store/create-build! ds
                                              {:job-id (:id job)
@@ -265,6 +267,7 @@
                            :branch (:branch webhook-data) :commit-sha (:commit webhook-data)
                            :status :processed :matched-jobs (count jobs)
                            :triggered-builds @triggered
+                           :org-id matched-org-id
                            :payload-size payload-size :processing-ms duration})
                         {:status 200
                          :headers {"Content-Type" "application/json"}

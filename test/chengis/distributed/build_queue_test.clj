@@ -198,3 +198,52 @@
       ;; Cleanup with 0 hours retention should remove it
       (let [deleted (bq/cleanup-completed! *ds* 0)]
         (is (>= deleted 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Concurrency safety
+;; ---------------------------------------------------------------------------
+
+(deftest concurrent-dequeue-no-double-claim-test
+  (testing "concurrent dequeue never claims the same item twice"
+    ;; Enqueue several items
+    (let [ds *ds*  ;; capture dynamic binding for use in spawned threads
+          n 10
+          _ (doseq [i (range n)]
+              (bq/enqueue! ds (str "conc-build-" i) "job-1"
+                           {:i i} nil))
+          ;; Launch N threads that all try to dequeue simultaneously.
+          ;; SQLite can throw SQLITE_BUSY under contention — retry with backoff,
+          ;; just as a real production consumer would.
+          results (atom [])
+          latch (java.util.concurrent.CountDownLatch. 1)
+          threads (mapv (fn [_]
+                          (Thread.
+                            (fn []
+                              (.await latch)
+                              (loop [retries 0]
+                                (let [item (try (bq/dequeue-next! ds)
+                                                (catch org.sqlite.SQLiteException _
+                                                  ;; SQLITE_BUSY — back off and retry
+                                                  (Thread/sleep (+ 5 (rand-int 20)))
+                                                  ::retry))]
+                                  (cond
+                                    (= item ::retry)
+                                    (when (< retries 100) (recur (inc retries)))
+
+                                    (some? item)
+                                    (do (swap! results conj (:build-id item))
+                                        (recur 0))
+
+                                    ;; nil = queue empty, done
+                                    :else nil))))))
+                        (range 4))]
+      ;; Start all threads, then release them at once
+      (doseq [^Thread t threads] (.start t))
+      (Thread/sleep 50)  ;; let all threads park on latch
+      (.countDown latch)
+      (doseq [^Thread t threads] (.join t 10000))
+      ;; Every item must be claimed exactly once
+      (is (= n (count @results))
+          "Each item should be dequeued exactly once")
+      (is (= n (count (set @results)))
+          "No duplicate build-ids should appear"))))

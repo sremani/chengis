@@ -57,27 +57,39 @@
 (defn dequeue-next!
   "Atomically claim the oldest pending queue item for dispatch.
    Only dequeues items whose next-retry-at is nil or in the past (backoff respected).
+   Uses a status guard on the UPDATE to prevent double-claim under concurrency:
+   if another processor claimed the same row first, the UPDATE matches 0 rows
+   and we retry with the next candidate.
    Returns the queue item or nil if queue is empty."
   [ds]
   (jdbc/with-transaction [tx ds]
     (let [now (now-str)
-          item (jdbc/execute-one! tx
-                 (sql/format {:select :*
-                              :from :build-queue
-                              :where [:and
-                                      [:= :status "pending"]
-                                      [:or
-                                       [:= :next-retry-at nil]
-                                       [:<= :next-retry-at now]]]
-                              :order-by [[:enqueued-at :asc]]
-                              :limit 1})
-                 {:builder-fn rs/as-unqualified-kebab-maps})]
-      (when item
-        (jdbc/execute-one! tx
-          (sql/format {:update :build-queue
-                       :set {:status "dispatching"}
-                       :where [:= :id (:id item)]}))
-        (normalize-queue-item (assoc item :status "dispatching"))))))
+          candidates (jdbc/execute! tx
+                       (sql/format {:select :*
+                                    :from :build-queue
+                                    :where [:and
+                                            [:= :status "pending"]
+                                            [:or
+                                             [:= :next-retry-at nil]
+                                             [:<= :next-retry-at now]]]
+                                    :order-by [[:enqueued-at :asc]]
+                                    :limit 5})
+                       {:builder-fn rs/as-unqualified-kebab-maps})]
+      ;; Try each candidate until we successfully claim one
+      (loop [remaining candidates]
+        (when (seq remaining)
+          (let [item (first remaining)
+                result (jdbc/execute-one! tx
+                         (sql/format {:update :build-queue
+                                      :set {:status "dispatching"}
+                                      :where [:and
+                                              [:= :id (:id item)]
+                                              [:= :status "pending"]]}))]
+            (if (pos? (:next.jdbc/update-count result 0))
+              ;; Successfully claimed
+              (normalize-queue-item (assoc item :status "dispatching"))
+              ;; Another processor got it first — try next candidate
+              (recur (rest remaining)))))))))
 
 (defn mark-dispatched!
   "Mark a queue item as successfully dispatched to an agent."

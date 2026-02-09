@@ -84,4 +84,33 @@
       ;; All events were just created — they're not old enough to purge
       (let [cleaned (webhook-log/cleanup-old-events! ds 1)]
         (is (zero? cleaned))
-        (is (= 7 (webhook-log/count-webhook-events ds)))))))
+        (is (= 7 (webhook-log/count-webhook-events ds)))))
+
+    (testing "org-id attribution and org-scoped queries"
+      (let [org-a-id "org-alpha"
+            org-b-id "org-beta"]
+        ;; Log events with org-id attribution
+        (webhook-log/log-webhook-event! ds
+          {:provider :github :event-type "push" :status "processed"
+           :repo-url "https://github.com/orgA/repo.git"
+           :repo-name "orgA/repo" :branch "main"
+           :matched-jobs 1 :triggered-builds 1
+           :org-id org-a-id :payload-size 200})
+        (webhook-log/log-webhook-event! ds
+          {:provider :gitlab :event-type "push" :status "processed"
+           :repo-url "https://gitlab.com/orgB/repo.git"
+           :repo-name "orgB/repo" :branch "develop"
+           :matched-jobs 1 :triggered-builds 1
+           :org-id org-b-id :payload-size 300})
+        ;; Org-scoped list should only return that org's events
+        (let [org-a-events (webhook-log/list-webhook-events ds :org-id org-a-id)
+              org-b-events (webhook-log/list-webhook-events ds :org-id org-b-id)]
+          (is (= 1 (count org-a-events))
+              "org-alpha should see exactly 1 event")
+          (is (= "orgA/repo" (:repo-name (first org-a-events))))
+          (is (= 1 (count org-b-events))
+              "org-beta should see exactly 1 event")
+          (is (= "orgB/repo" (:repo-name (first org-b-events)))))
+        ;; Org-scoped count
+        (is (= 1 (webhook-log/count-webhook-events ds :org-id org-a-id)))
+        (is (= 1 (webhook-log/count-webhook-events ds :org-id org-b-id)))))))
