@@ -36,6 +36,11 @@
             [chengis.db.audit-export :as audit-export]
             [chengis.web.views.approvals :as v-approvals]
             [chengis.web.views.templates :as v-templates]
+            [chengis.web.views.compliance :as v-compliance]
+            [chengis.db.compliance-store :as compliance-store]
+            [chengis.db.policy-store :as policy-store]
+            [chengis.engine.compliance :as compliance]
+            [chengis.web.views.policies :as v-policies]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -365,10 +370,37 @@
             (let [file (io/file (:path artifact))]
               (if (.exists file)
                 {:status 200
-                 :headers {"Content-Type" (or (:content-type artifact) "application/octet-stream")
-                           "Content-Disposition" (str "attachment; filename=\"" filename "\"")}
+                 :headers (cond-> {"Content-Type" (or (:content-type artifact) "application/octet-stream")
+                                   "Content-Disposition" (str "attachment; filename=\"" filename "\"")}
+                            (:sha256-hash artifact)
+                            (assoc "X-Artifact-SHA256" (:sha256-hash artifact)))
                  :body file}
                 (not-found (str "Artifact file missing from disk: " filename))))))))))
+
+(defn verify-artifact-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :id])
+          build (build-store/get-build ds build-id :org-id org-id)]
+      (if-not build
+        (not-found (str "Build not found: " build-id))
+        (let [filename (get-in req [:path-params :filename])
+              result (artifact-store/verify-artifact-hash ds build-id filename)]
+          (when (:metrics system)
+            (metrics/record-artifact-checksum! (:metrics system)
+              (cond
+                (nil? (:valid result)) :skipped
+                (:valid result) :match
+                :else :mismatch)))
+          {:status 200
+           :headers {"Content-Type" "application/json"}
+           :body (json/write-str
+                   {:filename filename
+                    :sha256 (:expected result)
+                    :valid (:valid result)
+                    :computed (:computed result)
+                    :reason (:reason result)})})))))
 
 ;; --- Admin ---
 
@@ -1141,3 +1173,271 @@
              :body "<h1>403 Forbidden</h1><p>You are not a member of this organization.</p>"}))
         ;; Org not found
         (not-found "Organization not found")))))
+
+;; ---------------------------------------------------------------------------
+;; Compliance Reports (admin only)
+;; ---------------------------------------------------------------------------
+
+(defn compliance-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          templates (try (compliance-store/list-report-templates ds :org-id org-id)
+                         (catch Exception _ []))
+          runs (try (compliance-store/list-report-runs ds :org-id org-id :limit 20)
+                    (catch Exception _ []))]
+      (html-response
+        (v-compliance/render {:templates templates
+                              :runs runs
+                              :csrf-token (csrf-token req)
+                              :user (auth/current-user req)
+                              :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn generate-compliance-report [system]
+  (fn [req]
+    (let [ds (:db system)
+          registry (:metrics system)
+          org-id (auth/current-org-id req)
+          params (:form-params req)
+          report-id (get params "report-id")
+          period-start (get params "period-start")
+          period-end (get params "period-end")
+          template (when report-id
+                     (compliance-store/get-report-template ds report-id :org-id org-id))]
+      (if-not template
+        {:status 303 :headers {"Location" "/admin/compliance"}}
+        (let [run (compliance-store/create-report-run! ds
+                    {:report-id report-id
+                     :org-id org-id
+                     :generated-by (:username (auth/current-user req))
+                     :period-start period-start
+                     :period-end period-end})
+              result (compliance/generate-report! ds template (:id run)
+                       {:org-id org-id
+                        :period-start period-start
+                        :period-end period-end})]
+          (try (metrics/record-compliance-report! registry (:report-type template))
+               (catch Exception _))
+          {:status 303
+           :headers {"Location" (str "/admin/compliance/runs/" (:id run))}})))))
+
+(defn compliance-run-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          run-id (get-in req [:path-params :id])
+          run (compliance-store/get-report-run ds run-id :org-id org-id)
+          template (when run
+                     (compliance-store/get-report-template ds (:report-id run)))]
+      (if-not run
+        (not-found "Report run not found")
+        (html-response
+          (v-compliance/render-run-detail
+            {:run run
+             :report-template template
+             :csrf-token (csrf-token req)
+             :user (auth/current-user req)
+             :auth-enabled (get-in config [:auth :enabled] false)}))))))
+
+(defn compliance-run-export [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          run-id (get-in req [:path-params :id])
+          run (compliance-store/get-report-run ds run-id :org-id org-id)]
+      (if-not run
+        (not-found "Report run not found")
+        {:status 200
+         :headers {"Content-Type" "application/json"
+                   "Content-Disposition" (str "attachment; filename=\"compliance-report-" run-id ".json\"")}
+         :body (or (:summary run) "{}")}))))
+
+(defn hash-chain-verify-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          registry (:metrics system)
+          org-id (auth/current-org-id req)
+          result (compliance/verify-hash-chain ds {:org-id org-id})]
+      (try (metrics/record-hash-chain-verification! registry
+             (if (:valid result) :valid :invalid))
+           (catch Exception _))
+      {:status 303
+       :headers {"Location" "/admin/compliance"}})))
+
+;; ---------------------------------------------------------------------------
+;; Policy Management (admin only)
+;; ---------------------------------------------------------------------------
+
+(defn policies-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          policies (try (policy-store/list-policies ds :org-id org-id)
+                        (catch Exception _ []))]
+      (html-response
+        (v-policies/render {:policies policies
+                            :csrf-token (csrf-token req)
+                            :user (auth/current-user req)
+                            :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn policy-new-page [system]
+  (fn [req]
+    (let [config (:config system)]
+      (html-response
+        (v-policies/render-form {:csrf-token (csrf-token req)
+                                 :user (auth/current-user req)
+                                 :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn create-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (:form-params req)
+          pname (get params "name")
+          rules-str (get params "rules")]
+      (cond
+        (str/blank? pname)
+        (html-response
+          (v-policies/render-form {:error "Policy name is required"
+                                   :policy {:description (get params "description")
+                                            :policy-type (get params "policy-type")
+                                            :rules rules-str
+                                            :priority (get params "priority")}
+                                   :csrf-token (csrf-token req)
+                                   :user (auth/current-user req)
+                                   :auth-enabled (get-in (:config system) [:auth :enabled] false)}))
+
+        :else
+        (let [rules (try (json/read-str rules-str :key-fn keyword) (catch Exception _ nil))
+              enabled? (= "true" (get params "enabled"))]
+          (if (nil? rules)
+            (html-response
+              (v-policies/render-form {:error "Invalid JSON in rules field"
+                                       :policy {:name pname
+                                                :description (get params "description")
+                                                :policy-type (get params "policy-type")
+                                                :rules rules-str
+                                                :priority (get params "priority")}
+                                       :csrf-token (csrf-token req)
+                                       :user (auth/current-user req)
+                                       :auth-enabled (get-in (:config system) [:auth :enabled] false)}))
+            (do
+              (try
+                (policy-store/create-policy! ds
+                  {:org-id org-id
+                   :name pname
+                   :description (get params "description")
+                   :policy-type (get params "policy-type")
+                   :rules rules
+                   :priority (try (Integer/parseInt (get params "priority" "100"))
+                                  (catch NumberFormatException _ 100))
+                   :enabled enabled?
+                   :created-by (:username (auth/current-user req))})
+                (log/info "Policy created:" pname "by:" (:username (auth/current-user req)))
+                {:status 303 :headers {"Location" "/admin/policies"}}
+                (catch Exception e
+                  (html-response
+                    (v-policies/render-form {:error (str "Failed to create policy: " (.getMessage e))
+                                             :policy {:name pname
+                                                      :description (get params "description")
+                                                      :policy-type (get params "policy-type")
+                                                      :rules rules-str
+                                                      :priority (get params "priority")}
+                                             :csrf-token (csrf-token req)
+                                             :user (auth/current-user req)
+                                             :auth-enabled (get-in (:config system) [:auth :enabled] false)})))))))))))
+
+(defn policy-edit-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          policy-id (get-in req [:path-params :id])
+          policy (policy-store/get-policy ds policy-id :org-id org-id)]
+      (if (nil? policy)
+        (not-found "Policy not found")
+        (html-response
+          (v-policies/render-form {:policy policy
+                                   :editing? true
+                                   :csrf-token (csrf-token req)
+                                   :user (auth/current-user req)
+                                   :auth-enabled (get-in config [:auth :enabled] false)}))))))
+
+(defn update-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policy-id (get-in req [:path-params :id])
+          policy (policy-store/get-policy ds policy-id :org-id org-id)
+          params (:form-params req)]
+      (if (nil? policy)
+        (not-found "Policy not found")
+        (let [rules (try (json/read-str (get params "rules" "{}") :key-fn keyword)
+                         (catch Exception _ nil))]
+          (if (nil? rules)
+            (html-response
+              (v-policies/render-form {:error "Invalid JSON in rules field"
+                                       :policy policy :editing? true
+                                       :csrf-token (csrf-token req)
+                                       :user (auth/current-user req)
+                                       :auth-enabled (get-in (:config system) [:auth :enabled] false)}))
+            (do
+              (policy-store/update-policy! ds policy-id
+                {:name (get params "name")
+                 :description (get params "description")
+                 :policy-type (get params "policy-type")
+                 :rules rules
+                 :priority (try (Integer/parseInt (get params "priority" "100"))
+                                (catch NumberFormatException _ 100))}
+                :org-id org-id)
+              (log/info "Policy updated:" policy-id "by:" (:username (auth/current-user req)))
+              {:status 303 :headers {"Location" "/admin/policies"}})))))))
+
+(defn delete-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policy-id (get-in req [:path-params :id])]
+      (policy-store/delete-policy! ds policy-id :org-id org-id)
+      (log/info "Policy deleted:" policy-id "by:" (:username (auth/current-user req)))
+      {:status 303 :headers {"Location" "/admin/policies"}})))
+
+(defn toggle-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policy-id (get-in req [:path-params :id])
+          policy (policy-store/get-policy ds policy-id :org-id org-id)]
+      (when policy
+        (policy-store/toggle-policy! ds policy-id (not (:enabled policy)) :org-id org-id)
+        (log/info "Policy toggled:" policy-id "enabled=" (not (:enabled policy))
+                  "by:" (:username (auth/current-user req))))
+      {:status 303 :headers {"Location" "/admin/policies"}})))
+
+(defn policy-evaluations-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          evaluations (try (policy-store/list-evaluations ds :limit 100)
+                           (catch Exception _ []))]
+      (html-response
+        (v-policies/render-evaluations
+          {:evaluations evaluations
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)
+           :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn api-evaluate-policies [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policies (try (policy-store/list-policies ds :org-id org-id :enabled-only true)
+                        (catch Exception _ []))]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:policy-count (count policies)
+                              :policies (mapv #(select-keys % [:id :name :policy-type :priority])
+                                              policies)})})))

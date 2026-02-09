@@ -110,6 +110,12 @@
         [:a {:href "/admin/users"
              :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
          "User Management"]
+        [:a {:href "/admin/compliance"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "Compliance Reports"]
+        [:a {:href "/admin/policies"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "Policies"]
         [:form {:method "POST" :action "/admin/retention" :class "inline"}
          [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
          [:button {:type "submit"

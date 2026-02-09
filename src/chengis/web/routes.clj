@@ -157,7 +157,8 @@
         ;; Developer+ actions
         ["/:id/cancel" {:post {:handler (auth/wrap-require-role :developer (h/cancel-build system))}}]
         ["/:id/retry" {:post {:handler (auth/wrap-require-role :developer (h/retry-build system))}}]
-        ["/:id/artifacts/:filename" {:get {:handler (h/download-artifact system)}}]]
+        ["/:id/artifacts/:filename" {:get {:handler (h/download-artifact system)}}]
+        ["/:id/artifacts/:filename/verify" {:get {:handler (h/verify-artifact-handler system)}}]]
        ["/agents"
         ["" {:get {:handler (h/agents-page system)}}]]
        ;; Approval gates (developer+)
@@ -194,7 +195,22 @@
          ["/new" {:get {:handler (auth/wrap-require-role :admin (h/template-new-page system))}}]
          ["/:name/edit" {:get {:handler (auth/wrap-require-role :admin (h/template-edit-page system))}
                          :post {:handler (auth/wrap-require-role :admin (h/update-template-handler system))}}]
-         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-template-handler system))}}]]]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-template-handler system))}}]]
+        ["/compliance"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/compliance-page system))}}]
+         ["/generate" {:post {:handler (auth/wrap-require-role :admin (h/generate-compliance-report system))}}]
+         ["/verify-chain" {:post {:handler (auth/wrap-require-role :admin (h/hash-chain-verify-handler system))}}]
+         ["/runs/:id" {:get {:handler (auth/wrap-require-role :admin (h/compliance-run-page system))}}]
+         ["/runs/:id/export" {:get {:handler (auth/wrap-require-role :admin (h/compliance-run-export system))}}]]
+        ["/policies"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/policies-page system))}
+              :post {:handler (auth/wrap-require-role :admin (h/create-policy-handler system))}}]
+         ["/new" {:get {:handler (auth/wrap-require-role :admin (h/policy-new-page system))}}]
+         ["/evaluations" {:get {:handler (auth/wrap-require-role :admin (h/policy-evaluations-page system))}}]
+         ["/:id/edit" {:get {:handler (auth/wrap-require-role :admin (h/policy-edit-page system))}
+                       :post {:handler (auth/wrap-require-role :admin (h/update-policy-handler system))}}]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-policy-handler system))}}]
+         ["/:id/toggle" {:post {:handler (auth/wrap-require-role :admin (h/toggle-policy-handler system))}}]]]
        ["/api"
         ["/alerts" {:get {:handler (alerts/alerts-handler system)}}]
         ["/alerts/fragment" {:get {:handler (alerts/alerts-fragment-handler system)}}]
@@ -209,7 +225,8 @@
          ["/register" {:post {:handler (auth/wrap-require-role :admin (master-api/register-agent-handler system))}}]
          ["/:id/heartbeat" {:post {:handler (master-api/heartbeat-handler system)}}]]
         ["/webhook" {:post {:handler (webhook/webhook-handler system build-runner/build-executor)}}]
-        ["/approvals/pending" {:get {:handler (auth/wrap-require-role :developer (h/api-pending-approvals system))}}]]]))
+        ["/approvals/pending" {:get {:handler (auth/wrap-require-role :developer (h/api-pending-approvals system))}}]
+        ["/policies/evaluate" {:post {:handler (auth/wrap-require-role :admin (h/api-evaluate-policies system))}}]]]))
     (ring/create-default-handler
       {:not-found (constantly {:status 404
                                :headers {"Content-Type" "text/html"}

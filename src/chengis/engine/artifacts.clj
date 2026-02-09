@@ -5,7 +5,9 @@
             [chengis.util :as util]
             [taoensso.timbre :as log])
   (:import [java.nio.file FileSystems Files Path Paths]
-           [java.nio.file.attribute BasicFileAttributes]))
+           [java.nio.file.attribute BasicFileAttributes]
+           [java.security MessageDigest]
+           [java.io FileInputStream]))
 
 (defn- glob-match
   "Find all files in `dir` matching a glob pattern. Returns a seq of Path objects."
@@ -14,11 +16,14 @@
         ;; Normalize pattern:
         ;; - Patterns with path separators (e.g., "target/foo/*.jar") are used as-is
         ;; - Simple filename patterns (e.g., "*.jar") get **/ prepended to match anywhere
+        ;; For simple patterns like "*.txt", use {*.txt,**/*.txt} so we match
+        ;; both root-level files AND files in subdirectories.
+        ;; Java's glob **/ requires at least one directory segment.
         effective-pattern (cond
                             (.startsWith pattern "**/") pattern
                             (.startsWith pattern "/")   pattern
                             (.contains pattern "/")     pattern
-                            :else                       (str "**/" pattern))
+                            :else                       (str "{" pattern ",**/" pattern "}"))
         matcher (.getPathMatcher (FileSystems/getDefault)
                                   (str "glob:" effective-pattern))
         result (atom [])]
@@ -56,6 +61,23 @@
 
 ;; Use shared util/format-size for human-readable byte formatting
 
+(defn compute-sha256
+  "Compute SHA-256 hash of a file. Returns lowercase hex string, or nil on error."
+  [^java.io.File file]
+  (try
+    (let [digest (MessageDigest/getInstance "SHA-256")
+          buffer (byte-array 8192)]
+      (with-open [fis (FileInputStream. file)]
+        (loop []
+          (let [n (.read fis buffer)]
+            (when (pos? n)
+              (.update digest buffer 0 n)
+              (recur)))))
+      (format "%064x" (BigInteger. 1 (.digest digest))))
+    (catch Exception e
+      (log/warn "Failed to compute SHA-256 for" (.getName file) ":" (.getMessage e))
+      nil)))
+
 (defn collect-artifacts!
   "Collect artifacts matching glob patterns from workspace to artifact directory.
    Returns a vector of {:filename :path :size-bytes :content-type} maps."
@@ -83,4 +105,5 @@
                :original-path filename
                :path (.getAbsolutePath dest-file)
                :size-bytes size
-               :content-type (content-type-for flat-name)})))))))
+               :content-type (content-type-for flat-name)
+               :sha256-hash (compute-sha256 dest-file)})))))))

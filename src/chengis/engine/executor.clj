@@ -8,6 +8,7 @@
             [chengis.dsl.chengisfile :as chengisfile]
             [chengis.dsl.yaml :as yaml-parser]
             [chengis.engine.approval :as approval]
+            [chengis.engine.policy :as policy]
             [chengis.engine.matrix :as matrix]
             [chengis.engine.artifacts :as artifacts]
             [chengis.engine.notify :as notify]
@@ -440,32 +441,51 @@
                   (reduce (fn [results stage-def]
                             (if (cancelled? build-ctx)
                               (reduced results)
-                              ;; Check for approval gate before running stage
-                              (let [approval-result (approval/check-stage-approval!
-                                                      system build-ctx stage-def)]
-                                (if-not (:proceed approval-result)
-                                  ;; Approval denied/timed-out — abort pipeline
+                              ;; 1. Policy check (can deny outright or override approval requirements)
+                              (let [policy-result (policy/check-stage-policies!
+                                                    system build-ctx stage-def)]
+                                (if-not (:proceed policy-result)
+                                  ;; Policy denied — abort
                                   (do
                                     (log/warn "Stage" (:stage-name stage-def)
-                                              "approval denied:" (:reason approval-result))
-                                    (emit build-ctx :stage-skipped
+                                              "blocked by policy:" (:reason policy-result))
+                                    (emit build-ctx :stage-policy-denied
                                           {:stage-name (:stage-name stage-def)
-                                           :reason (:reason approval-result)})
+                                           :reason (:reason policy-result)})
                                     (reduced (conj results
                                                {:stage-name (:stage-name stage-def)
                                                 :stage-status :aborted
                                                 :step-results []
-                                                :reason (:reason approval-result)})))
-                                  ;; Approval granted (or not required) — run stage
-                                  (let [result (run-stage build-ctx stage-def)]
-                                    (let [updated (conj results result)]
-                                      (if (#{:failure :aborted} (:stage-status result))
-                                        (do
-                                          (log/error "Pipeline stopped: stage"
-                                                     (:stage-name stage-def)
-                                                     (name (:stage-status result)))
-                                          (reduced updated))
-                                        updated)))))))
+                                                :reason (:reason policy-result)})))
+                                  ;; 2. Apply approval overrides from policy, then check approval
+                                  (let [effective-stage (if-let [overrides (:approval-overrides policy-result)]
+                                                          (policy/apply-approval-overrides stage-def overrides)
+                                                          stage-def)
+                                        approval-result (approval/check-stage-approval!
+                                                          system build-ctx effective-stage)]
+                                    (if-not (:proceed approval-result)
+                                      ;; Approval denied/timed-out — abort pipeline
+                                      (do
+                                        (log/warn "Stage" (:stage-name stage-def)
+                                                  "approval denied:" (:reason approval-result))
+                                        (emit build-ctx :stage-skipped
+                                              {:stage-name (:stage-name stage-def)
+                                               :reason (:reason approval-result)})
+                                        (reduced (conj results
+                                                   {:stage-name (:stage-name stage-def)
+                                                    :stage-status :aborted
+                                                    :step-results []
+                                                    :reason (:reason approval-result)})))
+                                      ;; Approval granted (or not required) — run stage
+                                      (let [result (run-stage build-ctx stage-def)]
+                                        (let [updated (conj results result)]
+                                          (if (#{:failure :aborted} (:stage-status result))
+                                            (do
+                                              (log/error "Pipeline stopped: stage"
+                                                         (:stage-name stage-def)
+                                                         (name (:stage-status result)))
+                                              (reduced updated))
+                                            updated)))))))))
                           []
                           effective-stages)
                   any-failed? (some #(= :failure (:stage-status %)) stage-results)
@@ -497,7 +517,8 @@
                            :filename (:filename art)
                            :path (:path art)
                            :size-bytes (:size-bytes art)
-                           :content-type (:content-type art)})))
+                           :content-type (:content-type art)
+                           :sha256-hash (:sha256-hash art)})))
                   completed-at (now)
                   ;; Build result map (constructed before notifications so they can use it)
                   build-result (cond-> {:build-id build-id

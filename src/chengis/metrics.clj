@@ -154,7 +154,37 @@
       (prometheus/register
         (prometheus/counter :scm/status-reports-total
                             {:description "SCM status reports sent"
-                             :labels [:provider :result]}))))
+                             :labels [:provider :result]}))
+
+      ;; Phase 6: Artifact integrity metrics
+      (prometheus/register
+        (prometheus/counter :artifacts/checksum-verified-total
+                            {:description "Artifact checksum verifications"
+                             :labels [:result]}))
+
+      ;; Phase 6: Compliance reporting metrics
+      (prometheus/register
+        (prometheus/counter :compliance/reports-generated-total
+                            {:description "Compliance reports generated"
+                             :labels [:report-type]}))
+      (prometheus/register
+        (prometheus/counter :compliance/hash-chain-verifications-total
+                            {:description "Hash chain integrity verifications"
+                             :labels [:result]}))
+
+      ;; Phase 6: Policy engine metrics
+      (prometheus/register
+        (prometheus/counter :policies/evaluated-total
+                            {:description "Policy evaluations"
+                             :labels [:policy-type :result]}))
+      (prometheus/register
+        (prometheus/counter :policies/denied-total
+                            {:description "Builds/stages blocked by policy"
+                             :labels [:policy-type]}))
+      (prometheus/register
+        (prometheus/histogram :policies/evaluation-duration-seconds
+                              {:description "Policy evaluation duration"
+                               :buckets [0.001 0.005 0.01 0.025 0.05 0.1 0.25]}))))
 
 (defn- as-label
   "Coerce a keyword, symbol, or string to a Prometheus label string.
@@ -357,6 +387,52 @@
     (prometheus/inc (registry :scm/status-reports-total
                               {:provider (or provider "unknown")
                                :result (or result "unknown")}))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 6: Artifact, compliance, and policy metrics
+;; ---------------------------------------------------------------------------
+
+(defn record-artifact-checksum!
+  "Record an artifact checksum verification result (:match, :mismatch, :skipped)."
+  [registry result]
+  (when registry
+    (prometheus/inc (registry :artifacts/checksum-verified-total
+                              {:result (as-label result)}))))
+
+(defn record-compliance-report!
+  "Record a compliance report generation."
+  [registry report-type]
+  (when registry
+    (prometheus/inc (registry :compliance/reports-generated-total
+                              {:report-type (as-label report-type)}))))
+
+(defn record-hash-chain-verification!
+  "Record a hash chain integrity verification result (:valid or :invalid)."
+  [registry result]
+  (when registry
+    (prometheus/inc (registry :compliance/hash-chain-verifications-total
+                              {:result (as-label result)}))))
+
+(defn record-policy-evaluation!
+  "Record a policy evaluation with type and result."
+  [registry policy-type result]
+  (when registry
+    (prometheus/inc (registry :policies/evaluated-total
+                              {:policy-type (as-label policy-type)
+                               :result (as-label result)}))))
+
+(defn record-policy-denial!
+  "Record a build/stage blocked by policy."
+  [registry policy-type]
+  (when registry
+    (prometheus/inc (registry :policies/denied-total
+                              {:policy-type (as-label policy-type)}))))
+
+(defn record-policy-duration!
+  "Record policy evaluation duration in seconds."
+  [registry duration-s]
+  (when registry
+    (prometheus/observe (registry :policies/evaluation-duration-seconds) duration-s)))
 
 ;; ---------------------------------------------------------------------------
 ;; Metrics endpoint handler

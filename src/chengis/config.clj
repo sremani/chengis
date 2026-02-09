@@ -124,6 +124,10 @@
    :templates {:enabled true
                :max-depth 3}
    :matrix {:max-combinations 25}
+   :feature-flags {:policy-engine false
+                   :artifact-checksums false
+                   :compliance-reports false}
+   :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
          :file nil}})
@@ -183,7 +187,11 @@
    "CHENGIS_OIDC_DEFAULT_ROLE"                  [:oidc :default-role]
    "CHENGIS_OIDC_AUTO_CREATE_USERS"             [:oidc :auto-create-users]
    "CHENGIS_OIDC_PROVIDER_NAME"                 [:oidc :provider-name]
-   "CHENGIS_SECRETS_FALLBACK_TO_LOCAL"           [:secrets :fallback-to-local]})
+   "CHENGIS_SECRETS_FALLBACK_TO_LOCAL"           [:secrets :fallback-to-local]
+   "CHENGIS_FEATURE_POLICY_ENGINE"              [:feature-flags :policy-engine]
+   "CHENGIS_FEATURE_ARTIFACT_CHECKSUMS"         [:feature-flags :artifact-checksums]
+   "CHENGIS_FEATURE_COMPLIANCE_REPORTS"         [:feature-flags :compliance-reports]
+   "CHENGIS_POLICIES_EVALUATION_TIMEOUT_MS"     [:policies :evaluation-timeout-ms]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.

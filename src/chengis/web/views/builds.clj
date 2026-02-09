@@ -118,6 +118,7 @@
         [:tr {:class "text-left text-gray-500 border-b bg-gray-50"}
          [:th {:class "px-5 py-2 font-medium"} "Filename"]
          [:th {:class "px-5 py-2 font-medium"} "Size"]
+         [:th {:class "px-5 py-2 font-medium"} "SHA-256"]
          [:th {:class "px-5 py-2 font-medium"} "Type"]
          [:th {:class "px-5 py-2 font-medium"} ""]]]
        [:tbody {:class "divide-y"}
@@ -132,6 +133,12 @@
                 (< bytes 1024) (str bytes " B")
                 (< bytes (* 1024 1024)) (format "%.1f KB" (/ bytes 1024.0))
                 :else (format "%.1f MB" (/ bytes (* 1024.0 1024.0)))))]
+           [:td {:class "px-5 py-3"}
+            (if-let [hash (:sha256-hash art)]
+              [:code {:class "text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded"
+                      :title hash}
+               (subs hash 0 (min 16 (count hash)))]
+              [:span {:class "text-gray-300 text-xs"} "—"])]
            [:td {:class "px-5 py-3 text-gray-400 text-xs"}
             (or (:content-type art) "—")]
            [:td {:class "px-5 py-3 text-right"}
