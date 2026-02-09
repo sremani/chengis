@@ -2,6 +2,77 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [Unreleased] — Security Review II
+
+### Security Fixes (5 findings, all resolved)
+
+- **[P1] Event replay auth bypass** — `/api/builds/:id/events/replay` was excluded from authentication via the distributed API path denylist. Replaced fragile suffix-denylist with explicit allowlist of 4 agent write endpoint suffixes (`/agent-events`, `/result`, `/artifacts`, `/heartbeat`). Added RBAC (`wrap-require-role :viewer`) to the replay endpoint. Added `/startup` to public paths for K8s probes.
+- **[P1] Policy evaluations not org-scoped** — `list-evaluations` query lacked org-id filtering, exposing cross-tenant policy evaluation data. Added conditional JOIN from `policy_evaluations` to `policies` table when org-id is present, with table-qualified column names to avoid ambiguity.
+- **[P1] Cross-org policy delete** — `delete-policy!` did not verify the requesting org owns the policy before deleting child rows. Wrapped in `jdbc/with-transaction` with ownership verification SELECT before any deletes. Handler catches `ExceptionInfo` and returns 404.
+- **[P1] Audit hash-chain uses SQLite-specific `rowid`** — `get-latest-hash` and `query-audits-asc` ordered by `rowid`, which doesn't exist in PostgreSQL. Added `seq_num` column via migration 036, with auto-incrementing insertion-order semantics. All ordering now uses `seq_num`.
+- **[P2] Hash-chain verification doesn't verify content integrity** — `recompute-entry-hash` excluded `:detail` and `:timestamp` fields, meaning the hash only checked linkage, not content. Introduced `hash-fields` vector matching exactly the fields used at insert time. `verify-hash-chain` now checks both prev_hash linkage AND entry_hash recomputation.
+
+### Migration 036
+
+- `seq_num` column on `audit_logs` for cross-DB insertion-order tiebreaking (replaces SQLite-specific `rowid`)
+
+### Regression Tests
+
+- 9 new tests, 36 assertions covering all 5 security fixes
+- Auth bypass: replay endpoint requires auth, agent write endpoints still exempt
+- Cross-org: policy evaluations org-scoped, cross-org delete blocked
+- Hash chain: seq_num ordering, content tamper detection, prev_hash linkage, org-scoped entries
+
+### Test Suite
+- **525 tests, 2,126 assertions — all passing**
+- 82 test files across 7 test subdirectories
+
+---
+
+## [Unreleased] — Phase 3: Kubernetes & High Availability
+
+### Feature 3a: Persistent Agent Registry
+
+- **Write-through cache** — Agent registry mutations write to DB first, then update in-memory atom. All existing consumers unchanged (read from atom)
+- **DB hydration** — `hydrate-from-db!` loads all agents from DB on master startup, restoring state after restarts
+- **Graceful degradation** — When `ds-ref` is nil (tests, CLI), all operations fall back to atom-only mode
+- **New store** — `db/agent_store.clj` with upsert, heartbeat update, status/builds update, delete, load-all, and get-by-id operations
+- **Migration 035** — Adds `current_builds` column to existing `agents` table
+
+### Feature 3b: Leader Election + HA Singletons
+
+- **PostgreSQL advisory locks** — `pg_try_advisory_lock(bigint)` for non-blocking, session-scoped leadership. Auto-released on connection drop for instant failover
+- **Poll-based leadership** — Background daemon thread polls every N seconds (default 15s). On acquire: calls `start-fn`. On loss: calls `stop-fn`
+- **Singleton services** — Queue processor (lock 100001), orphan monitor (100002), and retention scheduler (100003) run on exactly one master when `CHENGIS_HA_ENABLED=true`
+- **SQLite compatibility** — All locks granted unconditionally in SQLite mode (single master assumed)
+
+### Feature 3c: Enhanced Health/Readiness Probes
+
+- **Startup probe** — `GET /startup` returns 503 until initialization completes, then 200. Prevents premature K8s traffic routing
+- **Enhanced readiness** — `GET /ready` includes queue depth and agent summary (total, online, offline, capacity)
+- **Instance identity** — `GET /health` includes `instance-id` from HA config
+- **Queue depth helper** — `build-queue/queue-depth` counts pending items
+
+### Feature 3d: Kubernetes Manifests + Helm Chart
+
+- **Raw manifests** — `k8s/base/` directory with namespace, ConfigMap, Secret, master Deployment (2 replicas), master Service, agent Deployment, PVC, HPA, and Ingress YAML
+- **Helm chart** — `helm/chengis/` with Chart.yaml, values.yaml, and templated resources (ConfigMap, Secret, Deployments, Service, PVC, Ingress, HPA, ServiceMonitor)
+- **HA Docker Compose** — `docker-compose.ha.yml` override adds PostgreSQL 16 + second master for local multi-master testing
+- **Probe configuration** — Master pods use startupProbe (/startup, 150s max), livenessProbe (/health, 10s), readinessProbe (/ready, 5s)
+
+### New Environment Variables
+
+- `CHENGIS_FEATURE_PERSISTENT_AGENTS` — Enable DB-backed agent registry (default: true)
+- `CHENGIS_HA_ENABLED` — Enable leader election for multi-master (default: false)
+- `CHENGIS_HA_LEADER_POLL_MS` — Leader election poll interval in ms (default: 15000)
+- `CHENGIS_HA_INSTANCE_ID` — Unique master instance identifier (auto-generated if not set)
+
+### Test Suite
+- **516 tests, 2,090 assertions — all passing** (before security review)
+- New test files: agent_store_test, agent_registry_persistent_test, leader_election_test, probes_test
+
+---
+
 ## [Unreleased] — Phase 2: Distributed Dispatch & Hardening
 
 ### Feature 2a: Config Hardening + Dispatcher Wiring
@@ -659,4 +730,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 488 passed, 1,993 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 525 passed, 2,126 assertions | varies | SUCCESS |

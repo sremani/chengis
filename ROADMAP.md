@@ -117,7 +117,7 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 - Feature flags for runtime feature toggling (`CHENGIS_FEATURE_*`)
 - Migrations 029-031
 
-### Phase 2: Distributed Dispatch & Hardening (current)
+### Phase 2: Distributed Dispatch & Hardening
 
 - Dispatcher wiring into all build trigger paths (UI, webhooks, retry), gated by feature flag
 - Configurable heartbeat timeout and `fallback-local` default flipped to `false`
@@ -127,27 +127,30 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 - Docker image policies (allow/deny with priority-ordered glob patterns)
 - P0 fixes: atomic dequeue race, webhook org-id, `:failed` dispatch handling
 - Migrations 032-034
-- **488 tests, 1,993 assertions — all passing**
+
+### Phase 3: Kubernetes & High Availability
+
+- Persistent agent registry with write-through cache (atom + DB, survives master restarts)
+- PostgreSQL advisory lock leader election for singleton services (queue-processor, orphan-monitor, retention-scheduler)
+- Enhanced health probes: `/startup` (K8s startup probe), enhanced `/ready` (queue depth, agent summary), `/health` (instance-id)
+- Kubernetes raw manifests (`k8s/base/`): namespace, ConfigMap, Secret, master/agent Deployments, Service, PVC, HPA, Ingress
+- Parameterized Helm chart (`helm/chengis/`): values for replicas, resources, ingress, TLS, ServiceMonitor
+- HA Docker Compose (`docker-compose.ha.yml`): PostgreSQL 16 + multi-master local testing
+- Migrations 035-036
+
+### Security Review II
+
+- Auth bypass fix: event replay endpoint + distributed path allowlist hardening
+- Cross-org policy evaluation scoping with conditional JOIN
+- Transactional policy delete with ownership verification
+- Audit hash-chain: `seq_num` column for PostgreSQL-portable ordering (replaces `rowid`)
+- Hash-chain content integrity verification (entry_hash recomputation)
+- 9 regression tests covering all 5 findings
+- **525 tests, 2,126 assertions — all passing**
 
 ---
 
-## Phase 3: Kubernetes & High Availability
-
-**Theme:** Production-grade deployment for teams scaling beyond a single master.
-
-| Feature | Description | Priority |
-|---------|-------------|----------|
-| Kubernetes manifests | Deployment, Service, ConfigMap, PersistentVolumeClaim YAML for master + agents | High |
-| Helm chart | Parameterized Helm chart with values for replicas, resources, ingress, TLS | High |
-| Persistent agent registry | Move agent registry from in-memory atom to database-backed store that survives master restarts | High |
-| Multi-master HA | Active-passive or active-active master failover with shared PostgreSQL and distributed locks | High |
-| Liveness/readiness probes | Kubernetes-native health checks beyond `/health` and `/ready` | Medium |
-| Horizontal pod autoscaling | Agent pool scales based on build queue depth | Medium |
-| Pod-based steps | Run build steps as ephemeral Kubernetes pods instead of Docker containers | Medium |
-
----
-
-## Phase 4: Build Performance & Caching
+## Phase 4: Build Performance & Caching (current)
 
 **Theme:** Reduce build times through intelligent caching and parallel execution.
 
@@ -291,4 +294,6 @@ These items are under consideration but not yet scheduled:
 | 0.9.0 | Multi-tenancy | Orgs, Isolation, Multi-approver | 362 | 25-28 |
 | Remediation | Security | 37 fixes, cross-org regression tests | 403 | — |
 | 1.0.0 | Governance | Policy engine, Checksums, Compliance, Feature flags | 449 | 29-31 |
-| Phase 2 | Hardening | Dispatcher, Attempts, Durable events, Plugin/Docker policy | **488** | 32-34 |
+| Phase 2 | Hardening | Dispatcher, Attempts, Durable events, Plugin/Docker policy | 488 | 32-34 |
+| Phase 3 | K8s & HA | Persistent agents, Leader election, K8s manifests, Helm | 516 | 35 |
+| Security II | Review | Auth bypass, Org scoping, Hash-chain integrity | **525** | 36 |

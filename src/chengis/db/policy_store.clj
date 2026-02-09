@@ -91,18 +91,31 @@
                    :where where}))))
 
 (defn delete-policy!
-  "Delete a policy and its evaluations."
+  "Delete a policy and its evaluations.
+   When org-id is provided, verifies ownership BEFORE deleting child rows
+   to prevent cross-org evaluation log tampering."
   [ds id & {:keys [org-id]}]
-  ;; Delete evaluations first (foreign key)
-  (jdbc/execute-one! ds
-    (sql/format {:delete-from :policy-evaluations
-                 :where [:= :policy-id id]}))
-  (let [where (if org-id
-                [:and [:= :id id] [:= :org-id org-id]]
-                [:= :id id])]
-    (jdbc/execute-one! ds
-      (sql/format {:delete-from :policies
-                   :where where}))))
+  (jdbc/with-transaction [tx ds]
+    ;; When org-scoped, verify ownership first — abort if policy doesn't belong to this org
+    (when org-id
+      (let [owner-check (jdbc/execute-one! tx
+                          (sql/format {:select [:id]
+                                       :from :policies
+                                       :where [:and [:= :id id] [:= :org-id org-id]]})
+                          {:builder-fn rs/as-unqualified-kebab-maps})]
+        (when-not owner-check
+          (throw (ex-info "Policy not found or not owned by org"
+                          {:policy-id id :org-id org-id})))))
+    ;; Safe to delete: ownership verified (or no org-scoping)
+    (jdbc/execute-one! tx
+      (sql/format {:delete-from :policy-evaluations
+                   :where [:= :policy-id id]}))
+    (let [where (if org-id
+                  [:and [:= :id id] [:= :org-id org-id]]
+                  [:= :id id])]
+      (jdbc/execute-one! tx
+        (sql/format {:delete-from :policies
+                     :where where})))))
 
 (defn toggle-policy!
   "Enable or disable a policy."
@@ -136,18 +149,33 @@
     id))
 
 (defn list-evaluations
-  "List policy evaluations with optional filters."
-  [ds & {:keys [build-id policy-id limit offset]
+  "List policy evaluations with optional filters.
+   When :org-id is provided, joins to policies to ensure org isolation."
+  [ds & {:keys [build-id policy-id org-id limit offset]
          :or {limit 50 offset 0}}]
-  (let [conditions (cond-> [:and]
-                     build-id  (conj [:= :build-id build-id])
-                     policy-id (conj [:= :policy-id policy-id]))
+  (let [use-join? (some? org-id)
+        ;; Use table-qualified column names only when joining
+        conditions (if use-join?
+                     (cond-> [:and]
+                       build-id  (conj [:= :pe.build-id build-id])
+                       policy-id (conj [:= :pe.policy-id policy-id])
+                       org-id    (conj [:= :p.org-id org-id]))
+                     (cond-> [:and]
+                       build-id  (conj [:= :build-id build-id])
+                       policy-id (conj [:= :policy-id policy-id])))
         where (when (> (count conditions) 1) conditions)
-        query (cond-> {:select :*
-                       :from :policy-evaluations
-                       :order-by [[:evaluated-at :desc]]
-                       :limit limit
-                       :offset offset}
+        query (cond-> (if use-join?
+                        {:select [:pe.*]
+                         :from [[:policy-evaluations :pe]]
+                         :join [[:policies :p] [:= :pe.policy-id :p.id]]
+                         :order-by [[:pe.evaluated-at :desc]]
+                         :limit limit
+                         :offset offset}
+                        {:select :*
+                         :from :policy-evaluations
+                         :order-by [[:evaluated-at :desc]]
+                         :limit limit
+                         :offset offset})
                 where (assoc :where where))]
     (jdbc/execute! ds
       (sql/format query)

@@ -68,7 +68,7 @@ src/chengis/
     commands.clj        # Job, build, secret, pipeline, backup commands
     output.clj          # Formatted output helpers
 
-  db/                   # Database layer (21 files)
+  db/                   # Database layer (23 files)
     connection.clj      # SQLite + PostgreSQL connection pool (HikariCP)
     migrate.clj         # Migratus migration runner
     job_store.clj       # Job CRUD
@@ -79,7 +79,7 @@ src/chengis/
     notification_store.clj  # Notification events
     user_store.clj      # User accounts, API tokens, password hashing
     org_store.clj       # Organization CRUD + membership
-    audit_store.clj     # Audit log queries with filtering
+    audit_store.clj     # Audit log queries (hash-chain integrity)
     audit_export.clj    # CSV/JSON audit export (streaming)
     webhook_log.clj     # Webhook event logging
     secret_audit.clj    # Secret access audit trail
@@ -89,6 +89,7 @@ src/chengis/
     compliance_store.clj # Build compliance tracking
     plugin_policy_store.clj # Plugin trust allowlist
     docker_policy_store.clj # Docker image policies
+    agent_store.clj     # Persistent agent registry (DB layer)
     backup.clj          # Database backup (VACUUM INTO) + restore
 
   dsl/                  # Pipeline definition (6 files)
@@ -150,8 +151,8 @@ src/chengis/
     heartbeat.clj       # Periodic heartbeat scheduler
     worker.clj          # Build execution on agent
 
-  distributed/          # Distributed build coordination (8 files)
-    agent_registry.clj  # In-memory agent registry (configurable heartbeat timeout)
+  distributed/          # Distributed build coordination (9 files)
+    agent_registry.clj  # Write-through agent registry (atom + DB persistence)
     dispatcher.clj      # Build dispatch (local vs remote, feature-flag gated)
     master_api.clj      # Master API handlers
     build_queue.clj     # Persistent build queue (database-backed, atomic dequeue)
@@ -159,14 +160,16 @@ src/chengis/
     circuit_breaker.clj # Agent communication circuit breaker
     orphan_monitor.clj  # Orphaned build detection
     artifact_transfer.clj # Agent-to-master artifact upload
+    leader_election.clj # PostgreSQL advisory lock leader election
 
-  web/                  # HTTP layer (30 files total)
-    server.clj          # http-kit server startup
+  web/                  # HTTP layer (31 files total)
+    server.clj          # http-kit server startup + HA wiring
     routes.clj          # Reitit routes + middleware
     handlers.clj        # Request handlers
     sse.clj             # Server-Sent Events
     webhook.clj         # SCM webhook handler
     auth.clj            # JWT/session/API token auth + RBAC
+    oidc.clj            # OpenID Connect SSO integration
     audit.clj           # Audit logging middleware
     alerts.clj          # System alert management
     rate_limit.clj      # Request rate limiting
@@ -193,10 +196,12 @@ src/chengis/
       plugin_policies.clj # Plugin trust allowlist management
       docker_policies.clj # Docker image policy management
 
-test/chengis/           # Test suite (77 files, mirrors src/ structure)
-resources/migrations/   # SQL migration files (34 versions × 2 drivers)
+test/chengis/           # Test suite (82 files, mirrors src/ structure)
+resources/migrations/   # SQL migration files (36 versions × 2 drivers)
 pipelines/              # Example pipeline definitions (5 files)
 benchmarks/             # Performance benchmark suite
+k8s/base/               # Raw Kubernetes manifests
+helm/chengis/           # Parameterized Helm chart
 ```
 
 ## Running Tests
@@ -212,7 +217,7 @@ lein test chengis.engine.executor-test
 lein test chengis.dsl.chengisfile-test
 ```
 
-The test suite currently has **488 tests with 1,993 assertions**. All tests must pass before submitting a PR.
+The test suite currently has **525 tests with 2,126 assertions**. All tests must pass before submitting a PR.
 
 ### Test Organization
 
@@ -250,6 +255,11 @@ Tests mirror the source layout:
 | `db/docker_policy_store.clj` | `db/docker_policy_store_test.clj` |
 | `engine/events.clj` | `engine/events_durability_test.clj` |
 | `plugin/loader.clj` | `plugin/loader_trust_test.clj` |
+| `db/agent_store.clj` | `db/agent_store_test.clj` |
+| `distributed/agent_registry.clj` (persistent) | `distributed/agent_registry_persistent_test.clj` |
+| `distributed/leader_election.clj` | `distributed/leader_election_test.clj` |
+| `web/handlers.clj` (probes) | `web/probes_test.clj` |
+| Security review regressions | `security_review_regression_test.clj` |
 | `web/views/*.clj` | `web/views_test.clj` |
 
 ### Writing Tests
@@ -276,24 +286,24 @@ Chengis uses [Migratus](https://github.com/yogthos/migratus) for schema evolutio
 
 ```
 resources/migrations/sqlite/
-  035-my-feature.up.sql
-  035-my-feature.down.sql
+  037-my-feature.up.sql
+  037-my-feature.down.sql
 resources/migrations/postgresql/
-  035-my-feature.up.sql
-  035-my-feature.down.sql
+  037-my-feature.up.sql
+  037-my-feature.down.sql
 ```
 
 2. Write the SQL (SQLite example):
 
 ```sql
--- 035-my-feature.up.sql
+-- 037-my-feature.up.sql
 CREATE TABLE IF NOT EXISTS my_table (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- 035-my-feature.down.sql
+-- 037-my-feature.down.sql
 DROP TABLE IF EXISTS my_table;
 ```
 
@@ -316,7 +326,7 @@ lein run -- init
 
 ### Example: Adding a New Store
 
-1. **Migration**: Create `resources/migrations/sqlite/035-widgets.up.sql` (and `postgresql/` equivalent)
+1. **Migration**: Create `resources/migrations/sqlite/037-widgets.up.sql` (and `postgresql/` equivalent)
 2. **Store**: Create `src/chengis/db/widget_store.clj`
 3. **Engine integration**: Update `executor.clj` or create a new engine module
 4. **Web handler**: Add handler in `handlers.clj`

@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chengis.fullname" . }}-agent
+  labels:
+    {{- include "chengis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  replicas: {{ .Values.agent.replicas }}
+  selector:
+    matchLabels:
+      {{- include "chengis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        {{- include "chengis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: agent
+    spec:
+      containers:
+        - name: chengis-agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - agent
+            - --master-url
+            - http://{{ include "chengis.fullname" . }}-master:8080
+            - --labels
+            - {{ .Values.agent.labels | quote }}
+            - --auth-token
+            - $(CHENGIS_DISTRIBUTED_AUTH_TOKEN)
+          env:
+            - name: CHENGIS_DISTRIBUTED_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "chengis.secretName" . }}
+                  key: CHENGIS_DISTRIBUTED_AUTH_TOKEN
+          {{- if .Values.agent.dockerSocket.enabled }}
+          volumeMounts:
+            - name: docker-socket
+              mountPath: /var/run/docker.sock
+          {{- end }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+      {{- if .Values.agent.dockerSocket.enabled }}
+      volumes:
+        - name: docker-socket
+          hostPath:
+            path: {{ .Values.agent.dockerSocket.hostPath }}
+            type: Socket
+      {{- end }}

@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chengis-ingress
+  namespace: chengis
+  labels:
+    app.kubernetes.io/name: chengis
+  annotations:
+    # Uncomment and customize for your ingress controller:
+    # nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  # Uncomment for TLS:
+  # tls:
+  #   - hosts:
+  #       - ci.example.com
+  #     secretName: chengis-tls
+  rules:
+    - host: ci.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chengis-master
+                port:
+                  number: 8080

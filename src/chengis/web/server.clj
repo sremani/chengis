@@ -10,6 +10,7 @@
             [chengis.distributed.agent-registry :as agent-reg]
             [chengis.distributed.queue-processor :as queue-processor]
             [chengis.distributed.orphan-monitor :as orphan-monitor]
+            [chengis.distributed.leader-election :as leader]
             [chengis.engine.retention :as retention]
             [chengis.plugin.loader :as plugin-loader]
             [chengis.web.audit :as audit]
@@ -23,6 +24,7 @@
 (defonce https-instance (atom nil))
 (defonce system-state (atom nil))
 (defonce shutdown-hook-registered? (atom false))
+(defonce leader-loops (atom []))  ;; leader election loops to stop on shutdown
 
 (defn- redirect-handler
   "Create a handler that redirects all HTTP requests to HTTPS."
@@ -88,19 +90,46 @@
                 (log/info "Secret backend: local (AES-256-GCM encrypted database)"))))
         ;; Configure agent registry with heartbeat timeout from config
         _ (agent-reg/set-config! cfg)
-        ;; Start queue processor when distributed + queue enabled
+        ;; Enable write-through persistence for agent registry
+        _ (agent-reg/set-db! ds)
+        _ (agent-reg/hydrate-from-db!)
+        ;; Start singleton services — use leader election when HA is enabled
+        ha-enabled? (get-in cfg [:ha :enabled])
+        poll-ms (get-in cfg [:ha :leader-poll-ms] 15000)
+        ;; Queue processor (lock-id 100001)
         _ (when (and (get-in cfg [:distributed :enabled])
                      (get-in cfg [:distributed :dispatch :queue-enabled]))
-            (log/info "Starting distributed build queue processor")
-            (queue-processor/start-processor! system))
-        ;; Start orphan monitor when distributed enabled
+            (if ha-enabled?
+              (do (log/info "Starting queue processor with leader election")
+                  (swap! leader-loops conj
+                    (leader/start-leader-loop! ds 100001 "queue-processor"
+                      #(queue-processor/start-processor! system)
+                      #(queue-processor/stop-processor!)
+                      poll-ms)))
+              (do (log/info "Starting distributed build queue processor")
+                  (queue-processor/start-processor! system))))
+        ;; Orphan monitor (lock-id 100002)
         _ (when (get-in cfg [:distributed :enabled])
-            (log/info "Starting orphan build monitor")
-            (orphan-monitor/start-monitor! system))
-        ;; Start retention scheduler when enabled
+            (if ha-enabled?
+              (do (log/info "Starting orphan monitor with leader election")
+                  (swap! leader-loops conj
+                    (leader/start-leader-loop! ds 100002 "orphan-monitor"
+                      #(orphan-monitor/start-monitor! system)
+                      #(orphan-monitor/stop-monitor!)
+                      poll-ms)))
+              (do (log/info "Starting orphan build monitor")
+                  (orphan-monitor/start-monitor! system))))
+        ;; Retention scheduler (lock-id 100003)
         _ (when (get-in cfg [:retention :enabled])
-            (log/info "Starting data retention scheduler")
-            (retention/start-retention! system))
+            (if ha-enabled?
+              (do (log/info "Starting retention scheduler with leader election")
+                  (swap! leader-loops conj
+                    (leader/start-leader-loop! ds 100003 "retention-scheduler"
+                      #(retention/start-retention! system)
+                      #(retention/stop-retention!)
+                      poll-ms)))
+              (do (log/info "Starting data retention scheduler")
+                  (retention/start-retention! system))))
         ;; Seed admin user when auth is enabled
         _ (when (get-in cfg [:auth :enabled])
             (user-store/seed-admin! ds (get-in cfg [:auth :seed-admin-password] "admin")))
@@ -135,6 +164,9 @@
         (log/info (str "HTTP→HTTPS redirect on http://" host ":" port))
         (log/info (str "Chengis web UI started on http://" host ":" port))))
 
+    ;; Mark startup as complete (for /startup probe)
+    ((requiring-resolve 'chengis.web.handlers/mark-startup-complete!))
+
     ;; Store system state for shutdown
     (reset! system-state {:ds ds :audit-writer audit-writer :config cfg})
 
@@ -153,6 +185,8 @@
       (log/info "Authentication is ENABLED — login required"))
     (when (get-in cfg [:audit :enabled] true)
       (log/info "Audit logging is ENABLED"))
+    (when ha-enabled?
+      (log/info (str "HA mode ENABLED — leader election active (poll: " poll-ms "ms)")))
     (println)
     (if (and https-enabled? keystore)
       (do
@@ -173,7 +207,15 @@
    3. Close audit writer channel
    4. Close database connection"
   []
-  ;; 1. Stop background services first
+  ;; 1. Stop leader election loops (if any)
+  (doseq [loop @leader-loops]
+    (try
+      (leader/stop-leader-loop! loop)
+      (catch Exception e
+        (log/error "Error stopping leader loop:" (.getMessage e)))))
+  (reset! leader-loops [])
+
+  ;; 1b. Stop background services that may be running directly (non-HA mode)
   (when (retention/running?*)
     (log/info "Stopping retention scheduler...")
     (retention/stop-retention!))

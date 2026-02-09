@@ -11,11 +11,26 @@
 ;; Hash chain verification
 ;; ---------------------------------------------------------------------------
 
+(def ^:private hash-fields
+  "The exact set of fields included in the audit entry hash.
+   Must match the base-row keys constructed by audit-store/insert-audit!
+   Excludes: :timestamp (DB-generated), :prev-hash, :entry-hash (hash chain columns).
+   :org-id is conditionally included (only when non-nil) to match insert-audit!'s cond-> behavior."
+  [:id :user-id :username :action :resource-type :resource-id :detail :ip-address :user-agent])
+
 (defn- recompute-entry-hash
-  "Recompute the hash for a raw audit row + its stated prev_hash."
+  "Recompute the hash for a raw audit row + its stated prev_hash.
+   Uses the same fixed field set as audit-store/compute-entry-hash to ensure
+   exact match regardless of extra DB columns."
   [row-map prev-hash]
   (try
-    (let [canonical (->> (dissoc row-map :prev-hash :entry-hash :detail :timestamp)
+    (let [;; Build a map with the exact fields used at insert time
+          base (select-keys row-map hash-fields)
+          ;; Conditionally add :org-id only when non-nil (matches cond-> in insert-audit!)
+          base (if-let [org-id (:org-id row-map)]
+                 (assoc base :org-id org-id)
+                 base)
+          canonical (->> base
                          (sort-by (comp str key))
                          (map (fn [[k v]] (str (name k) "=" v)))
                          (str/join "|"))
@@ -27,7 +42,10 @@
 
 (defn verify-hash-chain
   "Walk audit logs in timestamp order and verify the SHA-256 chain.
-   Returns {:valid bool :entries-checked int :first-invalid-id id-or-nil}."
+   Performs two checks per entry:
+   1. prev_hash linkage — stored prev_hash must match the previous entry's entry_hash
+   2. Content integrity — recomputed hash must match stored entry_hash
+   Returns {:valid bool :entries-checked int :first-invalid-id id-or-nil :reason str-or-nil}."
   [ds {:keys [org-id from-date to-date]}]
   (let [entries (audit-store/query-audits-asc ds
                   {:org-id org-id :from-date from-date :to-date to-date
@@ -45,11 +63,22 @@
             ;; Skip entries without hashes (pre-chain migration entries)
             (if (nil? stored-hash)
               (recur (rest remaining) prev-hash (inc checked))
-              ;; Verify prev_hash chain link
-              (if (and prev-hash (not= stored-prev prev-hash))
+              (cond
+                ;; Check 1: prev_hash chain link
+                (and prev-hash (not= stored-prev prev-hash))
                 {:valid false :entries-checked (inc checked)
                  :first-invalid-id (:id entry)
                  :reason "prev_hash mismatch"}
+
+                ;; Check 2: recompute entry_hash to detect content tampering
+                (let [recomputed (recompute-entry-hash entry stored-prev)]
+                  (and recomputed (not= recomputed stored-hash)))
+                {:valid false :entries-checked (inc checked)
+                 :first-invalid-id (:id entry)
+                 :reason "entry_hash mismatch (content tampered)"}
+
+                ;; Both checks passed — continue
+                :else
                 (recur (rest remaining) stored-hash (inc checked))))))))))
 
 ;; ---------------------------------------------------------------------------

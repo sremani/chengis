@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chengis.fullname" . }}-master
+  labels:
+    {{- include "chengis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+spec:
+  replicas: {{ .Values.master.replicas }}
+  selector:
+    matchLabels:
+      {{- include "chengis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: master
+  template:
+    metadata:
+      labels:
+        {{- include "chengis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: master
+    spec:
+      containers:
+        - name: chengis-master
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "chengis.fullname" . }}-config
+            - secretRef:
+                name: {{ include "chengis.secretName" . }}
+          env:
+            - name: CHENGIS_HA_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          startupProbe:
+            httpGet:
+              path: /startup
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: workspaces
+              mountPath: /data/workspaces
+            - name: artifacts
+              mountPath: /data/artifacts
+          resources:
+            {{- toYaml .Values.master.resources | nindent 12 }}
+      volumes:
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: {{ include "chengis.fullname" . }}-workspaces
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: {{ include "chengis.fullname" . }}-artifacts

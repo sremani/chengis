@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**488 tests | 1,993 assertions | 0 failures**
+**525 tests | 2,126 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -121,11 +121,21 @@ Build #1 — SUCCESS (8.3 sec)
 - **Heartbeat monitoring** &mdash; Agents send periodic heartbeats; configurable offline detection (default 90s)
 - **Local fallback** &mdash; Configurable fallback to local execution when no agents match (default: disabled for fail-fast)
 - **Feature-flagged dispatch** &mdash; Dispatcher wiring gated by `:distributed-dispatch` feature flag for safe rollout
+- **Persistent agent registry** &mdash; Write-through cache: in-memory atom + database persistence survives master restarts
 - **Agent management UI** &mdash; Status badges, capacity metrics, real-time monitoring
 - **Persistent build queue** &mdash; Priority-based queue with configurable concurrency
 - **Circuit breaker** &mdash; Automatic fault detection with half-open recovery for agent communication
 - **Orphan monitor** &mdash; Auto-fail builds from agents that go offline
 - **Artifact transfer** &mdash; Agent-to-master HTTP upload for build artifacts
+
+### High Availability
+
+- **Leader election** &mdash; PostgreSQL advisory locks for singleton services across multiple masters
+- **HA singletons** &mdash; Queue processor, orphan monitor, and retention scheduler run on exactly one master
+- **Health probes** &mdash; Kubernetes-native liveness (`/health`), readiness (`/ready`), and startup (`/startup`) endpoints
+- **Kubernetes manifests** &mdash; Production-ready Deployment, Service, ConfigMap, PVC, Ingress, and HPA YAML
+- **Helm chart** &mdash; Parameterized chart with values for replicas, resources, ingress, TLS, and ServiceMonitor
+- **HA Docker Compose** &mdash; `docker-compose.ha.yml` for local multi-master testing with PostgreSQL
 
 ### Authentication & Security
 
@@ -139,7 +149,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Secret backends** &mdash; Pluggable secret storage: local (default) or HashiCorp Vault
 - **CSRF protection** &mdash; Anti-forgery tokens on all form endpoints
 - **Rate limiting** &mdash; Configurable request rate limiting middleware
-- **Audit logging** &mdash; All user actions logged with admin viewer and CSV/JSON export
+- **Audit logging** &mdash; All user actions logged with tamper-evident hash chain and admin viewer with CSV/JSON export
 - **Input validation** &mdash; Docker command injection protection, agent registration field sanitization
 
 ### Multi-Tenancy
@@ -195,7 +205,7 @@ Build #1 — SUCCESS (8.3 sec)
 ### Persistence
 
 - **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
-- **34 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
+- **36 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -257,6 +267,12 @@ docker compose up --build
 ```
 
 The included `docker-compose.yml` sets up a master node with two agent nodes, shared-secret auth, and a persistent data volume. All configuration is via `CHENGIS_*` environment variables.
+
+For multi-master HA testing with PostgreSQL:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ha.yml up --build
+```
 
 ### Start an Agent (Distributed Mode)
 
@@ -628,8 +644,14 @@ Chengis uses sensible defaults. Override via `resources/config.edn` or environme
                :dispatch {:fallback-local false
                           :queue-enabled false}}
 
+ ;; High Availability (multi-master with shared PostgreSQL)
+ :ha {:enabled false
+      :leader-poll-ms 15000    ;; Leader election poll interval
+      :instance-id nil}        ;; Unique ID per master (defaults to pod name in K8s)
+
  ;; Feature flags (opt-in for new features)
- :feature-flags {:distributed-dispatch false}
+ :feature-flags {:distributed-dispatch false
+                 :persistent-agents true}
 
  ;; Prometheus metrics
  :metrics    {:enabled false
@@ -676,6 +698,10 @@ All configuration can be overridden with `CHENGIS_*` environment variables. Nest
 | `CHENGIS_DISTRIBUTED_QUEUE_ENABLED` | `[:distributed :dispatch :queue-enabled]` | `true` |
 | `CHENGIS_DISTRIBUTED_HEARTBEAT_TIMEOUT_MS` | `[:distributed :heartbeat-timeout-ms]` | `90000` |
 | `CHENGIS_FEATURE_DISTRIBUTED_DISPATCH` | `[:feature-flags :distributed-dispatch]` | `true` |
+| `CHENGIS_FEATURE_PERSISTENT_AGENTS` | `[:feature-flags :persistent-agents]` | `true` |
+| `CHENGIS_HA_ENABLED` | `[:ha :enabled]` | `true` |
+| `CHENGIS_HA_LEADER_POLL_MS` | `[:ha :leader-poll-ms]` | `15000` |
+| `CHENGIS_HA_INSTANCE_ID` | `[:ha :instance-id]` | `pod-name` |
 | `CHENGIS_METRICS_ENABLED` | `[:metrics :enabled]` | `true` |
 | `CHENGIS_RETENTION_ENABLED` | `[:retention :enabled]` | `true` |
 
@@ -717,8 +743,9 @@ Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings 
 | `GET /admin/docker/policies` | Docker image policy management |
 | `POST /admin/docker/policies` | Create Docker image policy |
 | `POST /admin/docker/policies/:id/delete` | Delete Docker image policy |
-| `GET /health` | Health check endpoint |
-| `GET /ready` | Readiness check endpoint |
+| `GET /health` | Health check endpoint (liveness probe) |
+| `GET /ready` | Readiness check endpoint (readiness probe) |
+| `GET /startup` | Startup check endpoint (startup probe, K8s) |
 | `GET /metrics` | Prometheus metrics endpoint |
 | `GET /api/builds/:id/events` | SSE stream for live build updates |
 | `GET /api/builds/:id/events/replay` | Historical event replay (JSON, cursor pagination) |
@@ -741,7 +768,7 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # Database persistence layer (21 files)
+    db/                     # Database persistence layer (23 files)
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
@@ -752,7 +779,7 @@ chengis/
       notification_store.clj # Notification events
       user_store.clj        # User accounts + API tokens
       org_store.clj         # Organization CRUD + membership
-      audit_store.clj       # Audit log queries
+      audit_store.clj       # Audit log queries (hash-chain integrity)
       audit_export.clj      # CSV/JSON audit export
       webhook_log.clj       # Webhook event logging
       secret_audit.clj      # Secret access audit
@@ -762,9 +789,10 @@ chengis/
       compliance_store.clj  # Build compliance tracking
       plugin_policy_store.clj # Plugin trust allowlist
       docker_policy_store.clj # Docker image policies
+      agent_store.clj       # Persistent agent registry (DB layer)
       backup.clj            # Database backup/restore
-    distributed/            # Distributed build coordination (8 files)
-      agent_registry.clj    # In-memory agent registry
+    distributed/            # Distributed build coordination (9 files)
+      agent_registry.clj    # Write-through agent registry (atom + DB)
       dispatcher.clj        # Build dispatch (local vs remote)
       master_api.clj        # Master API handlers
       build_queue.clj       # Persistent build queue
@@ -772,6 +800,7 @@ chengis/
       circuit_breaker.clj   # Agent communication circuit breaker
       orphan_monitor.clj    # Orphaned build detection
       artifact_transfer.clj # Agent-to-master artifact upload
+      leader_election.clj   # PostgreSQL advisory lock leader election
     dsl/                    # Pipeline DSL and formats (6 files)
       core.clj              # defpipeline macro + DSL helpers
       chengisfile.clj       # EDN Pipeline as Code parser
@@ -818,13 +847,14 @@ chengis/
         yaml_format.clj     # YAML pipeline format
         github_status.clj   # GitHub commit status reporter
         gitlab_status.clj   # GitLab commit status reporter
-    web/                    # HTTP server and UI (30 files)
-      server.clj            # http-kit server startup
+    web/                    # HTTP server and UI (31 files)
+      server.clj            # http-kit server startup + HA wiring
       routes.clj            # Reitit routes + middleware
       handlers.clj          # Request handlers
       sse.clj               # Server-Sent Events
       webhook.clj           # SCM webhook handler
       auth.clj              # JWT/session/API token authentication + RBAC
+      oidc.clj              # OpenID Connect SSO integration
       audit.clj             # Audit logging middleware
       alerts.clj            # System alert management
       rate_limit.clj        # Request rate limiting
@@ -855,17 +885,20 @@ chengis/
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (77 files)
-  resources/migrations/     # Database migrations (34 versions × 2 drivers)
+  test/chengis/             # Test suite (82 files)
+  resources/migrations/     # Database migrations (36 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
   benchmarks/               # Performance benchmark suite
+  k8s/base/                 # Raw Kubernetes manifests (namespace, deployments, services, PVC, HPA, ingress)
+  helm/chengis/             # Parameterized Helm chart (Chart.yaml, values.yaml, templates/)
   Dockerfile                # Multi-stage Docker build
   docker-compose.yml        # Master + 2 agents deployment
+  docker-compose.ha.yml     # HA override: PostgreSQL + 2 masters for multi-master testing
 ```
 
-**Codebase:** ~18,600 lines source + ~11,500 lines tests across 191 files
+**Codebase:** ~20,000 lines source + ~12,500 lines tests across 198+ files
 
 ## Technology Stack
 
@@ -876,7 +909,7 @@ chengis/
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
 | Connection pool | HikariCP | PostgreSQL connection pooling |
-| Migrations | Migratus | Schema evolution (34 versions × 2 drivers) |
+| Migrations | Migratus | Schema evolution (36 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -935,7 +968,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **488 tests, 1,993 assertions, 0 failures**
+Current test suite: **525 tests, 2,126 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
@@ -969,6 +1002,10 @@ Test coverage spans:
 - Plugin policy store (trust allowlist, org isolation)
 - Docker policy store (image allow/deny, priority ordering, org isolation)
 - Policy engine and compliance reports
+- Persistent agent registry (write-through cache, DB hydration)
+- Leader election (advisory locks, singleton services)
+- Health, readiness, and startup probes
+- Security review regression tests (auth bypass, org scoping, hash chain integrity)
 
 ## Building an Uberjar
 

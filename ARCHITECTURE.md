@@ -111,6 +111,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   distributed/circuit_breaker.clj                             |
 |   distributed/orphan_monitor.clj                              |
 |   distributed/artifact_transfer.clj                           |
+|   distributed/leader_election.clj                             |
 +---------------------------------------------------------------+
 |                        Data Layer                             |
 |   db/connection.clj   db/migrate.clj                          |
@@ -124,6 +125,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/approval_store.clj  db/template_store.clj                |
 |   db/policy_store.clj  db/compliance_store.clj                |
 |   db/plugin_policy_store.clj  db/docker_policy_store.clj      |
+|   db/agent_store.clj                                          |
 |   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |
@@ -377,9 +379,10 @@ wrap-auth middleware
   |
   +-- Auth disabled? → attach admin user (backward compat)
   |
-  +-- Public path? (/login, /health, /ready, /api/webhook) → pass through
+  +-- Public path? (/login, /health, /ready, /startup, /api/webhook) → pass through
   |
-  +-- Distributed agent path? → bypass (handler-level check-auth)
+  +-- Distributed agent write path? → bypass (allowlist: /agent-events, /result,
+  |     /artifacts, /heartbeat suffixes only; handler-level check-auth)
   |
   +-- Session cookie? → validate session version against DB
   |
@@ -568,12 +571,22 @@ Is distributed enabled?
 - **Circuit breaker** — Wraps agent HTTP calls. Opens after N consecutive failures, half-opens after timeout for probe requests, closes on success
 - **Orphan monitor** — Periodically checks for builds dispatched to agents that have gone offline. Auto-fails orphaned builds after configurable timeout
 - **Build queue** — Persistent database-backed queue ensures builds survive master restarts. Priority levels: `:high`, `:normal`, `:low`
+- **Persistent agent registry** — Write-through cache: mutations write to DB first, then update in-memory atom. On master restart, `hydrate-from-db!` restores agent state. When no datasource is configured (tests, CLI), falls back to atom-only mode
+
+### High Availability
+
+- **Leader election** — PostgreSQL advisory locks (`pg_try_advisory_lock`) ensure singleton services (queue-processor, orphan-monitor, retention-scheduler) run on exactly one master. Session-scoped locks auto-release on connection drop for instant failover. SQLite mode always acquires (single master assumed)
+- **Poll-based leadership** — Background thread polls `try-acquire!` every N seconds (default 15s). On acquisition calls `start-fn`; on loss calls `stop-fn`. Simpler than holding a dedicated connection
+- **Startup probe** — `/startup` returns 503 until initialization completes, then 200. Kubernetes `startupProbe` prevents premature traffic routing
+- **Enhanced readiness** — `/ready` includes queue depth and agent summary (total, online, offline, capacity)
+- **Instance identification** — `/health` includes `instance-id` (from `CHENGIS_HA_INSTANCE_ID` or auto-generated)
 
 ### Security
 
 - Shared-secret authentication via Bearer token
 - All API endpoints require auth when token is configured
 - Agent registration validates and sanitizes input fields
+- Distributed path exemptions use explicit allowlist (4 agent write endpoint suffixes only)
 - SSE event endpoints require user authentication (not bypassed in distributed mode)
 - Secrets encrypted with AES-256-GCM in transit
 
@@ -700,7 +713,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 34 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 36 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -790,6 +803,14 @@ build_logs        -- Structured log entries
 --       step_name, data; time-ordered IDs for guaranteed insertion order)
 -- 034: Plugin & Docker policies (plugin_policies table — trust allowlist per org;
 --       docker_policies table — image allow/deny rules with priority ordering)
+```
+
+### HA & Integrity Tables (Migrations 035-036)
+
+```sql
+-- 035: Persistent agent registry (current_builds column on agents table)
+-- 036: Audit hash-chain ordering (seq_num column on audit_logs for
+--       cross-DB insertion-order tiebreaking, replacing SQLite-specific rowid)
 ```
 
 ## Secrets Management
@@ -933,13 +954,13 @@ The retention scheduler runs periodically (default every 24 hours) and cleans up
 |-----------|---------------|---------------|-------|
 | `agent/` | Agent node lifecycle | Separate process entry point | 5 |
 | `cli/` | User-facing CLI commands | Thin layer over engine | 3 |
-| `db/` | Data access (stores) | One file per table/concern | 21 |
-| `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability | 8 |
+| `db/` | Data access (stores) | One file per table/concern | 23 |
+| `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability, HA | 9 |
 | `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
 | `engine/` | Build orchestration | Core business logic | 18 |
 | `model/` | Data validation (specs) | Schema definitions | 1 |
 | `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 15 |
-| `web/` | HTTP handling | Handlers + middleware | 11 |
+| `web/` | HTTP handling | Handlers + middleware | 12 |
 | `web/views/` | Hiccup templates | One file per page/component | 19 |
 
 Dependencies flow downward: `web` -> `engine` -> `db` -> `util`. The engine layer never imports web concerns, and the database layer never imports engine concerns. The plugin layer is cross-cutting but only depends on foundation. The auth/security layer wraps web handlers and is applied via middleware composition in `routes.clj`.

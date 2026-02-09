@@ -608,32 +608,79 @@
 
 (def ^:private start-time (System/currentTimeMillis))
 
-(defn health-check [_system]
+(defonce ^:private startup-complete? (atom false))
+
+(defn mark-startup-complete!
+  "Mark the server as fully initialized. Called at the end of server startup."
+  []
+  (reset! startup-complete? true))
+
+(defn reset-startup-state!
+  "Reset startup state. For testing."
+  []
+  (reset! startup-complete? false))
+
+(defn health-check [system]
   (fn [_req]
     (let [uptime-ms (- (System/currentTimeMillis) start-time)
-          uptime-s (quot uptime-ms 1000)]
+          uptime-s (quot uptime-ms 1000)
+          instance-id (or (get-in (:config system) [:ha :instance-id])
+                          "standalone")]
       {:status 200
        :headers {"Content-Type" "application/json"}
        :body (json/write-str {:status "ok"
-                              :version "0.2.0"
-                              :uptime-seconds uptime-s})})))
+                              :version "1.0.0"
+                              :uptime-seconds uptime-s
+                              :instance-id instance-id})})))
 
 (defn readiness-check [system]
   (fn [_req]
     (try
-      (let [ds (:db system)]
-        ;; Try a simple query to verify DB is accessible
-        (chengis.db.user-store/count-users ds)
+      (let [ds (:db system)
+            cfg (:config system)
+            ;; Try a simple query to verify DB is accessible
+            _ (chengis.db.user-store/count-users ds)
+            ;; Queue depth when distributed + queue enabled
+            queue-depth (when (and (get-in cfg [:distributed :enabled])
+                                   (get-in cfg [:distributed :dispatch :queue-enabled]))
+                          (try
+                            (let [depth-fn (requiring-resolve
+                                             'chengis.distributed.build-queue/get-queue-depth)]
+                              (depth-fn ds))
+                            (catch Exception _ nil)))
+            ;; Agent registry summary
+            agent-summary (try
+                            (let [summary-fn (requiring-resolve
+                                               'chengis.distributed.agent-registry/registry-summary)]
+                              (summary-fn))
+                            (catch Exception _ nil))
+            body (cond-> {:status "ready"
+                          :database "connected"}
+                   queue-depth (assoc :queue-depth queue-depth)
+                   agent-summary (assoc :agents agent-summary))]
         {:status 200
          :headers {"Content-Type" "application/json"}
-         :body (json/write-str {:status "ready"
-                                :database "connected"})})
+         :body (json/write-str body)})
       (catch Exception e
         (log/warn "Readiness check failed:" (.getMessage e))
         {:status 503
          :headers {"Content-Type" "application/json"}
          :body (json/write-str {:status "not-ready"
                                 :database "unavailable"})}))))
+
+(defn startup-check
+  "Kubernetes startup probe handler.
+   Returns 503 until server initialization is complete, then 200.
+   Used by K8s to determine when the pod is ready to receive liveness probes."
+  [_system]
+  (fn [_req]
+    (if @startup-complete?
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:status "started"})}
+      {:status 503
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:status "starting"})})))
 
 ;; ---------------------------------------------------------------------------
 ;; API Auth token generation
@@ -1472,9 +1519,12 @@
     (let [ds (:db system)
           org-id (auth/current-org-id req)
           policy-id (get-in req [:path-params :id])]
-      (policy-store/delete-policy! ds policy-id :org-id org-id)
-      (log/info "Policy deleted:" policy-id "by:" (:username (auth/current-user req)))
-      {:status 303 :headers {"Location" "/admin/policies"}})))
+      (try
+        (policy-store/delete-policy! ds policy-id :org-id org-id)
+        (log/info "Policy deleted:" policy-id "by:" (:username (auth/current-user req)))
+        {:status 303 :headers {"Location" "/admin/policies"}}
+        (catch clojure.lang.ExceptionInfo _
+          (not-found "Policy not found"))))))
 
 (defn toggle-policy-handler [system]
   (fn [req]
@@ -1492,7 +1542,8 @@
   (fn [req]
     (let [ds (:db system)
           config (:config system)
-          evaluations (try (policy-store/list-evaluations ds :limit 100)
+          org-id (auth/current-org-id req)
+          evaluations (try (policy-store/list-evaluations ds :org-id org-id :limit 100)
                            (catch Exception _ []))]
       (html-response
         (v-policies/render-evaluations

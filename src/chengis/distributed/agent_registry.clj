@@ -1,7 +1,12 @@
 (ns chengis.distributed.agent-registry
   "Agent registry for distributed builds.
    Tracks registered agents, their health (heartbeat), labels, and capacity.
-   Backed by an in-memory atom with optional DB persistence.
+
+   Write-through cache: In-memory atom serves as read cache for fast lookups.
+   All mutations write to database first (when ds-ref is set), then update atom.
+   On startup, atom is hydrated from database via `hydrate-from-db!`.
+
+   When ds-ref is nil (tests, CLI), operates in atom-only mode (backward compatible).
 
    Concurrency: All state mutations use swap! with pure functions to avoid
    check-then-act race conditions."
@@ -10,7 +15,7 @@
   (:import [java.time Instant Duration]))
 
 ;; ---------------------------------------------------------------------------
-;; In-memory registry
+;; In-memory registry (read cache)
 ;; ---------------------------------------------------------------------------
 
 (defonce ^:private agents (atom {}))  ;; agent-id -> agent-info
@@ -21,11 +26,41 @@
 
 (defonce ^:private config-ref (atom {}))
 
+;; Database reference for write-through persistence.
+;; nil = atom-only mode (tests, CLI).
+(defonce ^:private ds-ref (atom nil))
+
 (defn set-config!
   "Set the config map for the agent registry. Called at server startup.
    Used to make heartbeat timeout configurable without hardcoding."
   [cfg]
   (reset! config-ref cfg))
+
+(defn set-db!
+  "Set the database datasource for write-through persistence.
+   When set, all mutations persist to the agents table.
+   When nil, operates in atom-only mode (backward compatible)."
+  [ds]
+  (reset! ds-ref ds))
+
+(defn hydrate-from-db!
+  "Load all agents from database into the in-memory atom.
+   Called once at startup to restore agent state after a master restart.
+   Requires ds-ref to be set via `set-db!` first.
+   Non-fatal: logs error and continues with empty registry if DB load fails."
+  []
+  (when-let [ds @ds-ref]
+    (try
+      (let [agent-store (requiring-resolve 'chengis.db.agent-store/load-all-agents)
+            db-agents (agent-store ds)
+            agent-map (reduce (fn [m agent]
+                                (assoc m (:id agent) agent))
+                              {} db-agents)]
+        (reset! agents agent-map)
+        (log/info "Hydrated agent registry from database:" (count db-agents) "agent(s)"))
+      (catch Exception e
+        (log/error "Failed to hydrate agent registry from database — starting with empty registry:"
+                   (.getMessage e))))))
 
 (defn- heartbeat-timeout-ms
   "Get the configured heartbeat timeout, falling back to the default."
@@ -43,6 +78,56 @@
       (.toMillis (Duration/between (Instant/parse instant-str) (now-instant)))
       (catch Exception _ nil))))
 
+(defn- persist-upsert!
+  "Write agent record to database if ds-ref is set."
+  [record]
+  (when-let [ds @ds-ref]
+    (try
+      (let [upsert-fn (requiring-resolve 'chengis.db.agent-store/upsert-agent!)]
+        (upsert-fn ds record))
+      (catch Exception e
+        (log/error "Failed to persist agent upsert:" (.getMessage e))))))
+
+(defn- persist-heartbeat!
+  "Write heartbeat update to database if ds-ref is set."
+  [agent-id opts]
+  (when-let [ds @ds-ref]
+    (try
+      (let [update-fn (requiring-resolve 'chengis.db.agent-store/update-agent-heartbeat!)]
+        (update-fn ds agent-id opts))
+      (catch Exception e
+        (log/error "Failed to persist heartbeat:" (.getMessage e))))))
+
+(defn- persist-delete!
+  "Delete agent from database if ds-ref is set."
+  [agent-id]
+  (when-let [ds @ds-ref]
+    (try
+      (let [delete-fn (requiring-resolve 'chengis.db.agent-store/delete-agent!)]
+        (delete-fn ds agent-id))
+      (catch Exception e
+        (log/error "Failed to persist agent deletion:" (.getMessage e))))))
+
+(defn- persist-builds!
+  "Write current_builds to database if ds-ref is set."
+  [agent-id current-builds]
+  (when-let [ds @ds-ref]
+    (try
+      (let [update-fn (requiring-resolve 'chengis.db.agent-store/update-agent-builds!)]
+        (update-fn ds agent-id current-builds))
+      (catch Exception e
+        (log/error "Failed to persist build count:" (.getMessage e))))))
+
+(defn- persist-status!
+  "Write status to database if ds-ref is set."
+  [agent-id status]
+  (when-let [ds @ds-ref]
+    (try
+      (let [update-fn (requiring-resolve 'chengis.db.agent-store/update-agent-status!)]
+        (update-fn ds agent-id status))
+      (catch Exception e
+        (log/error "Failed to persist status:" (.getMessage e))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Agent management
 ;; ---------------------------------------------------------------------------
@@ -51,6 +136,7 @@
   "Register a new agent. Always generates a new agent ID.
    When :org-id is provided, the agent is restricted to that organization.
    When :org-id is nil (default), the agent is shared across all orgs.
+   Persists to database (write-through) when ds-ref is set.
    Returns the agent record."
   [{:keys [name url labels max-builds system-info org-id]}]
   (let [agent-id (util/generate-id)
@@ -68,13 +154,16 @@
                  org-id (assoc :org-id org-id))]
     (log/info "Agent registered:" (:name record) "(" agent-id ")"
               (if org-id (str "org:" org-id) "shared"))
+    ;; Write to DB first, then update atom
+    (persist-upsert! record)
     (swap! agents assoc agent-id record)
     record))
 
 (defn heartbeat!
   "Update an agent's last heartbeat timestamp atomically.
    Returns true if the agent existed, false otherwise.
-   Uses swap-vals! to avoid side effects inside swap!."
+   Uses swap-vals! to avoid side effects inside swap!.
+   Atom-first for heartbeat (high-frequency), DB write follows."
   [agent-id & [{:keys [current-builds system-info]}]]
   (let [[old-state _new-state]
         (swap-vals! agents
@@ -85,12 +174,19 @@
                                  :status :online}
                                 (when current-builds {:current-builds current-builds})
                                 (when system-info {:system-info system-info}))
-                        state)))]
-    (contains? old-state agent-id)))
+                        state)))
+        existed? (contains? old-state agent-id)]
+    ;; Persist heartbeat to DB (atom-first for performance)
+    (when existed?
+      (persist-heartbeat! agent-id {:current-builds current-builds
+                                    :system-info system-info}))
+    existed?))
 
 (defn deregister-agent!
-  "Remove an agent from the registry."
+  "Remove an agent from the registry.
+   Deletes from database first, then removes from atom."
   [agent-id]
+  (persist-delete! agent-id)
   (swap! agents dissoc agent-id))
 
 (defn get-agent
@@ -158,14 +254,22 @@
     (first candidates)))
 
 (defn increment-builds!
-  "Increment the current build count for an agent."
+  "Increment the current build count for an agent.
+   Updates atom, then persists to database."
   [agent-id]
-  (swap! agents update-in [agent-id :current-builds] (fnil inc 0)))
+  (let [new-state (swap! agents update-in [agent-id :current-builds] (fnil inc 0))
+        new-count (get-in new-state [agent-id :current-builds])]
+    (when new-count
+      (persist-builds! agent-id new-count))))
 
 (defn decrement-builds!
-  "Decrement the current build count for an agent."
+  "Decrement the current build count for an agent.
+   Updates atom, then persists to database."
   [agent-id]
-  (swap! agents update-in [agent-id :current-builds] (fn [n] (max 0 (dec (or n 0))))))
+  (let [new-state (swap! agents update-in [agent-id :current-builds] (fn [n] (max 0 (dec (or n 0)))))
+        new-count (get-in new-state [agent-id :current-builds])]
+    (when new-count
+      (persist-builds! agent-id new-count))))
 
 ;; ---------------------------------------------------------------------------
 ;; Health monitoring
@@ -173,6 +277,7 @@
 
 (defn check-agent-health!
   "Update status of all agents based on heartbeat timeout atomically.
+   Persists offline status changes to database.
    Returns count of agents that went offline."
   []
   (let [timeout (heartbeat-timeout-ms)
@@ -189,10 +294,15 @@
                               acc)))
                         state
                         state)))
-        went-offline (count (filter (fn [[id agent]]
-                                      (and (= :offline (:status agent))
-                                           (not= :offline (:status (get old-state id)))))
-                                    new-state))]
+        went-offline-ids (keep (fn [[id agent]]
+                                 (when (and (= :offline (:status agent))
+                                            (not= :offline (:status (get old-state id))))
+                                   id))
+                               new-state)
+        went-offline (count went-offline-ids)]
+    ;; Persist offline status changes to DB
+    (doseq [agent-id went-offline-ids]
+      (persist-status! agent-id :offline))
     (when (pos? went-offline)
       (log/warn went-offline "agent(s) went offline"))
     went-offline))
@@ -213,15 +323,19 @@
 (defn set-agent-draining!
   "Mark an agent as :draining — it won't receive new builds but finishes
    current ones. Returns true if agent existed.
-   Uses swap-vals! to avoid side effects inside swap!."
+   Uses swap-vals! to avoid side effects inside swap!.
+   Persists status change to database."
   [agent-id]
   (let [[old-state _new-state]
         (swap-vals! agents
                     (fn [state]
                       (if (contains? state agent-id)
                         (assoc-in state [agent-id :status] :draining)
-                        state)))]
-    (contains? old-state agent-id)))
+                        state)))
+        existed? (contains? old-state agent-id)]
+    (when existed?
+      (persist-status! agent-id :draining))
+    existed?))
 
 ;; ---------------------------------------------------------------------------
 ;; Summary & reset

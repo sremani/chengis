@@ -31,7 +31,7 @@
         (is (= 200 (:status resp)))
         (is (= "application/json" (get-in resp [:headers "Content-Type"])))
         (is (= "ok" (:status body)))
-        (is (= "0.2.0" (:version body)))
+        (is (= "1.0.0" (:version body)))
         (is (number? (:uptime-seconds body)))
         ;; auth-enabled should NOT be exposed in health endpoint (security)
         (is (nil? (:auth-enabled body)))))))

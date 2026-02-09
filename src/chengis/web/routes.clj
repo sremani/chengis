@@ -138,6 +138,7 @@
         ["/callback" {:get {:handler (oidc/oidc-callback-handler system)}}]]
        ["/health" {:get {:handler (h/health-check system)}}]
        ["/ready" {:get {:handler (h/readiness-check system)}}]
+       ["/startup" {:get {:handler (h/startup-check system)}}]
        ;; Prometheus metrics endpoint (only when metrics enabled)
        (metrics-route system)
 
@@ -224,7 +225,7 @@
         ["/alerts/fragment" {:get {:handler (alerts/alerts-fragment-handler system)}}]
         ["/auth/token" {:post {:handler (h/api-generate-token system)}}]
         ["/builds/:id/events" {:get {:handler (h/build-events-sse system)}}]
-        ["/builds/:id/events/replay" {:get {:handler (h/build-events-handler system)}}]
+        ["/builds/:id/events/replay" {:get {:handler (auth/wrap-require-role :viewer (h/build-events-handler system))}}]
         ;; Agent communication — developer+
         ["/builds/:id/agent-events" {:post {:handler (master-api/ingest-event-handler system)}}]
         ["/builds/:id/result" {:post {:handler (master-api/ingest-result-handler system)}}]

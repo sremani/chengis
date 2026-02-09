@@ -125,10 +125,14 @@
    :templates {:enabled true
                :max-depth 3}
    :matrix {:max-combinations 25}
+   :ha {:enabled false
+        :leader-poll-ms 15000
+        :instance-id nil}      ;; defaults to "standalone" if nil; set from K8s pod name via CHENGIS_HA_INSTANCE_ID
    :feature-flags {:policy-engine false
                    :artifact-checksums false
                    :compliance-reports false
-                   :distributed-dispatch false}
+                   :distributed-dispatch false
+                   :persistent-agents true}
    :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
@@ -169,6 +173,10 @@
    "CHENGIS_DISTRIBUTED_HEARTBEAT_TIMEOUT_MS"  [:distributed :heartbeat-timeout-ms]
    "CHENGIS_DISTRIBUTED_FALLBACK_LOCAL"        [:distributed :dispatch :fallback-local]
    "CHENGIS_FEATURE_DISTRIBUTED_DISPATCH"      [:feature-flags :distributed-dispatch]
+   "CHENGIS_FEATURE_PERSISTENT_AGENTS"         [:feature-flags :persistent-agents]
+   "CHENGIS_HA_ENABLED"                        [:ha :enabled]
+   "CHENGIS_HA_LEADER_POLL_MS"                 [:ha :leader-poll-ms]
+   "CHENGIS_HA_INSTANCE_ID"                    [:ha :instance-id]
    "CHENGIS_METRICS_ENABLED"                    [:metrics :enabled]
    "CHENGIS_LOG_LEVEL"                          [:log :level]
    "CHENGIS_LOG_FORMAT"                         [:log :format]

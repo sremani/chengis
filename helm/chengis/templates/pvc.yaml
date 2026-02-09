@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "chengis.fullname" . }}-workspaces
+  labels:
+    {{- include "chengis.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.workspaces.accessMode }}
+  {{- if .Values.persistence.workspaces.storageClass }}
+  storageClassName: {{ .Values.persistence.workspaces.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.workspaces.size }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "chengis.fullname" . }}-artifacts
+  labels:
+    {{- include "chengis.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.artifacts.accessMode }}
+  {{- if .Values.persistence.artifacts.storageClass }}
+  storageClassName: {{ .Values.persistence.artifacts.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.artifacts.size }}

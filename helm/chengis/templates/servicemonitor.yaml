@@ -1,0 +1,17 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "chengis.fullname" . }}
+  labels:
+    {{- include "chengis.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "chengis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: master
+  endpoints:
+    - port: http
+      path: {{ .Values.serviceMonitor.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

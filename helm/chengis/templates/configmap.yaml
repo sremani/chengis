@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "chengis.fullname" . }}-config
+  labels:
+    {{- include "chengis.labels" . | nindent 4 }}
+data:
+  CHENGIS_DATABASE_TYPE: {{ .Values.database.type | quote }}
+  CHENGIS_DATABASE_HOST: {{ .Values.database.host | quote }}
+  CHENGIS_DATABASE_PORT: {{ .Values.database.port | quote }}
+  CHENGIS_DATABASE_NAME: {{ .Values.database.name | quote }}
+  CHENGIS_DATABASE_USER: {{ .Values.database.user | quote }}
+  CHENGIS_SERVER_PORT: "8080"
+  CHENGIS_SERVER_HOST: "0.0.0.0"
+  CHENGIS_WORKSPACE_ROOT: "/data/workspaces"
+  CHENGIS_ARTIFACTS_ROOT: "/data/artifacts"
+  CHENGIS_AUTH_ENABLED: {{ .Values.auth.enabled | quote }}
+  CHENGIS_DISTRIBUTED_ENABLED: {{ .Values.distributed.enabled | quote }}
+  CHENGIS_DISTRIBUTED_DISPATCH_QUEUE_ENABLED: {{ .Values.distributed.queueEnabled | quote }}
+  CHENGIS_HA_ENABLED: {{ .Values.ha.enabled | quote }}
+  CHENGIS_HA_LEADER_POLL_MS: {{ .Values.ha.leaderPollMs | quote }}
+  CHENGIS_METRICS_ENABLED: {{ .Values.metrics.enabled | quote }}
+  CHENGIS_RETENTION_ENABLED: {{ .Values.retention.enabled | quote }}
+  CHENGIS_LOG_LEVEL: {{ .Values.log.level | quote }}

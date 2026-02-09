@@ -1,0 +1,127 @@
+# Chengis CI/CD Engine — Helm Chart Values
+# Override these values for your environment.
+
+# -- Container image
+image:
+  repository: chengis
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# -- Master configuration
+master:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# -- Agent configuration
+agent:
+  replicas: 2
+  labels: "docker,linux"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  # Mount Docker socket for container-based builds
+  dockerSocket:
+    enabled: true
+    hostPath: /var/run/docker.sock
+
+# -- Horizontal Pod Autoscaler for agents
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# -- Database (PostgreSQL)
+database:
+  type: postgresql
+  host: postgresql
+  port: 5432
+  name: chengis
+  user: chengis
+  # Use existingSecret to reference a pre-created secret for the password
+  existingSecret: ""
+  password: ""
+
+# -- Authentication
+auth:
+  enabled: true
+  seedAdminPassword: "admin"
+  # Leave empty to auto-generate; or set explicitly
+  jwtSecret: ""
+  sessionSecret: ""
+
+# -- Secrets encryption
+secrets:
+  masterKey: ""
+
+# -- Distributed builds
+distributed:
+  enabled: true
+  authToken: ""
+  queueEnabled: true
+
+# -- High availability
+ha:
+  enabled: true
+  leaderPollMs: 15000
+
+# -- Metrics (Prometheus)
+metrics:
+  enabled: true
+
+# -- Retention
+retention:
+  enabled: true
+
+# -- Logging
+log:
+  level: ":info"
+
+# -- Ingress
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: ci.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: chengis-tls
+  #    hosts:
+  #      - ci.example.com
+
+# -- Persistence
+persistence:
+  workspaces:
+    size: 10Gi
+    accessMode: ReadWriteMany
+    storageClass: ""
+  artifacts:
+    size: 20Gi
+    accessMode: ReadWriteMany
+    storageClass: ""
+
+# -- ServiceMonitor (Prometheus Operator)
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  path: /metrics
+
+# -- Existing secret name for all sensitive values
+# When set, the chart will NOT create its own Secret.
+# The referenced secret must contain all required keys.
+existingSecret: ""

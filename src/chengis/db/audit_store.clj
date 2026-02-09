@@ -29,12 +29,21 @@
     (catch Exception _e nil)))
 
 (defn- get-latest-hash
-  "Get the entry_hash of the most recent audit log entry."
+  "Get the entry_hash of the most recent audit log entry.
+   Uses seq_num for deterministic insertion-order tiebreaking (cross-DB portable)."
   [ds]
   (let [row (jdbc/execute-one! ds
-              ["SELECT entry_hash FROM audit_logs ORDER BY timestamp DESC, rowid DESC LIMIT 1"]
+              ["SELECT entry_hash FROM audit_logs ORDER BY seq_num DESC LIMIT 1"]
               {:builder-fn rs/as-unqualified-kebab-maps})]
     (:entry-hash row)))
+
+(defn- next-seq-num
+  "Get the next sequence number for audit log insertion ordering."
+  [ds]
+  (let [row (jdbc/execute-one! ds
+              ["SELECT COALESCE(MAX(seq_num), 0) + 1 AS next_seq FROM audit_logs"]
+              {:builder-fn rs/as-unqualified-kebab-maps})]
+    (:next-seq row)))
 
 ;; ---------------------------------------------------------------------------
 ;; Core operations
@@ -42,7 +51,8 @@
 
 (defn insert-audit!
   "Insert a single audit log entry with hash chain.
-   When :org-id is provided, associates the entry with that organization."
+   When :org-id is provided, associates the entry with that organization.
+   Assigns a seq_num for deterministic insertion ordering (cross-DB portable)."
   [ds {:keys [user-id username action resource-type resource-id detail ip-address user-agent org-id]}]
   (let [id (util/generate-id)
         base-row (cond-> {:id id
@@ -58,9 +68,11 @@
         ;; Hash chain: link to previous entry
         prev-hash (get-latest-hash ds)
         entry-hash (compute-entry-hash base-row prev-hash)
+        seq-num (next-seq-num ds)
         row (assoc base-row
               :prev-hash prev-hash
-              :entry-hash entry-hash)]
+              :entry-hash entry-hash
+              :seq-num seq-num)]
     (jdbc/execute-one! ds
       (sql/format {:insert-into :audit-logs
                    :values [row]}))
@@ -103,7 +115,7 @@
         where (when (> (count conditions) 1) conditions)
         query (cond-> {:select :*
                        :from :audit-logs
-                       :order-by [[:timestamp :asc] [:rowid :asc]]
+                       :order-by [[:seq-num :asc]]
                        :limit limit
                        :offset offset}
                 where (assoc :where where))]

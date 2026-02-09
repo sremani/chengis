@@ -188,7 +188,7 @@
    /api/webhook is public because webhook senders (GitHub, GitLab) use HMAC
    signature verification, not JWT/session auth. The webhook handler validates
    signatures independently."
-  #{"/login" "/health" "/ready" "/api/webhook"})
+  #{"/login" "/health" "/ready" "/startup" "/api/webhook"})
 
 (def ^:private public-prefixes
   "Path prefixes that don't require authentication."
@@ -209,32 +209,22 @@
 ;; Distributed agent endpoint exemption
 ;; ---------------------------------------------------------------------------
 
-(def ^:private distributed-api-prefixes
-  "API path prefixes for distributed agent-to-master communication.
-   These endpoints use their own auth (shared secret) via check-auth in
-   master_api.clj and artifact_transfer.clj, not JWT/API-token auth."
-  ["/api/agents/" "/api/builds/"])
-
-(def ^:private distributed-api-exempt-exact
-  "Exact distributed API paths that should NOT be exempted from global auth.
-   These use RBAC (wrap-require-role) and need the global auth user."
-  #{"/api/agents/register"})
-
-(def ^:private distributed-api-exempt-suffixes
-  "Suffixes that should NOT be exempted from global auth.
-   /events (SSE) endpoints are read endpoints for authenticated users."
-  ["/events"])
+(def ^:private distributed-agent-suffixes
+  "Allowlist of path suffixes for agent-to-master write endpoints.
+   Only these specific paths bypass global auth when under /api/builds/ or /api/agents/.
+   They use handler-level check-auth (shared secret) instead of JWT/session auth."
+  ["/agent-events" "/result" "/artifacts" "/heartbeat"])
 
 (defn- distributed-api-path?
   "Check if the request path is a distributed agent endpoint that should
    bypass global auth (handled by handler-level check-auth instead).
-   Returns true for agent communication paths, false for registration
-   (which uses RBAC), SSE /events endpoints (which need user auth),
-   and other API paths."
+   Uses an allowlist of exact agent endpoint suffixes — read-only endpoints
+   like /events, /events/replay, and RBAC-protected paths like /register
+   are NOT exempted and require normal authentication."
   [uri]
-  (and (some #(str/starts-with? uri %) distributed-api-prefixes)
-       (not (contains? distributed-api-exempt-exact uri))
-       (not (some #(str/ends-with? uri %) distributed-api-exempt-suffixes))))
+  (and (or (str/starts-with? uri "/api/agents/")
+           (str/starts-with? uri "/api/builds/"))
+       (some #(str/ends-with? uri %) distributed-agent-suffixes)))
 
 ;; ---------------------------------------------------------------------------
 ;; Auth response helpers

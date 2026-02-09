@@ -1,0 +1,107 @@
+# ============================================================================
+# Chengis CI/CD Engine — Docker Compose HA Override
+# ============================================================================
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml up --build
+#
+# Adds:
+#   - PostgreSQL 16 database (replaces SQLite)
+#   - Second master instance (master-2) for HA testing
+#   - Leader election enabled on both masters
+# ============================================================================
+
+services:
+  # PostgreSQL database for shared state
+  postgresql:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: chengis
+      POSTGRES_USER: chengis
+      POSTGRES_PASSWORD: chengis-dev-password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chengis"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Override master to use PostgreSQL + HA
+  master:
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      # Database: PostgreSQL (override SQLite default)
+      CHENGIS_DATABASE_TYPE: "postgresql"
+      CHENGIS_DATABASE_HOST: "postgresql"
+      CHENGIS_DATABASE_PORT: "5432"
+      CHENGIS_DATABASE_NAME: "chengis"
+      CHENGIS_DATABASE_USER: "chengis"
+      CHENGIS_DATABASE_PASSWORD: "chengis-dev-password"
+      # HA: Enable leader election
+      CHENGIS_HA_ENABLED: "true"
+      CHENGIS_HA_INSTANCE_ID: "master-1"
+      CHENGIS_HA_LEADER_POLL_MS: "10000"
+      # Carry over from base compose
+      CHENGIS_AUTH_ENABLED: "true"
+      CHENGIS_AUTH_JWT_SECRET: "change-me-in-production-use-a-long-random-string"
+      CHENGIS_AUTH_SESSION_SECRET: "change-me-session-secret-at-least-16-chars"
+      CHENGIS_SECRETS_MASTER_KEY: "0123456789abcdef0123456789abcdef"
+      CHENGIS_METRICS_ENABLED: "true"
+      CHENGIS_DISTRIBUTED_ENABLED: "true"
+      CHENGIS_DISTRIBUTED_AUTH_TOKEN: "agent-shared-secret"
+      CHENGIS_DISTRIBUTED_DISPATCH_QUEUE_ENABLED: "true"
+      CHENGIS_RETENTION_ENABLED: "true"
+      CHENGIS_LOG_LEVEL: ":info"
+
+  # Second master for HA testing
+  master-2:
+    build: .
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      CHENGIS_DATABASE_TYPE: "postgresql"
+      CHENGIS_DATABASE_HOST: "postgresql"
+      CHENGIS_DATABASE_PORT: "5432"
+      CHENGIS_DATABASE_NAME: "chengis"
+      CHENGIS_DATABASE_USER: "chengis"
+      CHENGIS_DATABASE_PASSWORD: "chengis-dev-password"
+      CHENGIS_HA_ENABLED: "true"
+      CHENGIS_HA_INSTANCE_ID: "master-2"
+      CHENGIS_HA_LEADER_POLL_MS: "10000"
+      CHENGIS_AUTH_ENABLED: "true"
+      CHENGIS_AUTH_JWT_SECRET: "change-me-in-production-use-a-long-random-string"
+      CHENGIS_AUTH_SESSION_SECRET: "change-me-session-secret-at-least-16-chars"
+      CHENGIS_SECRETS_MASTER_KEY: "0123456789abcdef0123456789abcdef"
+      CHENGIS_METRICS_ENABLED: "true"
+      CHENGIS_DISTRIBUTED_ENABLED: "true"
+      CHENGIS_DISTRIBUTED_AUTH_TOKEN: "agent-shared-secret"
+      CHENGIS_DISTRIBUTED_DISPATCH_QUEUE_ENABLED: "true"
+      CHENGIS_RETENTION_ENABLED: "true"
+      CHENGIS_LOG_LEVEL: ":info"
+    restart: unless-stopped
+
+  # Agents connect to master (load balanced via Docker DNS)
+  agent-1:
+    depends_on:
+      master:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+
+  agent-2:
+    depends_on:
+      master:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+
+volumes:
+  pg-data:

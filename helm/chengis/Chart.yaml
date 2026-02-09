@@ -1,0 +1,18 @@
+apiVersion: v2
+name: chengis
+description: Chengis CI/CD Engine — a self-hosted continuous integration and delivery platform
+type: application
+version: 0.3.0
+appVersion: "1.0.0"
+keywords:
+  - ci
+  - cd
+  - continuous-integration
+  - continuous-delivery
+  - build
+  - pipeline
+maintainers:
+  - name: chengis
+home: https://github.com/sremani/chengis
+sources:
+  - https://github.com/sremani/chengis

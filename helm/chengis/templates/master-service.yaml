@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chengis.fullname" . }}-master
+  labels:
+    {{- include "chengis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "chengis.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: master
