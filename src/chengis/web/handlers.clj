@@ -65,12 +65,13 @@
 (defn dashboard-page [system]
   (fn [req]
     (let [ds (:db system)
-          jobs (job-store/list-jobs ds)
-          builds (build-store/list-builds ds)
+          org-id (auth/current-org-id req)
+          jobs (job-store/list-jobs ds :org-id org-id)
+          builds (build-store/list-builds ds {:org-id org-id})
           running (count (filter #(= :running (:status %)) builds))
           queued (count (filter #(= :queued (:status %)) builds))
-          stats (build-store/get-build-stats ds)
-          recent-history (build-store/get-recent-build-history ds 30)
+          stats (build-store/get-build-stats ds {:org-id org-id})
+          recent-history (build-store/get-recent-build-history ds {:org-id org-id} 30)
           current-alerts (try (alerts/check-alerts system)
                               (catch Exception e
                                 (log/warn "Failed to check alerts for dashboard:" (.getMessage e))
@@ -88,23 +89,25 @@
 (defn jobs-list-page [system]
   (fn [req]
     (let [ds (:db system)
-          jobs (job-store/list-jobs ds)]
+          org-id (auth/current-org-id req)
+          jobs (job-store/list-jobs ds :org-id org-id)]
       (html-response (v-jobs/render-list {:jobs jobs
                                           :csrf-token (csrf-token req)})))))
 
 (defn job-detail-page [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           job-name (get-in req [:path-params :name])
-          job (job-store/get-job ds job-name)]
+          job (job-store/get-job ds job-name :org-id org-id)]
       (if-not job
         (not-found (str "Job not found: " job-name))
-        (let [builds (build-store/list-builds ds (:id job))
-              stats (build-store/get-build-stats ds (:id job))
-              recent-history (build-store/get-recent-build-history ds (:id job) 30)
+        (let [builds (build-store/list-builds ds {:job-id (:id job) :org-id org-id})
+              stats (build-store/get-build-stats ds {:job-id (:id job) :org-id org-id})
+              recent-history (build-store/get-recent-build-history ds {:job-id (:id job) :org-id org-id} 30)
               secret-names (concat
-                             (secret-store/list-secret-names ds :scope "global")
-                             (secret-store/list-secret-names ds :scope (:id job)))]
+                             (secret-store/list-secret-names ds :scope "global" :org-id org-id)
+                             (secret-store/list-secret-names ds :scope (:id job) :org-id org-id))]
           (html-response
             (v-jobs/render-detail {:job job :builds builds
                                    :stats stats
@@ -128,8 +131,9 @@
 (defn trigger-form [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           job-name (get-in req [:path-params :name])
-          job (job-store/get-job ds job-name)]
+          job (job-store/get-job ds job-name :org-id org-id)]
       (if-not job
         (not-found (str "Job not found: " job-name))
         (let [parameters (or (:parameters job)
@@ -220,16 +224,23 @@
 
 (defn cancel-build [system]
   (fn [req]
-    (let [build-id (get-in req [:path-params :id])
-          cancelled? (build-runner/cancel-build! build-id)]
-      (if cancelled?
-        (do
-          (log/info "Build cancelled via web:" build-id)
-          {:status 303
-           :headers {"Location" (str "/builds/" build-id)}})
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :id])
+          build (build-store/get-build ds build-id :org-id org-id)]
+      (if-not build
         {:status 404
          :headers {"Content-Type" "text/html; charset=utf-8"}
-         :body "<p>Build not found or already completed.</p>"}))))
+         :body "<p>Build not found or already completed.</p>"}
+        (let [cancelled? (build-runner/cancel-build! build-id)]
+          (if cancelled?
+            (do
+              (log/info "Build cancelled via web:" build-id)
+              {:status 303
+               :headers {"Location" (str "/builds/" build-id)}})
+            {:status 404
+             :headers {"Content-Type" "text/html; charset=utf-8"}
+             :body "<p>Build not found or already completed.</p>"}))))))
 
 (defn retry-build [system]
   (fn [req]
@@ -283,8 +294,9 @@
   (fn [req]
     (let [ds (:db system)
           config (:config system)
+          org-id (auth/current-org-id req)
           job-name (get-in req [:path-params :name])
-          job (job-store/get-job ds job-name)
+          job (job-store/get-job ds job-name :org-id org-id)
           params (:form-params req)
           secret-name (get params "secret-name")
           secret-value (get params "secret-value")
@@ -304,7 +316,8 @@
                                 (:id job)
                                 "global")]
           (secret-store/set-secret! ds config secret-name secret-value
-                                    :scope effective-scope)
+                                    :scope effective-scope
+                                    :org-id org-id)
           (log/info "Secret created:" secret-name "scope:" effective-scope)
           {:status 303
            :headers {"Location" (str "/jobs/" job-name)}})))))
@@ -312,15 +325,17 @@
 (defn delete-secret [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           job-name (get-in req [:path-params :name])
           secret-key (get-in req [:path-params :key])
           scope (get-in req [:query-params "scope"] "global")
           job (when (not= scope "global")
-                (job-store/get-job ds job-name))
+                (job-store/get-job ds job-name :org-id org-id))
           effective-scope (if (and job (not= scope "global"))
                             (:id job)
                             scope)]
-      (secret-store/delete-secret! ds secret-key :scope effective-scope)
+      (secret-store/delete-secret! ds secret-key :scope effective-scope
+                                    :org-id org-id)
       (log/info "Secret deleted:" secret-key "scope:" effective-scope)
       {:status 303
        :headers {"Location" (str "/jobs/" job-name)}})))
@@ -330,18 +345,23 @@
 (defn download-artifact [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           build-id (get-in req [:path-params :id])
-          filename (get-in req [:path-params :filename])
-          artifact (artifact-store/get-artifact ds build-id filename)]
-      (if-not artifact
-        (not-found (str "Artifact not found: " filename))
-        (let [file (io/file (:path artifact))]
-          (if (.exists file)
-            {:status 200
-             :headers {"Content-Type" (or (:content-type artifact) "application/octet-stream")
-                       "Content-Disposition" (str "attachment; filename=\"" filename "\"")}
-             :body file}
-            (not-found (str "Artifact file missing from disk: " filename))))))))
+          ;; Verify build belongs to current org before serving artifact
+          build (build-store/get-build ds build-id :org-id org-id)]
+      (if-not build
+        (not-found (str "Build not found: " build-id))
+        (let [filename (get-in req [:path-params :filename])
+              artifact (artifact-store/get-artifact ds build-id filename)]
+          (if-not artifact
+            (not-found (str "Artifact not found: " filename))
+            (let [file (io/file (:path artifact))]
+              (if (.exists file)
+                {:status 200
+                 :headers {"Content-Type" (or (:content-type artifact) "application/octet-stream")
+                           "Content-Disposition" (str "attachment; filename=\"" filename "\"")}
+                 :body file}
+                (not-found (str "Artifact file missing from disk: " filename))))))))))
 
 ;; --- Admin ---
 
@@ -533,6 +553,7 @@
   (fn [req]
     (let [ds (:db system)
           config (:config system)
+          org-id (auth/current-org-id req)
           params (or (:query-params req) (:params req) {})
           page (max 1 (try (Integer/parseInt (or (get params "page") "1"))
                           (catch NumberFormatException _ 1)))
@@ -542,6 +563,7 @@
           user-for-filter (when (seq username-filter)
                             (user-store/get-user-by-username ds username-filter))
           filters (cond-> {}
+                    org-id                        (assoc :org-id org-id)
                     (seq (get params "action"))   (assoc :action (get params "action"))
                     user-for-filter               (assoc :user-id (:id user-for-filter))
                     ;; If username given but user not found, use impossible filter to return no results
@@ -562,6 +584,7 @@
 (defn audit-export-handler [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           params (or (:query-params req) (:params req) {})
           format (get params "format" "csv")
           ;; Build filters from query params
@@ -569,6 +592,7 @@
           user-for-filter (when (seq username-filter)
                             (user-store/get-user-by-username ds username-filter))
           filters (cond-> {}
+                    org-id                        (assoc :org-id org-id)
                     (seq (get params "action"))   (assoc :action (get params "action"))
                     user-for-filter               (assoc :user-id (:id user-for-filter))
                     (and (seq username-filter) (nil? user-for-filter)) (assoc :user-id "__nonexistent__")
@@ -596,14 +620,16 @@
   (fn [req]
     (let [ds (:db system)
           config (:config system)
+          org-id (auth/current-org-id req)
           params (or (:query-params req) (:params req) {})
           page (max 1 (try (Integer/parseInt (or (get params "page") "1"))
                           (catch NumberFormatException _ 1)))
           page-size 50
           events (webhook-log/list-webhook-events ds
+                   :org-id org-id
                    :limit page-size
                    :offset (* (dec page) page-size))
-          total (webhook-log/count-webhook-events ds)]
+          total (webhook-log/count-webhook-events ds :org-id org-id)]
       (html-response
         (v-webhooks/render {:events events
                             :total total
@@ -932,7 +958,8 @@
   (fn [req]
     (let [ds (:db system)
           config (:config system)
-          templates (try (template-store/list-templates ds) (catch Exception _ []))]
+          org-id (auth/current-org-id req)
+          templates (try (template-store/list-templates ds :org-id org-id) (catch Exception _ []))]
       (html-response
         (v-templates/render {:templates templates
                              :csrf-token (csrf-token req)
@@ -950,6 +977,7 @@
 (defn create-template-handler [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           params (:form-params req)
           tname (get params "name")
           description (get params "description")
@@ -978,7 +1006,8 @@
                         :description description
                         :format format
                         :content content
-                        :created-by (:username (auth/current-user req))})]
+                        :created-by (:username (auth/current-user req))
+                        :org-id org-id})]
           (if result
             (do
               (log/info "Template created:" tname "by:" (:username (auth/current-user req)))
@@ -994,8 +1023,9 @@
   (fn [req]
     (let [ds (:db system)
           config (:config system)
+          org-id (auth/current-org-id req)
           tname (get-in req [:path-params :name])
-          template (template-store/get-template-by-name ds tname)]
+          template (template-store/get-template-by-name ds tname :org-id org-id)]
       (if (nil? template)
         (not-found "Template not found")
         (html-response
@@ -1008,8 +1038,9 @@
 (defn update-template-handler [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           tname (get-in req [:path-params :name])
-          template (template-store/get-template-by-name ds tname)
+          template (template-store/get-template-by-name ds tname :org-id org-id)
           params (:form-params req)]
       (if (nil? template)
         (not-found "Template not found")
@@ -1017,15 +1048,17 @@
           (template-store/update-template! ds (:id template)
             {:description (get params "description")
              :format (get params "format" "edn")
-             :content (get params "content")})
+             :content (get params "content")}
+            :org-id org-id)
           (log/info "Template updated:" tname "by:" (:username (auth/current-user req)))
           {:status 303 :headers {"Location" "/admin/templates"}})))))
 
 (defn delete-template-handler [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           template-id (get-in req [:path-params :id])]
-      (template-store/delete-template! ds template-id)
+      (template-store/delete-template! ds template-id :org-id org-id)
       (log/info "Template deleted:" template-id "by:" (:username (auth/current-user req)))
       {:status 303 :headers {"Location" "/admin/templates"}})))
 
