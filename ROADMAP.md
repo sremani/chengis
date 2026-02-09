@@ -1,0 +1,294 @@
+# Roadmap
+
+This document outlines the product roadmap for Chengis. It reflects completed work, current priorities, and planned future development.
+
+## Completed Phases
+
+### v0.1.0 — Core CI/CD Engine
+
+- Pipeline DSL (`defpipeline` macro) producing pure data maps
+- Chengisfile (EDN) auto-detection in repo root
+- Git integration with shallow clone and metadata extraction
+- Sequential stage execution with parallel steps via `core.async`
+- Process execution with per-step timeout support
+- Build cancellation with cooperative interrupt propagation
+- Build retry with parent chain linkage
+- Post-build actions (`always`, `on-success`, `on-failure`)
+- Parameterized builds with dynamic trigger forms
+- AES-256-GCM encrypted secrets with automatic log masking
+- Glob-based artifact collection and persistent storage
+- Console and Slack notification plugins
+- SSE-powered real-time build streaming (zero JavaScript)
+- htmx + Tailwind CSS web UI with dark theme
+- Full CLI for headless operation
+- SQLite persistence with migration-based schema evolution
+- Admin dashboard with JVM stats, disk usage, cleanup
+
+### v0.2.0 — Plugin System, Docker & Distributed Builds
+
+- Protocol-based plugin system (7 protocols, 12 builtin plugins)
+- Central plugin registry with runtime introspection
+- External plugin loading from `plugins/` directory
+- Docker step execution (`docker run`, `docker-compose run`)
+- Per-step, stage-level, and pipeline-level container config
+- Image management with configurable pull policies
+- Docker command injection protection
+- HTTP-based master/agent distributed architecture
+- Agent registry with heartbeat monitoring and label matching
+- Build dispatcher with local fallback
+- Agent management UI with status badges and capacity metrics
+- GitHub Actions-style YAML workflows (`.chengis/workflow.yml`)
+- `${{ }}` expression syntax for parameters, secrets, and env vars
+- Multi-format pipeline detection (EDN > YAML > server)
+
+### v0.3.0 — Enterprise Security
+
+- JWT + session cookie authentication
+- Role-based access control (admin / developer / viewer)
+- API token management with scope restrictions
+- Audit logging with admin viewer and date/action/user filtering
+- Account lockout with configurable threshold and duration
+- Request rate limiting middleware
+- CSRF anti-forgery tokens on all form endpoints
+- Prometheus metrics endpoint (`/metrics`)
+- bcrypt password hashing with session versioning
+
+### v0.4.0 — Production Hardening
+
+- Persistent build queue (database-backed, priority levels)
+- Circuit breaker for agent HTTP calls (closed / open / half-open)
+- Orphan build monitor (auto-fail builds from offline agents)
+- Agent-to-master artifact transfer via HTTP multipart
+- System health alerts with auto-resolve
+- HTTP request metrics middleware
+
+### v0.5.0 — Enterprise Integration
+
+- Approval gates with manual checkpoints and multi-approver support
+- Pipeline templates with admin CRUD and one-click job creation
+- SCM commit status reporting (GitHub and GitLab)
+- Email notification plugin (SMTP)
+- Webhook event logging with admin viewer
+- Secret access auditing
+
+### v0.6.0 — Deployment & Operations
+
+- Environment variable configuration (`CHENGIS_*`, 25+ vars, auto type coercion)
+- Docker Compose deployment (master + 2 agents)
+- Database backup/restore (SQLite `VACUUM INTO`, PostgreSQL `pg_dump`)
+- Streaming audit export (CSV/JSON) with batched reads
+- Matrix builds (cartesian expansion, `MATRIX_*` env vars, exclude filters)
+
+### v0.7.0 — PostgreSQL Dual-Driver
+
+- Dual-driver database: SQLite (default) or PostgreSQL (production)
+- HikariCP connection pooling for PostgreSQL
+- Portable SQL across both drivers
+- Separate migration directories per database type
+- Conditional backup strategy per driver
+
+### v0.8.0 — Enterprise Identity
+
+- SSO/OIDC integration (Google, Okta, generic providers)
+- OIDC discovery endpoint auto-configuration
+- API token scopes for granular permission control
+- Secret backend abstraction (`SecretBackend` protocol)
+- HashiCorp Vault integration (KV v2 engine)
+
+### v0.9.0 — Multi-Tenancy
+
+- Organization model with membership and roles
+- Org-scoped resource isolation (jobs, builds, secrets, templates, audit, webhooks, approvals)
+- Org context middleware (`wrap-org-context`)
+- Default organization for backward compatibility
+
+### Security Remediation
+
+- 17 critical/high findings remediated (SQL portability, transaction wrapping, cross-org isolation)
+- 16 handler org-scoping fixes
+- 4 external review findings (scope escalation, OIDC state bypass, JWT validation, auth ordering)
+- Cross-org regression test suite (SSE, webhooks, alerts, secrets)
+
+### v1.0.0 — Phase 1: Governance Foundation
+
+- Org-scoped policy engine with priority ordering and short-circuit evaluation
+- Artifact SHA-256 checksums with integrity verification
+- Compliance reports with per-build tracking and admin dashboard
+- Feature flags for runtime feature toggling (`CHENGIS_FEATURE_*`)
+- Migrations 029-031
+
+### Phase 2: Distributed Dispatch & Hardening (current)
+
+- Dispatcher wiring into all build trigger paths (UI, webhooks, retry), gated by feature flag
+- Configurable heartbeat timeout and `fallback-local` default flipped to `false`
+- Build attempt tracking (`attempt_number`, `root_build_id`) with retry history UI
+- Durable build events with time-ordered IDs and cursor-based replay API
+- Plugin trust enforcement via DB-backed allowlist
+- Docker image policies (allow/deny with priority-ordered glob patterns)
+- P0 fixes: atomic dequeue race, webhook org-id, `:failed` dispatch handling
+- Migrations 032-034
+- **488 tests, 1,993 assertions — all passing**
+
+---
+
+## Phase 3: Kubernetes & High Availability
+
+**Theme:** Production-grade deployment for teams scaling beyond a single master.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| Kubernetes manifests | Deployment, Service, ConfigMap, PersistentVolumeClaim YAML for master + agents | High |
+| Helm chart | Parameterized Helm chart with values for replicas, resources, ingress, TLS | High |
+| Persistent agent registry | Move agent registry from in-memory atom to database-backed store that survives master restarts | High |
+| Multi-master HA | Active-passive or active-active master failover with shared PostgreSQL and distributed locks | High |
+| Liveness/readiness probes | Kubernetes-native health checks beyond `/health` and `/ready` | Medium |
+| Horizontal pod autoscaling | Agent pool scales based on build queue depth | Medium |
+| Pod-based steps | Run build steps as ephemeral Kubernetes pods instead of Docker containers | Medium |
+
+---
+
+## Phase 4: Build Performance & Caching
+
+**Theme:** Reduce build times through intelligent caching and parallel execution.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| Docker layer caching | Persistent Docker build cache shared across builds and agents | High |
+| Artifact caching | Content-addressable cache for dependencies (e.g., `~/.m2`, `node_modules`) | High |
+| Parallel stage execution | Option to run independent stages concurrently (currently sequential) | High |
+| Build result caching | Skip stages when inputs (source hash + step commands) match a previous successful run | Medium |
+| Incremental artifact storage | Delta compression for large artifacts across consecutive builds | Medium |
+| Resource-aware scheduling | Consider agent CPU/memory when dispatching builds | Medium |
+| Build deduplication | Automatically skip redundant builds triggered on the same commit within a window | Low |
+
+---
+
+## Phase 5: Observability & Analytics
+
+**Theme:** Deep visibility into build performance, trends, and system health.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| Grafana dashboards | Pre-built Grafana JSON for Prometheus metrics (build duration, queue depth, agent utilization) | High |
+| OpenTelemetry tracing | Distributed traces across master, dispatcher, and agents with span hierarchy | High |
+| Build analytics dashboard | Trend charts for duration, success rate, flakiness detection, slowest stages | High |
+| Log aggregation | Structured JSON logs compatible with ELK/Loki for centralized log management | Medium |
+| Real-time notifications | Browser push notifications and desktop alerts for build completion | Medium |
+| Build cost attribution | Track agent-hours per org/job for chargeback and capacity planning | Medium |
+| Flaky test detection | Statistical analysis of test results across builds to flag unreliable tests | Low |
+
+---
+
+## Phase 6: Advanced SCM & Workflow
+
+**Theme:** Deeper integration with source control and more expressive pipeline definitions.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| PR/MR status checks | Automatic PR status updates with required check enforcement | High |
+| Branch-based pipeline overrides | Different pipeline behavior per branch pattern (e.g., `release/*` triggers deploy) | High |
+| Monorepo support | Path-based trigger filtering — only build when files in specified directories change | High |
+| Build dependencies | Explicit job dependency graphs (Job A triggers Job B on success) | Medium |
+| Cron scheduling (database-backed) | Persistent cron schedules with missed-run detection and catch-up | Medium |
+| Additional SCM providers | Gitea, Bitbucket, Azure DevOps via `ScmProvider` protocol | Medium |
+| Webhook replay | Re-deliver failed webhooks from the admin webhook viewer | Low |
+| Auto-merge on success | Automatically merge PR when all required checks pass | Low |
+
+---
+
+## Phase 7: Supply Chain Security
+
+**Theme:** Build provenance, software bill of materials, and compliance automation.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| SLSA provenance | Generate SLSA v1.0 provenance attestations for build outputs | High |
+| SBOM generation | CycloneDX and SPDX bill-of-materials from build artifacts | High |
+| Container image scanning | Trivy/Grype integration for CVE detection before deployment | High |
+| Policy-as-code | Define build policies in OPA/Rego for complex decision logic | Medium |
+| License scanning | Dependency license detection and policy enforcement | Medium |
+| Signed artifacts | GPG/Sigstore signing of build artifacts and attestations | Medium |
+| Regulatory dashboards | SOC 2 / ISO 27001 readiness indicators based on audit trail completeness | Low |
+
+---
+
+## Phase 8: Enterprise Identity & Access
+
+**Theme:** Advanced authentication, fine-grained permissions, and cross-org capabilities.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| SAML 2.0 | Enterprise SSO via SAML alongside existing OIDC | High |
+| LDAP/Active Directory | Directory-based user provisioning and group sync | High |
+| Fine-grained RBAC | Resource-level permissions (e.g., user X can trigger Job Y but not Job Z) | High |
+| Multi-factor authentication | TOTP-based 2FA for user accounts | Medium |
+| Cross-org shared resources | Shared agent pools and pipeline templates across organizations | Medium |
+| Additional secret backends | AWS Secrets Manager, Google Secret Manager, Azure Key Vault | Medium |
+| Automatic secret rotation | Policy-driven rotation schedules for credentials | Low |
+
+---
+
+## Phase 9: Developer Experience
+
+**Theme:** Quality-of-life improvements for pipeline authors and operators.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| Pipeline linter CLI | Offline validation of Chengisfile/YAML with detailed error messages before push | High |
+| Pipeline visualization | DAG-style graphical pipeline view showing stage/step relationships | High |
+| Build log search | Full-text search across build logs with highlighting | Medium |
+| Mobile-responsive UI | Responsive layout for monitoring builds on mobile devices | Medium |
+| Light theme option | User-selectable light/dark theme toggle | Medium |
+| Customizable dashboard | Drag-and-drop widget layout for the home page | Low |
+| Build comparison | Side-by-side diff of two build runs (timing, logs, artifacts) | Low |
+| IDE integration | VS Code extension for triggering builds and viewing results | Low |
+
+---
+
+## Phase 10: Scale & Performance
+
+**Theme:** Handle large-scale deployments with thousands of builds per day.
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| Build log streaming optimization | Chunked log storage with lazy loading for builds with 100k+ lines | High |
+| API pagination | Cursor-based pagination on all list endpoints for large datasets | High |
+| Database partitioning | Time-based partitioning of builds, events, and audit tables in PostgreSQL | Medium |
+| Read replicas | Query routing to PostgreSQL read replicas for dashboard/analytics | Medium |
+| Agent connection pooling | Persistent HTTP connections to agents to reduce dispatch latency | Medium |
+| Event bus backpressure | Adaptive backpressure on the core.async event channel under high load | Low |
+| Multi-region support | Agents spanning geographic regions with locality-aware dispatch | Low |
+
+---
+
+## Future Exploration
+
+These items are under consideration but not yet scheduled:
+
+- **AI-powered recommendations** — Flaky test detection, build time prediction, auto-suggested pipeline optimizations
+- **Plugin marketplace** — Curated community plugins with versioning and dependency resolution
+- **GitOps pipeline sync** — Pipeline definitions synced from Git branches with PR-based review workflow
+- **Chengis Cloud** — Managed SaaS offering with per-org isolation, auto-scaling agents, and usage-based billing
+- **GitHub Actions compatibility layer** — Run GitHub Actions YAML workflows natively on Chengis agents
+- **Deployment orchestration** — Blue/green, canary, and rolling deployment strategies as first-class pipeline stages
+- **Build federation** — Cross-instance build triggers for multi-team, multi-region CI/CD
+- **Terraform/Pulumi integration** — Infrastructure provisioning as pipeline steps with state management
+
+---
+
+## Version History
+
+| Version | Phase | Theme | Tests | Migrations |
+|---------|-------|-------|-------|------------|
+| 0.1.0 | Core engine | Pipeline DSL, Git, SSE, CLI | ~50 | 1-7 |
+| 0.2.0 | Expansion | Plugins, Docker, YAML, Distributed | 100 | 8-10 |
+| 0.3.0 | Security | Auth, RBAC, JWT, Audit, Metrics | ~200 | 11-17 |
+| 0.4.0 | Hardening | Queue, Circuit Breaker, Orphan Monitor | ~220 | 18-20 |
+| 0.5.0 | Integration | Approvals, Templates, SCM Status, Email | ~250 | 21-22 |
+| 0.6.0 | Operations | Env config, Docker deploy, Matrix, Backup | 283 | — |
+| 0.7.0 | PostgreSQL | Dual-driver DB, HikariCP, Portable SQL | 319 | ×2 drivers |
+| 0.8.0 | Identity | SSO/OIDC, Token Scopes, Vault Secrets | 362 | 23-24 |
+| 0.9.0 | Multi-tenancy | Orgs, Isolation, Multi-approver | 362 | 25-28 |
+| Remediation | Security | 37 fixes, cross-org regression tests | 403 | — |
+| 1.0.0 | Governance | Policy engine, Checksums, Compliance, Feature flags | 449 | 29-31 |
+| Phase 2 | Hardening | Dispatcher, Attempts, Durable events, Plugin/Docker policy | **488** | 32-34 |

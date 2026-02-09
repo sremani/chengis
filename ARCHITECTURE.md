@@ -63,7 +63,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   routes.clj   handlers.clj   sse.clj   webhook.clj          |
 |   views/  (layout, dashboard, jobs, builds, admin,            |
 |            trigger, agents, login, users, tokens, audit,      |
-|            approvals, templates, webhooks)                     |
+|            approvals, templates, webhooks, compliance,         |
+|            policies, plugin_policies, docker_policies)         |
 |   distributed/master_api.clj                                  |
 +---------------------------------------------------------------+
 |                    Auth & Security Layer                       |
@@ -75,7 +76,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   git.clj   workspace.clj   artifacts.clj   notify.clj       |
 |   events.clj   scheduler.clj   cleanup.clj   log_masker.clj  |
 |   docker.clj   matrix.clj   retention.clj   approval.clj     |
-|   scm_status.clj                                              |
+|   scm_status.clj   compliance.clj   policy.clj               |
 +---------------------------------------------------------------+
 |                    Metrics & Observability Layer               |
 |   metrics.clj   logging.clj                                  |
@@ -114,12 +115,15 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |                        Data Layer                             |
 |   db/connection.clj   db/migrate.clj                          |
 |   db/job_store.clj    db/build_store.clj                      |
+|   db/build_event_store.clj                                    |
 |   db/secret_store.clj db/artifact_store.clj                   |
 |   db/notification_store.clj  db/user_store.clj                |
 |   db/org_store.clj                                             |
 |   db/audit_store.clj  db/audit_export.clj                     |
 |   db/webhook_log.clj  db/secret_audit.clj                     |
 |   db/approval_store.clj  db/template_store.clj                |
+|   db/policy_store.clj  db/compliance_store.clj                |
+|   db/plugin_policy_store.clj  db/docker_policy_store.clj      |
 |   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |
@@ -265,10 +269,47 @@ Build Runner: Finalization
      +-----+------+
            |
      +-----+------+
-     |  External  |  (loaded from plugins/ dir)
-     |  Plugins   |
+     |  External  |  (loaded from plugins/ dir,
+     |  Plugins   |   gated by plugin_policies)
      +-------------+
 ```
+
+### Plugin Trust Enforcement
+
+External plugins are gated by a DB-backed allowlist before loading:
+
+```
+Plugin Loader                    Plugin Policy Store
+  |                                     |
+  |-- for each .clj in plugins/ ------->|
+  |                                     |-- lookup plugin_policies(name, org_id)
+  |                                     |-- allowed = true?
+  |<---- yes: load-file ----------------|
+  |<---- no:  log warning, skip --------|
+  |                                     |
+  |-- (no DB provided) → load all ----->|  (backward compat)
+```
+
+### Docker Image Policy
+
+Docker step execution checks image against org-scoped policies:
+
+```
+Docker Executor                  Docker Policy Store
+  |                                     |
+  |-- check-image-allowed(image) ------>|
+  |                                     |-- fetch policies for org, sorted by priority
+  |                                     |-- for each policy:
+  |                                     |     glob-match pattern against image
+  |                                     |     if match: return {allowed: action}
+  |                                     |-- no match: allow (default-open)
+  |<---- {allowed: true/false} ---------|
+  |                                     |
+  |-- if denied: throw ex-info -------->|  (build fails with policy reason)
+  |-- if allowed: proceed to pull/run --|
+```
+
+Glob patterns use `Pattern/quote` for safe regex conversion, preventing injection via metacharacters in policy patterns.
 
 ### Protocols
 
@@ -489,10 +530,17 @@ Master (Chengis Web)          Agent Node 1           Agent Node 2
 
 ### Dispatch Strategy
 
+All build trigger paths (web UI, CLI retry, webhooks) route through the dispatcher when the `:distributed-dispatch` feature flag is enabled:
+
 ```
 Trigger Build
   |
   v
+Feature flag :distributed-dispatch enabled?
+  |-- No → Run locally (legacy path)
+  |-- Yes → Dispatcher
+               |
+               v
 Queue enabled? → Enqueue in persistent build_queue table
   |                with priority (default: :normal)
   |                Queue processor picks up periodically
@@ -628,13 +676,15 @@ Each agent has a configurable thread pool (default 2, set by `:max-builds`). The
 
 ### Event Bus
 
-The event bus uses `core.async` pub/sub for SSE streaming:
+The event bus uses a dual-path architecture: **durable persistence** to the database for replay, and **ephemeral pub/sub** via `core.async` for live SSE streaming:
 
 ```
 Executor                    Event Bus                    SSE Handler
    |                           |                              |
    |-- emit(:step-completed) ->|                              |
-   |                           |-- publish to topic           |
+   |                           |-- persist to build_events DB |
+   |                           |   (time-ordered ID)          |
+   |                           |-- publish to channel         |
    |                           |   (keyed by build-id)        |
    |                           |                              |
    |                           |            subscribe(id) ----|
@@ -644,11 +694,13 @@ Executor                    Event Bus                    SSE Handler
    |                           |                              |-- send SSE to browser
 ```
 
+Events are persisted with time-ordered IDs (`<epoch_ms>-<seq>-<uuid>`) that guarantee insertion-order retrieval regardless of timestamp precision. The replay API (`GET /api/builds/:id/events/replay`) supports cursor-based pagination via `?after=<event-id>` for SSE reconnection or post-mortem analysis. DB persistence failures are logged but never block the ephemeral SSE path.
+
 In distributed mode, agents stream events to the master via HTTP POST, and the master feeds them into the same event bus for SSE delivery.
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 28 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 34 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -720,6 +772,24 @@ build_logs        -- Structured log entries
 --       audit_logs, webhook_events, build_approvals)
 -- 027: Secret backends (secret_backends table — name, type, config, org_id)
 -- 028: Multi-approver (required_approvals, approval_count on build_approvals)
+```
+
+### Governance Tables (Migrations 029-031)
+
+```sql
+-- 029: Policy engine (policies table — org_id, name, type, rules, priority, enabled)
+-- 030: Compliance tracking (compliance_results table, artifact checksum columns)
+-- 031: Artifact integrity (additional checksum validation columns)
+```
+
+### Distributed Hardening Tables (Migrations 032-034)
+
+```sql
+-- 032: Build attempts (attempt_number, root_build_id on builds)
+-- 033: Durable build events (build_events table — build_id, event_type, stage_name,
+--       step_name, data; time-ordered IDs for guaranteed insertion order)
+-- 034: Plugin & Docker policies (plugin_policies table — trust allowlist per org;
+--       docker_policies table — image allow/deny rules with priority ordering)
 ```
 
 ## Secrets Management
@@ -863,13 +933,13 @@ The retention scheduler runs periodically (default every 24 hours) and cleans up
 |-----------|---------------|---------------|-------|
 | `agent/` | Agent node lifecycle | Separate process entry point | 5 |
 | `cli/` | User-facing CLI commands | Thin layer over engine | 3 |
-| `db/` | Data access (stores) | One file per table/concern | 16 |
+| `db/` | Data access (stores) | One file per table/concern | 21 |
 | `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability | 8 |
 | `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
-| `engine/` | Build orchestration | Core business logic | 16 |
+| `engine/` | Build orchestration | Core business logic | 18 |
 | `model/` | Data validation (specs) | Schema definitions | 1 |
 | `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 15 |
 | `web/` | HTTP handling | Handlers + middleware | 11 |
-| `web/views/` | Hiccup templates | One file per page/component | 15 |
+| `web/views/` | Hiccup templates | One file per page/component | 19 |
 
 Dependencies flow downward: `web` -> `engine` -> `db` -> `util`. The engine layer never imports web concerns, and the database layer never imports engine concerns. The plugin layer is cross-cutting but only depends on foundation. The auth/security layer wraps web handlers and is applied via middleware composition in `routes.clj`.

@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**403 tests | 1781 assertions | 0 failures**
+**488 tests | 1,993 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -95,6 +95,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Pipeline-level containers** &mdash; Default container config propagated to all stages
 - **Docker Compose** &mdash; Run steps via `docker-compose run` with custom compose files
 - **Image management** &mdash; Automatic pull with configurable policies (`:always`, `:if-not-present`, `:never`)
+- **Image policies** &mdash; Org-scoped Docker image allow/deny policies with priority-based evaluation and glob patterns
 - **Input validation** &mdash; Docker image names, service names, and args validated against injection attacks
 
 ### GitHub Actions-style YAML
@@ -111,13 +112,15 @@ Build #1 — SUCCESS (8.3 sec)
 - **Central registry** &mdash; Register/lookup/introspect plugins at runtime
 - **Builtin plugins** &mdash; Shell, Docker, Docker Compose, Git, Console, Slack, Email, Local Artifacts, Local Secrets, Vault Secrets, YAML Format, GitHub Status, GitLab Status
 - **External plugins** &mdash; Load `.clj` files from plugins directory with lifecycle management
+- **Plugin trust** &mdash; External plugins gated by DB-backed allowlist; untrusted plugins blocked with admin UI management
 
 ### Distributed Builds
 
 - **Master/agent architecture** &mdash; HTTP-based with shared-secret auth
 - **Label-based dispatch** &mdash; Route builds to agents matching required labels
-- **Heartbeat monitoring** &mdash; Agents send periodic heartbeats; offline detection after 90s
-- **Local fallback** &mdash; If no remote agent matches, build runs locally on master
+- **Heartbeat monitoring** &mdash; Agents send periodic heartbeats; configurable offline detection (default 90s)
+- **Local fallback** &mdash; Configurable fallback to local execution when no agents match (default: disabled for fail-fast)
+- **Feature-flagged dispatch** &mdash; Dispatcher wiring gated by `:distributed-dispatch` feature flag for safe rollout
 - **Agent management UI** &mdash; Status badges, capacity metrics, real-time monitoring
 - **Persistent build queue** &mdash; Priority-based queue with configurable concurrency
 - **Circuit breaker** &mdash; Automatic fault detection with half-open recovery for agent communication
@@ -147,6 +150,22 @@ Build #1 — SUCCESS (8.3 sec)
 - **Default org** &mdash; Backward-compatible default organization for legacy data
 - **Org membership** &mdash; Users belong to one or more organizations
 
+### Governance & Compliance
+
+- **Policy engine** &mdash; Org-scoped build policies with priority ordering and short-circuit evaluation
+- **Artifact checksums** &mdash; SHA-256 integrity verification on collected artifacts
+- **Compliance reports** &mdash; Policy evaluation results tracked per build with admin dashboard
+- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables
+- **Plugin trust** &mdash; External plugin allowlist with admin management UI
+- **Docker image policies** &mdash; Allow/deny rules for Docker registries and images per organization
+
+### Build Reliability
+
+- **Build attempts** &mdash; Retry tracking with `attempt_number` and `root_build_id` linking all retries
+- **Durable events** &mdash; Build events persisted to database with time-ordered IDs for replay after restarts
+- **Event replay API** &mdash; `GET /api/builds/:id/events/replay` with cursor-based pagination
+- **Dispatcher wiring** &mdash; All trigger paths (UI, webhooks, retry) route through distributed dispatcher when enabled
+
 ### Approval Gates
 
 - **Manual checkpoints** &mdash; Pause pipeline execution pending human approval
@@ -167,7 +186,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Prometheus metrics** &mdash; `/metrics` endpoint with build, auth, webhook, and system metrics
 - **Build notifications** &mdash; Console, Slack, and email notifications
 - **Admin dashboard** &mdash; JVM stats, memory usage, executor pool status, disk usage breakdown
-- **Build history** &mdash; Full log retention with stage/step breakdown and timing
+- **Build history** &mdash; Full log retention with stage/step breakdown, timing, and attempt tracking
 - **Alert system** &mdash; System health alerts with auto-resolve
 - **Data retention** &mdash; Automated cleanup scheduler for audit logs, webhook events, and old data
 - **Database backup** &mdash; Hot backup via SQLite `VACUUM INTO` or `pg_dump` for PostgreSQL, CLI commands, and admin UI download
@@ -176,7 +195,7 @@ Build #1 — SUCCESS (8.3 sec)
 ### Persistence
 
 - **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
-- **28 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
+- **34 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -195,6 +214,9 @@ Build #1 — SUCCESS (8.3 sec)
 - **Approval dashboard** &mdash; View and act on pending approval gates
 - **Template management** &mdash; Create, edit, and delete pipeline templates
 - **API token management** &mdash; Generate and revoke personal API tokens
+- **Compliance dashboard** &mdash; Policy evaluation results across builds
+- **Plugin policy admin** &mdash; Manage external plugin trust allowlist
+- **Docker policy admin** &mdash; Manage Docker image allow/deny rules per organization
 
 ## Quick Start
 
@@ -602,8 +624,12 @@ Chengis uses sensible defaults. Override via `resources/config.edn` or environme
                :agent {:port 9090
                        :labels #{"linux" "docker"}
                        :max-builds 2}
-               :dispatch {:fallback-local true
+               :heartbeat-timeout-ms 90000
+               :dispatch {:fallback-local false
                           :queue-enabled false}}
+
+ ;; Feature flags (opt-in for new features)
+ :feature-flags {:distributed-dispatch false}
 
  ;; Prometheus metrics
  :metrics    {:enabled false
@@ -646,6 +672,10 @@ All configuration can be overridden with `CHENGIS_*` environment variables. Nest
 | `CHENGIS_DATABASE_PASSWORD` | `[:database :password]` | `secret` |
 | `CHENGIS_SECRETS_MASTER_KEY` | `[:secrets :master-key]` | `0123456789abcdef...` |
 | `CHENGIS_DISTRIBUTED_ENABLED` | `[:distributed :enabled]` | `true` |
+| `CHENGIS_DISTRIBUTED_FALLBACK_LOCAL` | `[:distributed :dispatch :fallback-local]` | `false` |
+| `CHENGIS_DISTRIBUTED_QUEUE_ENABLED` | `[:distributed :dispatch :queue-enabled]` | `true` |
+| `CHENGIS_DISTRIBUTED_HEARTBEAT_TIMEOUT_MS` | `[:distributed :heartbeat-timeout-ms]` | `90000` |
+| `CHENGIS_FEATURE_DISTRIBUTED_DISPATCH` | `[:feature-flags :distributed-dispatch]` | `true` |
 | `CHENGIS_METRICS_ENABLED` | `[:metrics :enabled]` | `true` |
 | `CHENGIS_RETENTION_ENABLED` | `[:retention :enabled]` | `true` |
 
@@ -681,10 +711,17 @@ Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings 
 | `GET /admin/webhooks` | Webhook event viewer |
 | `GET /admin/users` | User management |
 | `GET /admin/templates` | Pipeline template management |
+| `GET /admin/plugins/policies` | Plugin trust policy management |
+| `POST /admin/plugins/policies` | Set plugin trust policy |
+| `POST /admin/plugins/policies/:name/delete` | Delete plugin trust policy |
+| `GET /admin/docker/policies` | Docker image policy management |
+| `POST /admin/docker/policies` | Create Docker image policy |
+| `POST /admin/docker/policies/:id/delete` | Delete Docker image policy |
 | `GET /health` | Health check endpoint |
 | `GET /ready` | Readiness check endpoint |
 | `GET /metrics` | Prometheus metrics endpoint |
 | `GET /api/builds/:id/events` | SSE stream for live build updates |
+| `GET /api/builds/:id/events/replay` | Historical event replay (JSON, cursor pagination) |
 | `POST /api/webhook` | SCM webhook endpoint (GitHub/GitLab) |
 | `POST /api/agents/register` | Agent registration (machine-to-machine) |
 | `POST /api/agents/:id/heartbeat` | Agent heartbeat |
@@ -704,13 +741,14 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # Database persistence layer (16 files)
+    db/                     # Database persistence layer (21 files)
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
-      build_store.clj       # Build + stage + step CRUD
+      build_store.clj       # Build + stage + step CRUD (with attempt tracking)
+      build_event_store.clj # Durable build event persistence
       secret_store.clj      # Encrypted secrets
-      artifact_store.clj    # Artifact metadata
+      artifact_store.clj    # Artifact metadata (with checksums)
       notification_store.clj # Notification events
       user_store.clj        # User accounts + API tokens
       org_store.clj         # Organization CRUD + membership
@@ -720,6 +758,10 @@ chengis/
       secret_audit.clj      # Secret access audit
       approval_store.clj    # Approval gate records
       template_store.clj    # Pipeline template CRUD
+      policy_store.clj      # Org-scoped build policies
+      compliance_store.clj  # Build compliance tracking
+      plugin_policy_store.clj # Plugin trust allowlist
+      docker_policy_store.clj # Docker image policies
       backup.clj            # Database backup/restore
     distributed/            # Distributed build coordination (8 files)
       agent_registry.clj    # In-memory agent registry
@@ -737,7 +779,7 @@ chengis/
       yaml.clj              # YAML workflow parser
       expressions.clj       # ${{ }} expression resolver
       templates.clj         # Pipeline template DSL
-    engine/                 # Build execution engine (16 files)
+    engine/                 # Build execution engine (18 files)
       executor.clj          # Core pipeline runner
       build_runner.clj      # Build lifecycle + thread pool
       docker.clj            # Docker command generation
@@ -746,7 +788,7 @@ chengis/
       artifacts.clj         # Glob-based artifact collection
       notify.clj            # Notification dispatch
       cleanup.clj           # Workspace/artifact cleanup
-      events.clj            # core.async event bus
+      events.clj            # core.async event bus + durable persistence
       workspace.clj         # Build workspace management
       scheduler.clj         # Cron scheduling
       log_masker.clj        # Secret masking in output
@@ -754,6 +796,8 @@ chengis/
       retention.clj         # Data retention scheduler
       approval.clj          # Approval gate engine
       scm_status.clj        # SCM commit status reporting
+      compliance.clj        # Build compliance evaluation
+      policy.clj            # Policy engine integration
     model/                  # Data specs (1 file)
       spec.clj              # Clojure specs for validation
     plugin/                 # Plugin system (15 files)
@@ -774,7 +818,7 @@ chengis/
         yaml_format.clj     # YAML pipeline format
         github_status.clj   # GitHub commit status reporter
         gitlab_status.clj   # GitLab commit status reporter
-    web/                    # HTTP server and UI (26 files)
+    web/                    # HTTP server and UI (30 files)
       server.clj            # http-kit server startup
       routes.clj            # Reitit routes + middleware
       handlers.clj          # Request handlers
@@ -786,11 +830,11 @@ chengis/
       rate_limit.clj        # Request rate limiting
       account_lockout.clj   # Account lockout logic
       metrics_middleware.clj # HTTP request metrics
-      views/                # Hiccup view templates (15 files)
+      views/                # Hiccup view templates (19 files)
         layout.clj          # Base HTML layout
         dashboard.clj       # Home page
         jobs.clj            # Job list + detail
-        builds.clj          # Build detail + logs + matrix grid
+        builds.clj          # Build detail + logs + matrix grid + attempts
         components.clj      # Reusable UI components
         admin.clj           # Admin dashboard
         trigger_form.clj    # Parameterized build form
@@ -802,13 +846,17 @@ chengis/
         approvals.clj       # Approval gates page
         templates.clj       # Pipeline template management
         webhooks.clj        # Webhook event viewer
+        compliance.clj      # Compliance dashboard
+        policies.clj        # Policy management
+        plugin_policies.clj # Plugin trust allowlist management
+        docker_policies.clj # Docker image policy management
     config.clj              # Configuration loading + env var overrides
     logging.clj             # Structured logging setup
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (60 files)
-  resources/migrations/     # Database migrations (28 versions × 2 drivers)
+  test/chengis/             # Test suite (77 files)
+  resources/migrations/     # Database migrations (34 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
@@ -817,7 +865,7 @@ chengis/
   docker-compose.yml        # Master + 2 agents deployment
 ```
 
-**Codebase:** ~16,000 lines source + ~9,700 lines tests across 162 files
+**Codebase:** ~18,600 lines source + ~11,500 lines tests across 191 files
 
 ## Technology Stack
 
@@ -828,7 +876,7 @@ chengis/
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
 | Connection pool | HikariCP | PostgreSQL connection pooling |
-| Migrations | Migratus | Schema evolution (28 versions × 2 drivers) |
+| Migrations | Migratus | Schema evolution (34 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -887,7 +935,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **403 tests, 1781 assertions, 0 failures**
+Current test suite: **488 tests, 1,993 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
@@ -896,9 +944,12 @@ Test coverage spans:
 - Pipeline execution engine
 - Matrix build expansion
 - Docker command generation and input validation
-- Plugin registry and loader
+- Plugin registry, loader, and trust enforcement
 - Distributed agent registry, dispatcher, and master API
+- Dispatcher integration (feature flag gating, fallback behavior)
 - Build queue, circuit breaker, and orphan monitor
+- Build attempt tracking and retry chains
+- Durable build event persistence and replay
 - Approval gate engine (including multi-approver concurrency)
 - Post-build action handling
 - Build cancellation
@@ -915,6 +966,9 @@ Test coverage spans:
 - Prometheus metrics
 - Web view rendering
 - Vault secrets plugin
+- Plugin policy store (trust allowlist, org isolation)
+- Docker policy store (image allow/deny, priority ordering, org isolation)
+- Policy engine and compliance reports
 
 ## Building an Uberjar
 

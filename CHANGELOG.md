@@ -2,7 +2,101 @@
 
 All notable changes to Chengis are documented in this file.
 
-## [Unreleased] - Security Remediation
+## [Unreleased] — Phase 2: Distributed Dispatch & Hardening
+
+### Feature 2a: Config Hardening + Dispatcher Wiring
+
+- **Dispatcher integration** — All build trigger paths (web UI, CLI retry, webhooks) now route through `dispatcher/dispatch-build!` when the `distributed-dispatch` feature flag is enabled
+- **Fallback-local default flipped** — `:fallback-local` now defaults to `false` (fail-fast when no agents available in distributed mode)
+- **Configurable heartbeat timeout** — Agent offline detection threshold configurable via `CHENGIS_DISTRIBUTED_HEARTBEAT_TIMEOUT_MS` (default 90s)
+- **New feature flag** — `:distributed-dispatch` gates the dispatcher wiring, allowing safe rollout
+- **New environment variables** — `CHENGIS_DISTRIBUTED_HEARTBEAT_TIMEOUT_MS`, `CHENGIS_DISTRIBUTED_FALLBACK_LOCAL`, `CHENGIS_DISTRIBUTED_QUEUE_ENABLED`, `CHENGIS_FEATURE_DISTRIBUTED_DISPATCH`
+- **Agent registry config** — `agent_registry.clj` accepts runtime configuration via `set-config!` instead of hardcoded timeout
+
+### Feature 2b: Build Attempt Model
+
+- **Attempt tracking** — Each build retry gets an `attempt_number` (starting at 1), with `root_build_id` linking all retries of the same build
+- **Parent chain resolution** — `get-root-build-id` follows the parent chain to find the original build
+- **Attempt listing** — `list-attempts` returns all retries of a build ordered by attempt number
+- **UI integration** — Build detail page shows "Attempt #N" badge and retry history section
+- **Migration 032** — Adds `attempt_number` and `root_build_id` columns to builds table
+
+### Feature 2c: Durable Build Events
+
+- **Event persistence** — Build events (stage/step start, completion, errors) persisted to `build_events` table before broadcasting via core.async
+- **Time-ordered IDs** — Events use `<epoch_ms>-<seq_counter>-<uuid>` format for guaranteed insertion-order retrieval, avoiding SQLite's second-level timestamp precision
+- **Event replay API** — `GET /api/builds/:id/events/replay` returns historical events as JSON with cursor-based pagination (`?after=<event-id>`) and event type filtering
+- **Graceful degradation** — DB persistence failures are logged but don't block SSE broadcast
+- **Retention cleanup** — `cleanup-old-events!` purges events older than configurable retention period
+- **Migration 033** — Creates `build_events` table with indices on `build_id` and `event_type`
+
+### Feature 2d: Plugin Trust & Docker Policy
+
+- **Plugin allowlist** — External plugins gated by DB-backed trust policy; only plugins with `allowed=true` are loaded
+- **Docker image policies** — Priority-ordered glob-pattern matching for allowed registries, denied images, and allowed images
+- **Regex injection safety** — Docker policy patterns use `Pattern/quote` for safe glob-to-regex conversion
+- **Policy enforcement** — Docker step executor checks image against org-scoped policies before pulling/running
+- **Backward compatibility** — When no DB is provided, all external plugins load (no-DB fallback)
+- **Admin UI** — Plugin policy and Docker policy management pages under `/admin/plugins/policies` and `/admin/docker/policies`
+- **Migration 034** — Creates `plugin_policies` and `docker_policies` tables with org-scoped indices
+
+### P0 Fixes (from forensic review)
+
+- **Atomic dequeue race** — Build queue `dequeue!` wrapped in transaction with row-level locking
+- **Webhook org-id** — Webhook-triggered builds inherit org-id from the matched job
+- **Retry handler `:failed` dispatch** — Fixed silent local fallback when dispatcher returns `:failed`; now properly errors
+- **Webhook `:failed` dispatch** — Same fix applied to webhook build trigger path
+
+### Code Quality
+
+- **Migration 032 down** — Fixed missing `agent_id`, `dispatched_at` columns and `DEFAULT 'default-org'` on `org_id` in SQLite rollback
+- **Docstring accuracy** — Fixed misleading docstrings in `build_event_store.clj` and `handlers.clj`
+
+### Test Suite
+- **488 tests, 1,993 assertions — all passing**
+- 77 test files across 7 test subdirectories
+- 34 new tests added in Phase 2
+
+---
+
+## [1.0.0] — Phase 1: Governance Foundation
+
+### Policy Engine
+
+- **Org-scoped policies** — Policy store with CRUD operations, scope filtering, and priority ordering
+- **Policy evaluation** — `evaluate-policies` checks build context against applicable policies with short-circuit evaluation
+- **Pipeline policy integration** — Policy checks wired into executor before build execution
+- **Admin UI** — Policy management page under `/admin/policies`
+
+### Artifact Checksums
+
+- **SHA-256 checksums** — Artifacts computed and stored with SHA-256 hash on collection
+- **Integrity verification** — Artifact downloads validate checksum before serving
+
+### Compliance Reports
+
+- **Build compliance** — Compliance store tracks policy evaluation results per build
+- **Compliance views** — Admin compliance dashboard showing policy pass/fail across builds
+- **Export support** — Compliance data available for audit export
+
+### Feature Flags
+
+- **Runtime feature toggling** — `feature-flags/enabled?` checks config map for boolean flags
+- **Config-driven** — Feature flags set via `:feature-flags` in config or `CHENGIS_FEATURE_*` env vars
+- **Gate pattern** — New features can be rolled out incrementally behind flags
+
+### Migrations 029–031
+
+- 029: Policy store tables (`policies`)
+- 030: Compliance and feature flag support (`compliance_results`, artifact checksum columns)
+- 031: Artifact integrity columns
+
+### Test Suite
+- 449 tests, 1,909 assertions at end of Phase 1
+
+---
+
+## [Unreleased - Pre-Phase] — Security Remediation
 
 ### Batch 1: Critical + High Findings (17 remediations)
 
@@ -40,7 +134,7 @@ All notable changes to Chengis are documented in this file.
 - Cross-org build secret isolation test
 
 ### Test Suite
-- 403 tests, 1781 assertions — all passing
+- 403 tests, 1,781 assertions — all passing
 - 60 test files across 7 test subdirectories
 
 ---
@@ -565,4 +659,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 403 passed, 1781 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 488 passed, 1,993 assertions | varies | SUCCESS |
