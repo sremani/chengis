@@ -13,12 +13,18 @@
   "timestamp,username,action,resource_type,resource_id,ip_address,detail")
 
 (defn- escape-csv-field
-  "Escape a field for CSV: wrap in quotes if it contains comma, quote, or newline."
+  "Escape a field for CSV: wrap in quotes if it contains comma, quote, or newline.
+   Also prevents CSV formula injection by prefixing dangerous characters (=, +, -, @)
+   with a single-quote, so spreadsheet apps won't execute them as formulas."
   [v]
-  (let [s (str (if (nil? v) "" v))]
-    (if (re-find #"[,\"\n\r]" s)
-      (str "\"" (str/replace s "\"" "\"\"") "\"")
-      s)))
+  (let [s (str (if (nil? v) "" v))
+        ;; Prevent CSV formula injection (=, +, -, @)
+        safe (if (and (seq s) (#{\= \+ \- \@} (first s)))
+               (str "'" s)
+               s)]
+    (if (re-find #"[,\"\n\r]" safe)
+      (str "\"" (str/replace safe "\"" "\"\"") "\"")
+      safe)))
 
 (defn- audit->csv-row
   "Convert an audit record to a CSV row string."

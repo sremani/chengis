@@ -25,7 +25,8 @@
                      :token nil    ;; Vault token or VAULT_TOKEN env
                      :mount "secret"
                      :prefix "chengis/"}}
-   :artifacts {:root "artifacts" :retention-builds 10}
+   :artifacts {:root "artifacts" :retention-builds 10
+               :max-size-bytes (* 500 1024 1024)}  ;; 500MB per artifact
    :notifications {:slack {:default-webhook nil}
                    :email {:host nil
                            :port 587
@@ -241,6 +242,23 @@
     (if (.isAbsolute f)
       (.getAbsolutePath f)
       (.getAbsolutePath (io/file base path)))))
+
+(defn warn-insecure-defaults
+  "Check a loaded config for insecure default values and print warnings.
+   Called at server startup to alert operators of production risks."
+  [cfg]
+  (when (get-in cfg [:auth :enabled])
+    (when (= "admin" (get-in cfg [:auth :seed-admin-password]))
+      (binding [*out* *err*]
+        (println "[SECURITY WARNING] Using default admin password 'admin'. Change :auth :seed-admin-password or set CHENGIS_AUTH_SEED_ADMIN_PASSWORD before production use!")))
+    (when (str/blank? (str (get-in cfg [:auth :jwt-secret])))
+      (binding [*out* *err*]
+        (println "[SECURITY WARNING] No JWT secret configured. Set :auth :jwt-secret or CHENGIS_AUTH_JWT_SECRET for production!"))))
+  (when (and (get-in cfg [:distributed :enabled])
+             (str/blank? (str (get-in cfg [:distributed :auth-token]))))
+    (binding [*out* *err*]
+      (println "[SECURITY WARNING] Distributed mode enabled but :distributed :auth-token is not set. Agent communication is unauthenticated!")))
+  cfg)
 
 (defn sqlite?
   "Returns true if the database config specifies SQLite (the default)."

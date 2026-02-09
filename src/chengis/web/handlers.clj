@@ -72,7 +72,7 @@
           queued (count (filter #(= :queued (:status %)) builds))
           stats (build-store/get-build-stats ds {:org-id org-id})
           recent-history (build-store/get-recent-build-history ds {:org-id org-id} 30)
-          current-alerts (try (alerts/check-alerts system)
+          current-alerts (try (alerts/check-alerts system :org-id org-id)
                               (catch Exception e
                                 (log/warn "Failed to check alerts for dashboard:" (.getMessage e))
                                 []))]
@@ -285,8 +285,15 @@
 
 (defn build-events-sse [system]
   (fn [req]
-    (let [build-id (get-in req [:path-params :id])]
-      ((sse/sse-handler system build-id) req))))
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :id])
+          build (build-store/get-build ds build-id :org-id org-id)]
+      (if-not build
+        {:status 404
+         :headers {"Content-Type" "text/html; charset=utf-8"}
+         :body "<p>Build not found.</p>"}
+        ((sse/sse-handler system build-id) req)))))
 
 ;; --- Secrets ---
 
@@ -662,6 +669,7 @@
 (defn create-user-handler [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           params (:form-params req)
           username (get params "username")
           password (get params "password")
@@ -683,22 +691,36 @@
         (not (auth/valid-role? role))
         (render-users-page system req :error (str "Invalid role: " (escape-html role) ". Must be admin, developer, or viewer"))
 
-        ;; All valid — create user
+        ;; All valid — create user and add to current org
         :else
         (try
-          (user-store/create-user! ds {:username username :password password :role role})
-          (log/info "User created:" username "role:" role "by:" (:username (auth/current-user req)))
-          (render-users-page system req :message (str "User '" (escape-html username) "' created"))
+          (let [new-user (user-store/create-user! ds {:username username :password password :role role})]
+            ;; Add new user to current org
+            (when org-id
+              (try
+                (org-store/add-member! ds {:org-id org-id :user-id (:id new-user) :role role})
+                (catch Exception e
+                  (log/warn "Failed to add new user to org" org-id ":" (.getMessage e)))))
+            (log/info "User created:" username "role:" role "by:" (:username (auth/current-user req))
+                      "in org:" org-id)
+            (render-users-page system req :message (str "User '" (escape-html username) "' created")))
           (catch Exception e
             (render-users-page system req :error (str "Failed to create user: " (.getMessage e)))))))))
 
 (defn update-user-handler [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           user-id (get-in req [:path-params :id])
           params (:form-params req)
-          new-role (get params "role")]
+          new-role (get params "role")
+          ;; Verify target user is in current org
+          membership (when org-id (org-store/get-membership ds org-id user-id))]
       (cond
+        ;; Org-scoped access check
+        (and org-id (nil? membership))
+        (render-users-page system req :error "User not found in this organization")
+
         (nil? new-role)
         (render-users-page system req :error "No role specified")
 
@@ -707,31 +729,48 @@
 
         :else
         (do
+          ;; Update org membership role (not global user role)
+          (when org-id
+            (org-store/update-member-role! ds org-id user-id new-role))
+          ;; Also update global role for backward compat
           (user-store/update-user! ds user-id {:role new-role})
-          (log/info "User" user-id "role changed to" new-role "by:" (:username (auth/current-user req)))
+          (log/info "User" user-id "role changed to" new-role "by:" (:username (auth/current-user req))
+                    "in org:" org-id)
           (render-users-page system req :message "User updated"))))))
 
 (defn toggle-user-handler [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           user-id (get-in req [:path-params :id])
-          target-user (user-store/get-user ds user-id)
-          currently-active? (pos? (or (:active target-user) 1))]
-      (if currently-active?
-        (do (user-store/delete-user! ds user-id)
-            (log/info "User" user-id "deactivated by:" (:username (auth/current-user req)))
-            (render-users-page system req :message (str "User '" (:username target-user) "' deactivated")))
-        (do (user-store/update-user! ds user-id {:active true})
-            (log/info "User" user-id "reactivated by:" (:username (auth/current-user req)))
-            (render-users-page system req :message (str "User '" (:username target-user) "' reactivated")))))))
+          ;; Verify target user is in current org
+          membership (when org-id (org-store/get-membership ds org-id user-id))]
+      (if (and org-id (nil? membership))
+        (render-users-page system req :error "User not found in this organization")
+        (let [target-user (user-store/get-user ds user-id)
+              currently-active? (pos? (or (:active target-user) 1))]
+          (if currently-active?
+            (do (user-store/delete-user! ds user-id)
+                (log/info "User" user-id "deactivated by:" (:username (auth/current-user req)))
+                (render-users-page system req :message (str "User '" (:username target-user) "' deactivated")))
+            (do (user-store/update-user! ds user-id {:active true})
+                (log/info "User" user-id "reactivated by:" (:username (auth/current-user req)))
+                (render-users-page system req :message (str "User '" (:username target-user) "' reactivated")))))))))
 
 (defn reset-password-handler [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           user-id (get-in req [:path-params :id])
+          ;; Verify target user is in current org
+          membership (when org-id (org-store/get-membership ds org-id user-id))
           params (:form-params req)
           new-password (get params "new-password")]
       (cond
+        ;; Org-scoped access check
+        (and org-id (nil? membership))
+        (render-users-page system req :error "User not found in this organization")
+
         (str/blank? new-password)
         (render-users-page system req :error "Password cannot be empty")
 
@@ -747,10 +786,20 @@
 (defn unlock-user-handler [system]
   (fn [req]
     (let [ds (:db system)
+          org-id (auth/current-org-id req)
           user-id (get-in req [:path-params :id])
+          ;; Verify target user is in current org
+          membership (when org-id (org-store/get-membership ds org-id user-id))
           target-user (user-store/get-user ds user-id)]
-      (if (nil? target-user)
+      (cond
+        ;; Org-scoped access check
+        (and org-id (nil? membership))
+        (render-users-page system req :error "User not found in this organization")
+
+        (nil? target-user)
         (render-users-page system req :error "User not found")
+
+        :else
         (do
           (lockout/unlock-account! ds user-id)
           (log/info "Account unlocked:" (:username target-user) "by:" (:username (auth/current-user req)))

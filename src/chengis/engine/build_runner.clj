@@ -114,6 +114,7 @@
                      (cond-> {:job-id (:id job)
                               :build-number build-number
                               :cancelled? cancelled-atom}
+                       (:org-id job) (assoc :org-id (:org-id job))
                        event-fn   (assoc :event-fn event-fn)
                        parameters (assoc :parameters parameters)))]
         (persist-result! ds build-id result)
@@ -158,6 +159,7 @@
                      (cond-> {:job-id (:id job)
                               :build-number build-number
                               :cancelled? cancelled-atom}
+                       (:org-id job) (assoc :org-id (:org-id job))
                        event-fn   (assoc :event-fn event-fn)
                        parameters (assoc :parameters parameters)))]
         (persist-result! ds build-id result)

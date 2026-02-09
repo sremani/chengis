@@ -84,20 +84,25 @@
      :prefix (or (:prefix vault-cfg) "chengis/")}))
 
 (defn- kv2-data-path
-  "Build the KV v2 data read path for a secret."
-  [mount prefix scope secret-name]
-  (str "/v1/" mount "/data/" prefix scope "/" secret-name))
+  "Build the KV v2 data read path for a secret.
+   When org-id is provided, scopes path under the org: chengis/<org-id>/<scope>/<name>"
+  [mount prefix scope secret-name & {:keys [org-id]}]
+  (let [org-segment (if org-id (str org-id "/") "")]
+    (str "/v1/" mount "/data/" prefix org-segment scope "/" secret-name)))
 
 (defn- kv2-metadata-path
-  "Build the KV v2 metadata list path for a scope."
-  [mount prefix scope]
-  (str "/v1/" mount "/metadata/" prefix scope "/"))
+  "Build the KV v2 metadata list path for a scope.
+   When org-id is provided, scopes path under the org: chengis/<org-id>/<scope>/"
+  [mount prefix scope & {:keys [org-id]}]
+  (let [org-segment (if org-id (str org-id "/") "")]
+    (str "/v1/" mount "/metadata/" prefix org-segment scope "/")))
 
 (defrecord VaultSecretBackend []
   proto/SecretBackend
   (fetch-secret [_this secret-name scope config]
     (let [{:keys [url token mount prefix]} (resolve-vault-config config)
-          path (kv2-data-path mount prefix (or scope "global") secret-name)]
+          org-id (:org-id config)
+          path (kv2-data-path mount prefix (or scope "global") secret-name :org-id org-id)]
       (when token
         (when-let [response (vault-get url token path)]
           ;; KV v2 wraps the data: response.data.data.value
@@ -105,20 +110,22 @@
 
   (list-secrets [_this scope config]
     (let [{:keys [url token mount prefix]} (resolve-vault-config config)
-          path (kv2-metadata-path mount prefix (or scope "global"))]
+          org-id (:org-id config)
+          path (kv2-metadata-path mount prefix (or scope "global") :org-id org-id)]
       (when token
         (or (vault-list url token path) []))))
 
   (fetch-secrets-for-build [_this job-id config]
-    (let [{:keys [url token mount prefix]} (resolve-vault-config config)]
+    (let [{:keys [url token mount prefix]} (resolve-vault-config config)
+          org-id (:org-id config)]
       (when token
         (let [global-keys (or (vault-list url token
-                                (kv2-metadata-path mount prefix "global")) [])
+                                (kv2-metadata-path mount prefix "global" :org-id org-id)) [])
               job-keys    (or (vault-list url token
-                                (kv2-metadata-path mount prefix job-id)) [])
+                                (kv2-metadata-path mount prefix job-id :org-id org-id)) [])
               fetch-one (fn [scope key-name]
                           (when-let [resp (vault-get url token
-                                           (kv2-data-path mount prefix scope key-name))]
+                                           (kv2-data-path mount prefix scope key-name :org-id org-id))]
                             (get-in resp [:data :data :value])))
               ;; Global secrets first, then job-scoped overrides
               global-map (reduce (fn [m k]

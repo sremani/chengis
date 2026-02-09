@@ -9,13 +9,18 @@
 (defrecord LocalSecretBackend [ds]
   proto/SecretBackend
   (fetch-secret [_this secret-name scope config]
-    (secret-store/get-secret ds config secret-name :scope (or scope "global")))
+    (secret-store/get-secret ds config secret-name
+      :scope (or scope "global")
+      :org-id (:org-id config)))
 
-  (list-secrets [_this scope _config]
-    (secret-store/list-secret-names ds :scope (or scope "global")))
+  (list-secrets [_this scope config]
+    (secret-store/list-secret-names ds
+      :scope (or scope "global")
+      :org-id (:org-id config)))
 
   (fetch-secrets-for-build [_this job-id config]
-    (secret-store/get-secrets-for-build ds config job-id)))
+    (secret-store/get-secrets-for-build ds config job-id
+      :org-id (:org-id config))))
 
 (defn create-backend
   "Create a LocalSecretBackend instance. Called during system startup."

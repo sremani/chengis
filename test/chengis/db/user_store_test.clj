@@ -44,8 +44,11 @@
         (is (some? user))
         (is (= "alice" (:username user)))
         (is (= "developer" (:role user)))
-        ;; Full record includes password hash
-        (is (some? (:password-hash user)))))
+        ;; Safe version excludes password hash
+        (is (nil? (:password-hash user))))
+      ;; with-hash variant returns password hash for auth use
+      (let [user-wh (user-store/get-user-by-username-with-hash ds "alice")]
+        (is (some? (:password-hash user-wh)))))
 
     (testing "get user by id"
       (let [by-name (user-store/get-user-by-username ds "alice")
@@ -70,7 +73,7 @@
     (testing "update password"
       (let [user (user-store/get-user-by-username ds "alice")]
         (user-store/update-password! ds (:id user) "newpass")
-        (let [updated (user-store/get-user-by-username ds "alice")]
+        (let [updated (user-store/get-user-by-username-with-hash ds "alice")]
           (is (true? (user-store/check-password "newpass" (:password-hash updated))))
           (is (false? (user-store/check-password "pass123" (:password-hash updated)))))))
 
@@ -98,7 +101,7 @@
         (is (= 1 (user-store/count-users ds)))))
 
     (testing "admin password is correct"
-      (let [admin (user-store/get-user-by-username ds "admin")]
+      (let [admin (user-store/get-user-by-username-with-hash ds "admin")]
         (is (true? (user-store/check-password "secretpw" (:password-hash admin))))))))
 
 (deftest api-token-test

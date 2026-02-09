@@ -276,6 +276,7 @@
   (let [build-id (util/generate-id)
         job-id (or (:job-id params) (:pipeline-name pipeline))
         build-number (or (:build-number params) 1)
+        org-id (:org-id params)
         workspace-root (get-in system [:config :workspace :root] "workspaces")
         ws (workspace/create-workspace workspace-root job-id build-number)
         started-at (now)
@@ -382,7 +383,7 @@
                 secrets-map (when (:db system)
                               (try
                                 (secret-store/get-secrets-for-build
-                                  (:db system) (:config system) job-id)
+                                  (:db system) (:config system) job-id :org-id org-id)
                                 (catch Exception e
                                   (log/warn "Failed to load secrets:" (.getMessage e))
                                   {})))

@@ -3,6 +3,7 @@
    Returns alert maps based on simple threshold checks on build status."
   (:require [chengis.db.build-store :as build-store]
             [chengis.engine.build-runner :as build-runner]
+            [chengis.web.auth :as auth]
             [clojure.data.json :as json]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -34,10 +35,11 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- check-failure-rate
-  "Check if the recent build failure rate exceeds the critical threshold."
-  [ds]
+  "Check if the recent build failure rate exceeds the critical threshold.
+   When org-id is provided, only checks builds for that org."
+  [ds & {:keys [org-id]}]
   (try
-    (let [builds (build-store/list-builds ds)
+    (let [builds (build-store/list-builds ds (cond-> {} org-id (assoc :org-id org-id)))
           recent (take 20 builds)
           total (count recent)]
       (when (>= total 5) ;; Need at least 5 builds to be meaningful
@@ -68,10 +70,12 @@
       nil)))
 
 (defn- check-long-running-builds
-  "Check for builds that have been running too long."
-  [ds]
+  "Check for builds that have been running too long.
+   When org-id is provided, only checks builds for that org.
+   Uses build-number (not build-id) in messages to avoid leaking cross-tenant IDs."
+  [ds & {:keys [org-id]}]
   (try
-    (let [builds (build-store/list-builds ds)
+    (let [builds (build-store/list-builds ds (cond-> {} org-id (assoc :org-id org-id)))
           running (filter #(= :running (:status %)) builds)
           now-ms (System/currentTimeMillis)]
       (seq
@@ -84,7 +88,7 @@
                         {:level :warning
                          :metric "long-running-build"
                          :value (Math/round elapsed-min)
-                         :message (str "Build " (:id build) " running for "
+                         :message (str "Build #" (:build-number build) " running for "
                                        (Math/round elapsed-min) " minutes")}))
                     (catch Exception _ nil))))
               running)))
@@ -98,21 +102,23 @@
 
 (defn check-alerts
   "Run all alert checks and return a vector of alert maps.
-   Each alert: {:level :warning/:critical :metric string :value number :message string}"
-  [system]
+   Each alert: {:level :warning/:critical :metric string :value number :message string}
+   When :org-id is provided, scopes build queries to that org."
+  [system & {:keys [org-id]}]
   (let [ds (:db system)]
     (filterv some?
       (concat
-        [(check-failure-rate ds)
+        [(check-failure-rate ds :org-id org-id)
          (check-build-queue)]
-        (check-long-running-builds ds)))))
+        (check-long-running-builds ds :org-id org-id)))))
 
 (defn alerts-handler
   "Ring handler that returns current alerts as JSON.
    Used for htmx polling on the dashboard."
   [system]
-  (fn [_req]
-    (let [alerts (check-alerts system)]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          alerts (check-alerts system :org-id org-id)]
       {:status 200
        :headers {"Content-Type" "application/json"}
        :body (json/write-str {:alerts alerts})})))
@@ -121,8 +127,9 @@
   "Ring handler that returns alerts as an HTML fragment for htmx swap.
    Used by hx-get for live alert updates."
   [system]
-  (fn [_req]
-    (let [alerts (check-alerts system)]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          alerts (check-alerts system :org-id org-id)]
       {:status 200
        :headers {"Content-Type" "text/html"}
        :body (str

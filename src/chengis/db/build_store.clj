@@ -29,23 +29,26 @@
 
 (defn create-build!
   "Create a new build record. Returns the build map.
-   When :org-id is provided, stores it for fast org-scoped queries."
+   When :org-id is provided, stores it for fast org-scoped queries.
+   Uses a transaction to prevent build number race conditions —
+   SELECT MAX(build_number) and INSERT are atomic."
   [ds {:keys [job-id trigger-type parameters workspace parent-build-id org-id]}]
-  (let [id (util/generate-id)
-        build-number (next-build-number ds job-id)
-        row (cond-> {:id id
-                     :job-id job-id
-                     :build-number build-number
-                     :status "queued"
-                     :trigger-type (when trigger-type (name trigger-type))
-                     :parameters (util/serialize-edn parameters)
-                     :workspace workspace}
-              parent-build-id (assoc :parent-build-id parent-build-id)
-              org-id (assoc :org-id org-id))]
-    (jdbc/execute-one! ds
-      (sql/format {:insert-into :builds
-                   :values [row]}))
-    (normalize-build (assoc row :build-number build-number))))
+  (jdbc/with-transaction [tx ds]
+    (let [id (util/generate-id)
+          build-number (next-build-number tx job-id)
+          row (cond-> {:id id
+                       :job-id job-id
+                       :build-number build-number
+                       :status "queued"
+                       :trigger-type (when trigger-type (name trigger-type))
+                       :parameters (util/serialize-edn parameters)
+                       :workspace workspace}
+                parent-build-id (assoc :parent-build-id parent-build-id)
+                org-id (assoc :org-id org-id))]
+      (jdbc/execute-one! tx
+        (sql/format {:insert-into :builds
+                     :values [row]}))
+      (normalize-build (assoc row :build-number build-number)))))
 
 (defn update-build-status!
   "Update the status of a build."

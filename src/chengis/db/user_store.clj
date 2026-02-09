@@ -43,7 +43,20 @@
     {:id id :username username :role role :active true}))
 
 (defn get-user
-  "Retrieve a user by ID."
+  "Retrieve a user by ID. Excludes password_hash for safety.
+   Use get-user-with-hash for auth-internal operations that need the hash."
+  [ds user-id]
+  (jdbc/execute-one! ds
+    (sql/format {:select [:id :username :role :active :session-version
+                          :failed-attempts :locked-until :created-at :updated-at]
+                 :from :users
+                 :where [:= :id user-id]})
+    {:builder-fn rs/as-unqualified-kebab-maps}))
+
+(defn get-user-with-hash
+  "Retrieve a user by ID including password_hash.
+   For auth-internal use only (login, password verification).
+   Callers that display user info should use get-user instead."
   [ds user-id]
   (jdbc/execute-one! ds
     (sql/format {:select :*
@@ -52,7 +65,19 @@
     {:builder-fn rs/as-unqualified-kebab-maps}))
 
 (defn get-user-by-username
-  "Retrieve a user by username."
+  "Retrieve a user by username. Excludes password_hash for safety.
+   Use get-user-by-username-with-hash for auth-internal operations."
+  [ds username]
+  (jdbc/execute-one! ds
+    (sql/format {:select [:id :username :role :active :session-version
+                          :failed-attempts :locked-until :created-at :updated-at]
+                 :from :users
+                 :where [:= :username username]})
+    {:builder-fn rs/as-unqualified-kebab-maps}))
+
+(defn get-user-by-username-with-hash
+  "Retrieve a user by username including password_hash.
+   For auth-internal use only (login, password verification)."
   [ds username]
   (jdbc/execute-one! ds
     (sql/format {:select :*

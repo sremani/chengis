@@ -107,7 +107,8 @@
                       "in build" build-id)
             ;; Emit SSE event so UI can show the approval request
             (when-let [event-fn (:event-fn build-ctx)]
-              (event-fn {:type :approval-requested
+              (event-fn {:event-type :approval-requested
+                         :build-id (:build-id build-ctx)
                          :gate-id gate-id
                          :stage-name stage-name
                          :message message

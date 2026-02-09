@@ -33,7 +33,12 @@
 
 (defn start-scheduler
   "Start the scheduler. Scans all jobs for trigger configurations
-   and sets up recurring schedules. Returns a map of job-id -> closeable schedule."
+   and sets up recurring schedules. Returns a map of job-id -> closeable schedule.
+
+   NOTE: The scheduler is a system-level component that intentionally lists jobs
+   across ALL organizations (no org-id filter). This is correct — it functions
+   like a cron daemon that must trigger scheduled builds for every tenant. Org
+   isolation is enforced at the build level (each build carries its job's org-id)."
   [system]
   (let [ds (:db system)
         jobs (job-store/list-jobs ds)

@@ -8,7 +8,8 @@
             [clojure.string :as str]
             [chengis.metrics :as metrics]
             [taoensso.timbre :as log])
-  (:import [java.io File InputStream]))
+  (:import [java.io File InputStream]
+           [java.security MessageDigest]))
 
 ;; ---------------------------------------------------------------------------
 ;; Storage
@@ -27,6 +28,7 @@
 (defn receive-artifact!
   "Store an artifact uploaded by an agent.
    Writes the input stream to artifacts/<build-id>/<filename>.
+   Enforces a configurable maximum artifact size (:artifacts :max-size-bytes).
    Returns metadata about the stored artifact."
   [system build-id filename ^InputStream input-stream]
   (try
@@ -35,7 +37,13 @@
           safe-name (.getName (io/file filename))
           target (io/file dir safe-name)]
       (io/copy input-stream target)
-      (let [size (.length target)]
+      (let [size (.length target)
+            max-bytes (get-in system [:config :artifacts :max-size-bytes] (* 500 1024 1024))]
+        ;; Enforce artifact size limit
+        (when (> size max-bytes)
+          (.delete target)
+          (throw (ex-info "Artifact exceeds size limit"
+                   {:filename safe-name :size size :max-bytes max-bytes :build-id build-id})))
         (log/info "Artifact received:" safe-name "for build" build-id
                   "(" size "bytes)")
         (try (metrics/record-artifact-transfer! (:metrics system) :success)
@@ -44,6 +52,9 @@
          :build-id build-id
          :size size
          :path (str target)}))
+    (catch clojure.lang.ExceptionInfo e
+      ;; Re-throw size limit violations (don't swallow our own errors)
+      (throw e))
     (catch Exception e
       (log/error "Failed to store artifact" filename "for build" build-id ":" (.getMessage e))
       (try (metrics/record-artifact-transfer! (:metrics system) :failure)
@@ -71,17 +82,25 @@
    :headers {"Content-Type" "application/json"}
    :body (json/write-str body)})
 
+(defn- constant-time-equals?
+  "Constant-time string comparison to prevent timing attacks.
+   Uses MessageDigest/isEqual which is designed for this purpose."
+  [^String a ^String b]
+  (when (and a b)
+    (MessageDigest/isEqual (.getBytes a "UTF-8") (.getBytes b "UTF-8"))))
+
 (defn- check-auth
   "Validate the auth token from request headers.
    Requires a non-blank configured token — rejects all requests if token is
-   nil, empty, or whitespace-only."
+   nil, empty, or whitespace-only.
+   Uses constant-time comparison to prevent timing attacks."
   [req system]
   (let [expected (get-in system [:config :distributed :auth-token])
         provided (some-> (get-in req [:headers "authorization"])
                          (str/replace #"^Bearer " "")
                          str/trim)]
     (and (not (str/blank? expected))
-         (= expected provided))))
+         (boolean (constant-time-equals? expected provided)))))
 
 (defn artifact-upload-handler
   "POST /api/builds/:id/artifacts — Receive multipart artifact uploads from agents.

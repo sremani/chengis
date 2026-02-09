@@ -83,15 +83,21 @@
 (defprotocol SecretBackend
   "Protocol for external secret store integration.
    Implementations can wrap HashiCorp Vault, AWS Secrets Manager, etc.
-   The builtin implementation wraps the existing AES-256-GCM encrypted DB store."
+   The builtin implementation wraps the existing AES-256-GCM encrypted DB store.
+
+   Org-ID scoping: Implementations should check for :org-id in the config map
+   to scope secret access per organization. When :org-id is present, only secrets
+   belonging to that organization should be returned."
   (fetch-secret [this secret-name scope config]
     "Fetch a single secret value. Returns the plaintext string, or nil if not found.
-     scope is \"global\" or a job-id.")
+     scope is \"global\" or a job-id. config may contain :org-id for org scoping.")
   (list-secrets [this scope config]
-    "List secret names (never values) for a scope. Returns a vector of name strings.")
+    "List secret names (never values) for a scope. Returns a vector of name strings.
+     config may contain :org-id for org scoping.")
   (fetch-secrets-for-build [this job-id config]
     "Fetch all secrets for a build as a map of {name value}.
-     Merges global secrets with job-scoped secrets (job overrides global)."))
+     Merges global secrets with job-scoped secrets (job overrides global).
+     config may contain :org-id for org scoping."))
 
 ;; ---------------------------------------------------------------------------
 ;; Plugin descriptor

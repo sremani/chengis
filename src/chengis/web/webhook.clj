@@ -91,7 +91,8 @@
    Uses constant-time comparison to prevent timing attacks."
   [secret req body-bytes]
   (if-not secret
-    true
+    (do (log/warn "SECURITY: Webhook secret not configured — accepting unverified GitHub webhook. Set :webhook :secret for production!")
+        true)
     (let [signature (get-in req [:headers "x-hub-signature-256"])]
       (if-not signature
         (do (log/warn "Webhook secret configured but no GitHub signature in request")
@@ -106,7 +107,8 @@
    Uses constant-time comparison to prevent timing attacks."
   [secret req]
   (if-not secret
-    true
+    (do (log/warn "SECURITY: Webhook secret not configured — accepting unverified GitLab webhook. Set :webhook :secret for production!")
+        true)
     (let [token (get-in req [:headers "x-gitlab-token"])]
       (if-not token
         (do (log/warn "Webhook secret configured but no GitLab token in request")
@@ -230,6 +232,7 @@
                         (let [build-record (build-store/create-build! ds
                                              {:job-id (:id job)
                                               :trigger-type :scm
+                                              :org-id (:org-id job)
                                               :parameters {:branch (:branch webhook-data)
                                                            :commit (:commit webhook-data)}})
                               build-id (:id build-record)]

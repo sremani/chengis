@@ -206,8 +206,10 @@
           (let [get-backend (requiring-resolve 'chengis.plugin.registry/get-secret-backend)
                 backend (get-backend backend-type)]
             (if backend
-              (let [proto-fn (requiring-resolve 'chengis.plugin.protocol/fetch-secrets-for-build)]
-                (proto-fn backend job-id config))
+              (let [proto-fn (requiring-resolve 'chengis.plugin.protocol/fetch-secrets-for-build)
+                    ;; Thread org-id into config so the backend can scope secrets per org
+                    scoped-config (cond-> config org-id (assoc :org-id org-id))]
+                (proto-fn backend job-id scoped-config))
               ;; Backend not registered
               (fallback-fn "not registered")))
           (catch clojure.lang.ExceptionInfo e

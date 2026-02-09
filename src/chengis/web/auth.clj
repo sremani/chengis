@@ -181,8 +181,11 @@
 ;; ---------------------------------------------------------------------------
 
 (def ^:private public-paths
-  "Paths that always bypass authentication."
-  #{"/login" "/health" "/ready"})
+  "Paths that always bypass authentication.
+   /api/webhook is public because webhook senders (GitHub, GitLab) use HMAC
+   signature verification, not JWT/session auth. The webhook handler validates
+   signatures independently."
+  #{"/login" "/health" "/ready" "/api/webhook"})
 
 (def ^:private public-prefixes
   "Path prefixes that don't require authentication."
@@ -471,7 +474,7 @@
    (login! ds username password registry nil))
   ([ds username password registry lockout-config]
    (let [generic-error "Invalid username or password"
-         user (user-store/get-user-by-username ds username)]
+         user (user-store/get-user-by-username-with-hash ds username)]
      (cond
        ;; Unknown user — use same error message to prevent enumeration
        (nil? user)

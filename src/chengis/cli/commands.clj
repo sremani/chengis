@@ -6,6 +6,7 @@
             [chengis.db.job-store :as job-store]
             [chengis.db.build-store :as build-store]
             [chengis.db.secret-store :as secret-store]
+            [chengis.db.org-store :as org-store]
             [chengis.db.backup :as backup]
             [chengis.dsl.core :as dsl]
             [chengis.dsl.chengisfile :as chengisfile]
@@ -23,6 +24,23 @@
     {:config cfg
      :db ds
      :db-path db-path}))
+
+(defn- parse-org-slug
+  "Extract --org <slug> from CLI args. Returns the slug or nil."
+  [args]
+  (let [idx (.indexOf (vec args) "--org")]
+    (when (and (>= idx 0) (< (inc idx) (count args)))
+      (nth args (inc idx)))))
+
+(defn- resolve-org-id
+  "Resolve an --org slug to an org-id. Falls back to 'default-org' if no slug provided.
+   Returns nil if org not found."
+  [ds org-slug]
+  (if org-slug
+    (when-let [org (org-store/get-org-by-slug ds org-slug)]
+      (:id org))
+    ;; Default org
+    "default-org"))
 
 ;; --- init ---
 
@@ -42,27 +60,29 @@
   [args]
   (let [file-path (first args)]
     (if-not file-path
-      (out/print-error "Usage: chengis job create <pipeline-file>")
+      (out/print-error "Usage: chengis job create <pipeline-file> [--org <slug>]")
       (let [{:keys [db]} (load-system)
+            org-id (resolve-org-id db (parse-org-slug args))
             pipeline (dsl/load-pipeline-file file-path)
             _ (when-not pipeline
                 (out/print-error "No pipeline definition found in file.")
                 (System/exit 1))
-            ;; Check if job already exists
-            existing (job-store/get-job db (:pipeline-name pipeline))]
+            ;; Check if job already exists (scoped to org)
+            existing (job-store/get-job db (:pipeline-name pipeline) :org-id org-id)]
         (if existing
           (do
-            (job-store/update-job! db (:pipeline-name pipeline) pipeline)
+            (job-store/update-job! db (:pipeline-name pipeline) pipeline :org-id org-id)
             (out/print-success (str "Updated job: " (:pipeline-name pipeline))))
           (do
-            (job-store/create-job! db pipeline)
+            (job-store/create-job! db org-id pipeline)
             (out/print-success (str "Created job: " (:pipeline-name pipeline)))))))))
 
 (defn cmd-job-list
-  "List all jobs."
-  [_args]
+  "List all jobs. Use --org <slug> to filter by organization."
+  [args]
   (let [{:keys [db]} (load-system)
-        jobs (job-store/list-jobs db)]
+        org-id (resolve-org-id db (parse-org-slug args))
+        jobs (job-store/list-jobs db :org-id org-id)]
     (if (empty? jobs)
       (println "No jobs found.")
       (do
@@ -79,9 +99,10 @@
   [args]
   (let [job-name (first args)]
     (if-not job-name
-      (out/print-error "Usage: chengis job show <job-name>")
+      (out/print-error "Usage: chengis job show <job-name> [--org <slug>]")
       (let [{:keys [db]} (load-system)
-            job (job-store/get-job db job-name)]
+            org-id (resolve-org-id db (parse-org-slug args))
+            job (job-store/get-job db job-name :org-id org-id)]
         (if-not job
           (out/print-error (str "Job not found: " job-name))
           (out/print-job-detail job))))))
@@ -91,9 +112,10 @@
   [args]
   (let [job-name (first args)]
     (if-not job-name
-      (out/print-error "Usage: chengis job delete <job-name>")
-      (let [{:keys [db]} (load-system)]
-        (if (job-store/delete-job! db job-name)
+      (out/print-error "Usage: chengis job delete <job-name> [--org <slug>]")
+      (let [{:keys [db]} (load-system)
+            org-id (resolve-org-id db (parse-org-slug args))]
+        (if (job-store/delete-job! db job-name :org-id org-id)
           (out/print-success (str "Deleted job: " job-name))
           (out/print-error (str "Job not found: " job-name)))))))
 
@@ -103,8 +125,9 @@
   (let [job-name (first args)
         git-url  (second args)]
     (if (or (nil? job-name) (nil? git-url))
-      (out/print-error "Usage: chengis job create-repo <name> <git-url> [--branch <branch>]")
+      (out/print-error "Usage: chengis job create-repo <name> <git-url> [--branch <branch>] [--org <slug>]")
       (let [{:keys [db]} (load-system)
+            org-id (resolve-org-id db (parse-org-slug args))
             ;; Parse optional --branch flag
             branch (let [idx (.indexOf (vec args) "--branch")]
                      (when (and (>= idx 0) (< (inc idx) (count args)))
@@ -121,11 +144,11 @@
                                 :steps [{:step-name "waiting-for-chengisfile"
                                          :type :shell
                                          :command "echo 'No Chengisfile found in repository. Add a Chengisfile to your repo root.'"}]}]}
-            existing (job-store/get-job db job-name)]
+            existing (job-store/get-job db job-name :org-id org-id)]
         (if existing
-          (do (job-store/update-job! db job-name pipeline)
+          (do (job-store/update-job! db job-name pipeline :org-id org-id)
               (out/print-success (str "Updated repo job: " job-name " -> " git-url)))
-          (do (job-store/create-job! db pipeline)
+          (do (job-store/create-job! db org-id pipeline)
               (out/print-success (str "Created repo job: " job-name " -> " git-url))))))))
 
 ;; --- build commands ---
@@ -135,10 +158,11 @@
   [args]
   (let [job-name (first args)]
     (if-not job-name
-      (out/print-error "Usage: chengis build trigger <job-name>")
+      (out/print-error "Usage: chengis build trigger <job-name> [--org <slug>]")
       (let [system (load-system)
             {:keys [db]} system
-            job (job-store/get-job db job-name)]
+            org-id (resolve-org-id db (parse-org-slug args))
+            job (job-store/get-job db job-name :org-id org-id)]
         (if-not job
           (out/print-error (str "Job not found: " job-name))
           (let [result (build-runner/execute-build! system job :manual)]
@@ -147,16 +171,17 @@
                           (name (:build-status result))))))))))
 
 (defn cmd-build-list
-  "List builds, optionally filtered by job."
+  "List builds, optionally filtered by job. Use --org <slug> for org scoping."
   [args]
   (let [{:keys [db]} (load-system)
+        org-id (resolve-org-id db (parse-org-slug args))
         job-name (first args)
         builds (if job-name
-                 (let [job (job-store/get-job db job-name)]
+                 (let [job (job-store/get-job db job-name :org-id org-id)]
                    (if job
-                     (build-store/list-builds db (:id job))
+                     (build-store/list-builds db {:job-id (:id job) :org-id org-id})
                      (do (out/print-error (str "Job not found: " job-name)) nil)))
-                 (build-store/list-builds db))]
+                 (build-store/list-builds db {:org-id org-id}))]
     (when builds
       (if (empty? builds)
         (println "No builds found.")
@@ -275,29 +300,32 @@
 ;; --- secret commands ---
 
 (defn cmd-secret-set
-  "Set a secret (global or job-scoped)."
+  "Set a secret (global or job-scoped). Use --org <slug> for org scoping."
   [args]
   (let [secret-name (first args)
         secret-value (second args)]
     (if (or (nil? secret-name) (nil? secret-value))
-      (out/print-error "Usage: chengis secret set <name> <value> [--scope <job-id>]")
+      (out/print-error "Usage: chengis secret set <name> <value> [--scope <job-id>] [--org <slug>]")
       (let [{:keys [config db]} (load-system)
+            org-id (resolve-org-id db (parse-org-slug args))
             scope (let [idx (.indexOf (vec args) "--scope")]
                     (when (and (>= idx 0) (< (inc idx) (count args)))
                       (nth args (inc idx))))]
         (secret-store/set-secret! db config secret-name secret-value
-                                  :scope (or scope "global"))
+                                  :scope (or scope "global")
+                                  :org-id org-id)
         (out/print-success (str "Secret '" secret-name "' set ("
                                 (if scope (str "scope: " scope) "global") ")"))))))
 
 (defn cmd-secret-list
-  "List secret names."
+  "List secret names. Use --org <slug> for org scoping."
   [args]
   (let [{:keys [db]} (load-system)
+        org-id (resolve-org-id db (parse-org-slug args))
         scope (let [idx (.indexOf (vec args) "--scope")]
                 (when (and (>= idx 0) (< (inc idx) (count args)))
                   (nth args (inc idx))))
-        names (secret-store/list-secret-names db :scope (or scope "global"))]
+        names (secret-store/list-secret-names db :scope (or scope "global") :org-id org-id)]
     (if (empty? names)
       (println "No secrets found.")
       (do
@@ -306,16 +334,17 @@
           (println "  " n))))))
 
 (defn cmd-secret-delete
-  "Delete a secret."
+  "Delete a secret. Use --org <slug> for org scoping."
   [args]
   (let [secret-name (first args)]
     (if-not secret-name
-      (out/print-error "Usage: chengis secret delete <name> [--scope <job-id>]")
+      (out/print-error "Usage: chengis secret delete <name> [--scope <job-id>] [--org <slug>]")
       (let [{:keys [db]} (load-system)
+            org-id (resolve-org-id db (parse-org-slug args))
             scope (let [idx (.indexOf (vec args) "--scope")]
                     (when (and (>= idx 0) (< (inc idx) (count args)))
                       (nth args (inc idx))))]
-        (if (secret-store/delete-secret! db secret-name :scope (or scope "global"))
+        (if (secret-store/delete-secret! db secret-name :scope (or scope "global") :org-id org-id)
           (out/print-success (str "Secret '" secret-name "' deleted."))
           (out/print-error (str "Secret not found: " secret-name)))))))
 
@@ -349,11 +378,12 @@
 ;; --- status ---
 
 (defn cmd-status
-  "Show system status."
-  [_args]
+  "Show system status. Use --org <slug> for org scoping."
+  [args]
   (let [{:keys [db]} (load-system)
-        jobs (job-store/list-jobs db)
-        all-builds (build-store/list-builds db)
+        org-id (resolve-org-id db (parse-org-slug args))
+        jobs (job-store/list-jobs db :org-id org-id)
+        all-builds (build-store/list-builds db {:org-id org-id})
         running (count (filter #(= :running (:status %)) all-builds))
         queued (count (filter #(= :queued (:status %)) all-builds))]
     (out/print-status running queued (count jobs) (count all-builds))))

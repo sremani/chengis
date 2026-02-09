@@ -10,26 +10,36 @@
             [chengis.distributed.artifact-transfer :as artifact-transfer]
             [chengis.distributed.circuit-breaker :as cb]
             [chengis.db.build-store :as build-store]
+            [chengis.db.org-store :as org-store]
             [chengis.engine.events :as events]
             [clojure.data.json :as json]
             [clojure.string :as str]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log])
+  (:import [java.security MessageDigest]))
 
 ;; ---------------------------------------------------------------------------
 ;; Auth middleware (simple shared-secret)
 ;; ---------------------------------------------------------------------------
 
+(defn- constant-time-equals?
+  "Constant-time string comparison to prevent timing attacks.
+   Uses MessageDigest/isEqual which is designed for this purpose."
+  [^String a ^String b]
+  (when (and a b)
+    (MessageDigest/isEqual (.getBytes a "UTF-8") (.getBytes b "UTF-8"))))
+
 (defn- check-auth
   "Validate the auth token from request headers.
    Requires a non-blank configured token — rejects all requests if token is
-   nil, empty, or whitespace-only."
+   nil, empty, or whitespace-only.
+   Uses constant-time comparison to prevent timing attacks."
   [req system]
   (let [expected (get-in system [:config :distributed :auth-token])
         provided (some-> (get-in req [:headers "authorization"])
                          (str/replace #"^Bearer " "")
                          str/trim)]
     (and (not (str/blank? expected))
-         (= expected provided))))
+         (boolean (constant-time-equals? expected provided)))))
 
 (defn- json-response [status body]
   {:status status
@@ -63,7 +73,8 @@
 (defn register-agent-handler
   "POST /api/agents/register — Register a new agent.
    Auth is handled by wrap-require-role :admin at the route level,
-   so this handler does NOT do its own check-auth."
+   so this handler does NOT do its own check-auth.
+   Validates org-id if provided — rejects registration if org doesn't exist."
   [system]
   (fn [req]
     (let [body (parse-json-body req)]
@@ -72,10 +83,22 @@
         (let [validated (validate-agent-registration body)]
           (if-not validated
             (json-response 400 {:error "Invalid registration: 'url' is required, only name/url/labels/max-builds/system-info allowed"})
-            (let [agent (agent-reg/register-agent! validated)]
-              (json-response 201 {:agent-id (:id agent)
-                                  :name (:name agent)
-                                  :status "registered"}))))))))
+            ;; Validate org-id if provided
+            (if-let [org-id (:org-id validated)]
+              (if-let [_org (when-let [ds (:db system)]
+                              (org-store/get-org ds org-id))]
+                (let [agent (agent-reg/register-agent! validated)]
+                  (log/info "Agent registered to org:" org-id)
+                  (json-response 201 {:agent-id (:id agent)
+                                      :name (:name agent)
+                                      :org-id org-id
+                                      :status "registered"}))
+                (json-response 400 {:error (str "Organization not found: " org-id)}))
+              ;; No org-id — register as shared agent
+              (let [agent (agent-reg/register-agent! validated)]
+                (json-response 201 {:agent-id (:id agent)
+                                    :name (:name agent)
+                                    :status "registered"})))))))))
 
 (defn heartbeat-handler
   "POST /api/agents/:id/heartbeat — Agent heartbeat."

@@ -196,7 +196,14 @@
 (defn load-pipeline-file
   "Load and evaluate a pipeline definition file, returning the pipeline map.
    The file should contain a (defpipeline ...) form.
-   Uses before/after snapshot to safely identify the newly registered pipeline."
+   Uses before/after snapshot to safely identify the newly registered pipeline.
+
+   SECURITY NOTE: Pipeline files are Clojure code and execute with full JVM
+   privileges via `load-file`. This is by design — the same trust model as
+   Jenkins Groovy pipelines or GitHub Actions workflow files. Only trusted
+   pipeline authors should have write access to pipeline definitions. In
+   multi-tenant deployments, pipeline files should be reviewed/approved before
+   execution (see approval gates in chengis.engine.approval)."
   [path]
   (let [before (set (keys @pipeline-registry))]
     (load-file path)

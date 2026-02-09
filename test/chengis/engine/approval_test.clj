@@ -153,6 +153,6 @@
         (deref result-future 5000 nil)
         ;; Check that an event was emitted
         (is (pos? (count @events)))
-        (is (= :approval-requested (:type (first @events))))
+        (is (= :approval-requested (:event-type (first @events))))
         (is (= "Deploy" (:stage-name (first @events))))
         (is (= "Approve deploy?" (:message (first @events))))))))
