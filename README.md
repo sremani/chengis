@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**319 tests | 1427 assertions | 0 failures**
+**403 tests | 1781 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -107,9 +107,9 @@ Build #1 — SUCCESS (8.3 sec)
 
 ### Plugin System
 
-- **Protocol-based** &mdash; Extension points: `StepExecutor`, `PipelineFormat`, `Notifier`, `ArtifactHandler`, `ScmProvider`, `ScmStatusReporter`
+- **Protocol-based** &mdash; Extension points: `StepExecutor`, `PipelineFormat`, `Notifier`, `ArtifactHandler`, `ScmProvider`, `ScmStatusReporter`, `SecretBackend`
 - **Central registry** &mdash; Register/lookup/introspect plugins at runtime
-- **Builtin plugins** &mdash; Shell, Docker, Git, Console, Slack, Email, Local Artifacts, YAML Format, GitHub Status, GitLab Status
+- **Builtin plugins** &mdash; Shell, Docker, Docker Compose, Git, Console, Slack, Email, Local Artifacts, Local Secrets, Vault Secrets, YAML Format, GitHub Status, GitLab Status
 - **External plugins** &mdash; Load `.clj` files from plugins directory with lifecycle management
 
 ### Distributed Builds
@@ -128,18 +128,29 @@ Build #1 — SUCCESS (8.3 sec)
 
 - **User management** &mdash; Admin/developer/viewer roles with RBAC
 - **JWT authentication** &mdash; Token-based auth with configurable expiry and blacklist support
-- **API tokens** &mdash; Generate and revoke API tokens per user for CI integrations
+- **SSO/OIDC** &mdash; Single Sign-On via OpenID Connect providers (Google, Okta, etc.)
+- **API tokens** &mdash; Generate and revoke API tokens per user with scope restrictions
 - **Session management** &mdash; Secure cookie-based sessions with password-reset invalidation
 - **Account lockout** &mdash; Configurable threshold and duration after failed login attempts
 - **Encrypted secrets** &mdash; AES-256-GCM encryption at rest, automatic log masking with `***`
+- **Secret backends** &mdash; Pluggable secret storage: local (default) or HashiCorp Vault
 - **CSRF protection** &mdash; Anti-forgery tokens on all form endpoints
 - **Rate limiting** &mdash; Configurable request rate limiting middleware
 - **Audit logging** &mdash; All user actions logged with admin viewer and CSV/JSON export
 - **Input validation** &mdash; Docker command injection protection, agent registration field sanitization
 
+### Multi-Tenancy
+
+- **Organization model** &mdash; Isolate resources (jobs, builds, secrets, templates) per organization
+- **Org-scoped stores** &mdash; All database queries filter by `org_id` for tenant isolation
+- **Cross-org protection** &mdash; SSE streams, alerts, and webhooks enforce org boundaries
+- **Default org** &mdash; Backward-compatible default organization for legacy data
+- **Org membership** &mdash; Users belong to one or more organizations
+
 ### Approval Gates
 
 - **Manual checkpoints** &mdash; Pause pipeline execution pending human approval
+- **Multi-approver** &mdash; Require N approvals before proceeding (configurable threshold)
 - **Approve/reject** &mdash; One-click approval or rejection via web UI
 - **Timeout support** &mdash; Auto-fail builds if approval is not received within configured duration
 - **RBAC-gated** &mdash; Only authorized roles can approve or reject gates
@@ -165,7 +176,7 @@ Build #1 — SUCCESS (8.3 sec)
 ### Persistence
 
 - **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
-- **22 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
+- **28 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -685,6 +696,7 @@ chengis/
   src/chengis/
     agent/                  # Agent node (5 files)
       core.clj              # Agent entry point + HTTP server
+      artifact_uploader.clj # Artifact upload to master
       client.clj            # HTTP client for master communication
       heartbeat.clj         # Periodic heartbeat scheduler
       worker.clj            # Build execution on agent
@@ -692,7 +704,7 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # Database persistence layer (15 files)
+    db/                     # Database persistence layer (16 files)
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
@@ -701,6 +713,7 @@ chengis/
       artifact_store.clj    # Artifact metadata
       notification_store.clj # Notification events
       user_store.clj        # User accounts + API tokens
+      org_store.clj         # Organization CRUD + membership
       audit_store.clj       # Audit log queries
       audit_export.clj      # CSV/JSON audit export
       webhook_log.clj       # Webhook event logging
@@ -743,19 +756,21 @@ chengis/
       scm_status.clj        # SCM commit status reporting
     model/                  # Data specs (1 file)
       spec.clj              # Clojure specs for validation
-    plugin/                 # Plugin system (13 files)
-      protocol.clj          # Plugin protocols (6 protocols)
+    plugin/                 # Plugin system (15 files)
+      protocol.clj          # Plugin protocols (7 protocols)
       registry.clj          # Central plugin registry
       loader.clj            # Plugin discovery + lifecycle
-      builtin/              # 10 builtin plugins
+      builtin/              # 12 builtin plugins
         shell.clj           # Shell step executor
         docker.clj          # Docker step executor
         docker_compose.clj  # Docker Compose step executor
-        console.clj         # Console notifier
-        slack.clj           # Slack notifier
-        email.clj           # Email notifier (SMTP)
-        git.clj             # Git SCM provider
+        console_notifier.clj # Console notifier
+        slack_notifier.clj  # Slack notifier (Block Kit)
+        email_notifier.clj  # Email notifier (SMTP)
+        git_scm.clj         # Git SCM provider
         local_artifacts.clj # Local artifact handler
+        local_secrets.clj   # Local secret backend (default)
+        vault_secrets.clj   # HashiCorp Vault secret backend
         yaml_format.clj     # YAML pipeline format
         github_status.clj   # GitHub commit status reporter
         gitlab_status.clj   # GitLab commit status reporter
@@ -792,8 +807,8 @@ chengis/
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (47 files)
-  resources/migrations/     # Database migrations (22 versions × 2 drivers)
+  test/chengis/             # Test suite (60 files)
+  resources/migrations/     # Database migrations (28 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
@@ -802,7 +817,7 @@ chengis/
   docker-compose.yml        # Master + 2 agents deployment
 ```
 
-**Codebase:** ~13,500 lines source + ~6,100 lines tests across 145 files
+**Codebase:** ~16,000 lines source + ~9,700 lines tests across 162 files
 
 ## Technology Stack
 
@@ -813,7 +828,7 @@ chengis/
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
 | Connection pool | HikariCP | PostgreSQL connection pooling |
-| Migrations | Migratus | Schema evolution (22 versions × 2 drivers) |
+| Migrations | Migratus | Schema evolution (28 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -836,7 +851,7 @@ chengis/
 | Runtime | Single JVM, optional agent nodes | Master + optional agent nodes |
 | Storage | SQLite (default) or PostgreSQL | XML files on filesystem |
 | UI rendering | Server-side (Hiccup + htmx) | Server-side (Jelly/Groovy) + client JS |
-| Plugin system | Protocol-based (10 builtin plugins) | 1800+ plugins, complex classloader |
+| Plugin system | Protocol-based (12 builtin plugins) | 1800+ plugins, complex classloader |
 | Pipeline formats | Clojure DSL + EDN + YAML | Groovy DSL (scripted/declarative) |
 | Container support | Docker steps (built-in) | Docker Pipeline plugin |
 | Distributed | HTTP master/agent (built-in) | JNLP/SSH agents |
@@ -872,7 +887,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **319 tests, 1427 assertions, 0 failures**
+Current test suite: **403 tests, 1781 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
@@ -884,17 +899,22 @@ Test coverage spans:
 - Plugin registry and loader
 - Distributed agent registry, dispatcher, and master API
 - Build queue, circuit breaker, and orphan monitor
-- Approval gate engine
+- Approval gate engine (including multi-approver concurrency)
 - Post-build action handling
 - Build cancellation
-- Authentication, RBAC, and JWT handling
+- Authentication, RBAC, JWT, and OIDC handling
+- API token scopes and authorization parity
 - Account lockout and rate limiting
+- Security concurrency (race conditions)
 - Audit logging and export
 - Database persistence and statistics
+- Multi-tenancy and cross-org resource isolation
+- Cross-org security regression tests (SSE, webhooks, alerts, secrets)
 - Webhook event logging
 - Configuration and environment variable loading
 - Prometheus metrics
 - Web view rendering
+- Vault secrets plugin
 
 ## Building an Uberjar
 

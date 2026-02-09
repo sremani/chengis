@@ -68,7 +68,7 @@ src/chengis/
     commands.clj        # Job, build, secret, pipeline, backup commands
     output.clj          # Formatted output helpers
 
-  db/                   # Database layer (15 files)
+  db/                   # Database layer (16 files)
     connection.clj      # SQLite + PostgreSQL connection pool (HikariCP)
     migrate.clj         # Migratus migration runner
     job_store.clj       # Job CRUD
@@ -77,6 +77,7 @@ src/chengis/
     artifact_store.clj  # Artifact metadata
     notification_store.clj  # Notification events
     user_store.clj      # User accounts, API tokens, password hashing
+    org_store.clj       # Organization CRUD + membership
     audit_store.clj     # Audit log queries with filtering
     audit_export.clj    # CSV/JSON audit export (streaming)
     webhook_log.clj     # Webhook event logging
@@ -114,26 +115,30 @@ src/chengis/
   model/
     spec.clj            # Clojure specs for validation
 
-  plugin/               # Plugin system (13 files)
-    protocol.clj        # Plugin protocols (6: StepExecutor, PipelineFormat,
-                        #   Notifier, ArtifactHandler, ScmProvider, ScmStatusReporter)
+  plugin/               # Plugin system (15 files)
+    protocol.clj        # Plugin protocols (7: StepExecutor, PipelineFormat,
+                        #   Notifier, ArtifactHandler, ScmProvider,
+                        #   ScmStatusReporter, SecretBackend)
     registry.clj        # Central plugin registry (atom-based)
     loader.clj          # Plugin discovery + lifecycle
-    builtin/            # 10 builtin plugins
+    builtin/            # 12 builtin plugins
       shell.clj         # Shell step executor
       docker.clj        # Docker step executor
       docker_compose.clj # Docker Compose step executor
-      console.clj       # Console notifier
-      slack.clj         # Slack notifier (Block Kit)
-      email.clj         # Email notifier (SMTP)
-      git.clj           # Git SCM provider
+      console_notifier.clj # Console notifier
+      slack_notifier.clj # Slack notifier (Block Kit)
+      email_notifier.clj # Email notifier (SMTP)
+      git_scm.clj       # Git SCM provider
       local_artifacts.clj # Local artifact handler
+      local_secrets.clj # Local secret backend (default)
+      vault_secrets.clj # HashiCorp Vault secret backend
       yaml_format.clj   # YAML pipeline format
       github_status.clj # GitHub commit status reporter
       gitlab_status.clj # GitLab commit status reporter
 
   agent/                # Agent node (5 files)
     core.clj            # Agent entry point + HTTP server
+    artifact_uploader.clj # Artifact upload to master
     client.clj          # HTTP client for master communication
     heartbeat.clj       # Periodic heartbeat scheduler
     worker.clj          # Build execution on agent
@@ -177,8 +182,8 @@ src/chengis/
       templates.clj     # Pipeline template management
       webhooks.clj      # Webhook event viewer
 
-test/chengis/           # Test suite (47 files, mirrors src/ structure)
-resources/migrations/   # SQL migration files (22 versions)
+test/chengis/           # Test suite (60 files, mirrors src/ structure)
+resources/migrations/   # SQL migration files (28 versions × 2 drivers)
 pipelines/              # Example pipeline definitions (5 files)
 benchmarks/             # Performance benchmark suite
 ```
@@ -196,7 +201,7 @@ lein test chengis.engine.executor-test
 lein test chengis.dsl.chengisfile-test
 ```
 
-The test suite currently has **319 tests with 1427 assertions**. All tests must pass before submitting a PR.
+The test suite currently has **403 tests with 1781 assertions**. All tests must pass before submitting a PR.
 
 ### Test Organization
 
@@ -210,14 +215,23 @@ Tests mirror the source layout:
 | `engine/executor.clj` | `engine/executor_test.clj` |
 | `engine/process.clj` | `engine/process_test.clj` |
 | `engine/matrix.clj` | `engine/matrix_test.clj` |
-| `engine/approval.clj` | `engine/approval_test.clj` |
+| `engine/approval.clj` | `engine/approval_test.clj`, `engine/approval_concurrency_test.clj` |
 | `engine/docker.clj` | `engine/docker_test.clj` |
-| `db/build_store.clj` | `db/build_store_test.clj` |
+| `engine/scm_status.clj` | `engine/scm_status_test.clj` |
+| `db/build_store.clj` | `db/build_store_test.clj`, `db/build_stats_test.clj` |
 | `db/user_store.clj` | `db/user_store_test.clj` |
-| `web/auth.clj` | `web/auth_test.clj` |
+| `db/org_store.clj` | `db/org_store_test.clj`, `db/org_isolation_test.clj` |
+| `db/template_store.clj` | `db/template_store_test.clj` |
+| `db/approval_store.clj` | `db/approval_store_test.clj`, `db/multi_approver_test.clj` |
+| `web/auth.clj` | `web/auth_test.clj`, `web/auth_scopes_test.clj`, `web/oidc_test.clj` |
+| `web/auth.clj` (e2e) | `web/auth_lifecycle_e2e_test.clj` |
 | `web/rate_limit.clj` | `web/rate_limit_test.clj` |
+| `web/alerts.clj` | `web/alerts_test.clj` |
+| `web/handlers.clj` | `web/integration_test.clj`, `web/cross_org_security_test.clj` |
+| `plugin/builtin/vault_secrets.clj` | `plugin/vault_secrets_test.clj` |
 | `distributed/circuit_breaker.clj` | `distributed/circuit_breaker_test.clj` |
 | `distributed/build_queue.clj` | `distributed/build_queue_test.clj` |
+| `distributed/dispatcher.clj` | `distributed/dispatcher_test.clj` |
 | `web/views/*.clj` | `web/views_test.clj` |
 
 ### Writing Tests
@@ -240,27 +254,32 @@ Chengis uses [Migratus](https://github.com/yogthos/migratus) for schema evolutio
 
 ### Creating a New Migration
 
-1. Create up and down SQL files in `resources/migrations/`:
+1. Create up and down SQL files in both migration directories:
 
 ```
-resources/migrations/
-  023-my-feature.up.sql
-  023-my-feature.down.sql
+resources/migrations/sqlite/
+  029-my-feature.up.sql
+  029-my-feature.down.sql
+resources/migrations/postgresql/
+  029-my-feature.up.sql
+  029-my-feature.down.sql
 ```
 
-2. Write the SQL:
+2. Write the SQL (SQLite example):
 
 ```sql
--- 023-my-feature.up.sql
+-- 029-my-feature.up.sql
 CREATE TABLE IF NOT EXISTS my_table (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- 023-my-feature.down.sql
+-- 029-my-feature.down.sql
 DROP TABLE IF EXISTS my_table;
 ```
+
+For PostgreSQL, use `TIMESTAMPTZ` instead of `TEXT` for timestamps and `SERIAL` for auto-incrementing IDs.
 
 3. Run migrations:
 
@@ -279,7 +298,7 @@ lein run -- init
 
 ### Example: Adding a New Store
 
-1. **Migration**: Create `resources/migrations/023-widgets.up.sql`
+1. **Migration**: Create `resources/migrations/sqlite/029-widgets.up.sql` (and `postgresql/` equivalent)
 2. **Store**: Create `src/chengis/db/widget_store.clj`
 3. **Engine integration**: Update `executor.clj` or create a new engine module
 4. **Web handler**: Add handler in `handlers.clj`

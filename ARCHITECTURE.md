@@ -84,8 +84,9 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   plugin/protocol.clj   plugin/registry.clj                  |
 |   plugin/loader.clj                                           |
 |   builtin/  (shell, docker, docker-compose, console, slack,   |
-|              email, git, local-artifacts, yaml-format,         |
-|              github-status, gitlab-status)                     |
+|              email, git, local-artifacts, local-secrets,       |
+|              vault-secrets, yaml-format, github-status,        |
+|              gitlab-status)                                     |
 +---------------------------------------------------------------+
 |                        DSL Layer                              |
 |   dsl/core.clj (defpipeline macro)                            |
@@ -98,6 +99,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |                        Agent Layer                            |
 |   agent/core.clj     agent/worker.clj                        |
 |   agent/client.clj   agent/heartbeat.clj                     |
+|   agent/artifact_uploader.clj                                 |
 +---------------------------------------------------------------+
 |                        Distributed Layer                     |
 |   distributed/agent_registry.clj                              |
@@ -114,6 +116,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/job_store.clj    db/build_store.clj                      |
 |   db/secret_store.clj db/artifact_store.clj                   |
 |   db/notification_store.clj  db/user_store.clj                |
+|   db/org_store.clj                                             |
 |   db/audit_store.clj  db/audit_export.clj                     |
 |   db/webhook_log.clj  db/secret_audit.clj                     |
 |   db/approval_store.clj  db/template_store.clj                |
@@ -294,6 +297,13 @@ Build Runner: Finalization
 ;; SCM commit status reporting (GitHub, GitLab, etc.)
 (defprotocol ScmStatusReporter
   (report-status [this build-info config]))
+
+;; Secret storage backends (local, vault, etc.)
+(defprotocol SecretBackend
+  (get-secret [this key opts])
+  (set-secret [this key value opts])
+  (list-secrets [this opts])
+  (delete-secret [this key opts]))
 ```
 
 ### Builtin Plugins
@@ -307,6 +317,8 @@ Build Runner: Finalization
 | Slack Notifier | Notifier | `:slack` |
 | Email Notifier | Notifier | `:email` |
 | Local Artifacts | ArtifactHandler | `"local"` |
+| Local Secrets | SecretBackend | `"local"` |
+| Vault Secrets | SecretBackend | `"vault"` |
 | Git SCM | ScmProvider | `:git` |
 | YAML Format | PipelineFormat | `"yaml"`, `"yml"` |
 | GitHub Status | ScmStatusReporter | `:github` |
@@ -324,7 +336,7 @@ wrap-auth middleware
   |
   +-- Auth disabled? → attach admin user (backward compat)
   |
-  +-- Public path? (/login, /health, /ready) → pass through
+  +-- Public path? (/login, /health, /ready, /api/webhook) → pass through
   |
   +-- Distributed agent path? → bypass (handler-level check-auth)
   |
@@ -333,9 +345,11 @@ wrap-auth middleware
   +-- Bearer token? → try JWT → try API token
   |       |
   |       +-- JWT: verify signature, check expiry, check blacklist,
-  |       |        validate session version against DB
+  |       |        validate session version, audience, issuer
   |       |
-  |       +-- API token: lookup in DB, return user
+  |       +-- API token: lookup in DB, validate scopes, return user
+  |
+  +-- OIDC callback? → validate state, exchange code, provision user
   |
   +-- No credentials → 401 (API) or redirect to /login (browser)
 ```
@@ -357,6 +371,49 @@ viewer (level 1)    → read-only access to builds and jobs
 - **CSRF protection** — Anti-forgery tokens on all form endpoints
 - **Constant-time comparison** — Webhook signatures and tokens use timing-safe comparison
 - **Input sanitization** — Agent registration, Docker commands, and webhook payloads validated
+
+## Multi-Tenancy
+
+### Organization Model
+
+```
+organizations
+  |-- id (UUID)
+  |-- name, slug
+  |-- settings (JSON)
+  |
+  +-- org_members (join table)
+       |-- user_id → users(id)
+       |-- org_id → organizations(id)
+       |-- role (admin/member)
+
+Default org ("default-org") created on migration for backward compatibility.
+```
+
+### Resource Isolation
+
+All resource queries are scoped by `org_id`:
+
+```
+Request
+  |
+  v
+wrap-org-context middleware
+  |
+  +-- Session has current-org-id? → use it
+  |
+  +-- User has org membership? → use first org
+  |
+  +-- Fallback → "default-org"
+  |
+  v
+:org-id attached to request
+  |
+  v
+Store layer: WHERE org_id = :org-id on all queries
+```
+
+Resources isolated per org: jobs, builds, secrets, templates, audit logs, webhook events, approval gates, and build queue entries. Agents can be shared (no `org_id`) or org-specific.
 
 ## Docker Integration
 
@@ -591,7 +648,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 22 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 28 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -651,6 +708,18 @@ build_logs        -- Structured log entries
 -- 020: Account lockout (failed_attempts, locked_until columns on users)
 -- 021: Approval gates (build_approvals table — build_id, stage, status, approver, timeout)
 -- 022: Pipeline templates (pipeline_templates table — name, description, pipeline_data)
+```
+
+### Identity & Multi-Tenancy Tables (Migrations 023-028)
+
+```sql
+-- 023: SSO/OIDC fields (provider, provider_id, email columns on users)
+-- 024: API token scopes (scopes column on api_tokens)
+-- 025: Organizations (organizations table, org_members join table)
+-- 026: Org-scoped resources (org_id column on jobs, builds, secrets, templates,
+--       audit_logs, webhook_events, build_approvals)
+-- 027: Secret backends (secret_backends table — name, type, config, org_id)
+-- 028: Multi-approver (required_approvals, approval_count on build_approvals)
 ```
 
 ## Secrets Management
@@ -794,12 +863,12 @@ The retention scheduler runs periodically (default every 24 hours) and cleans up
 |-----------|---------------|---------------|-------|
 | `agent/` | Agent node lifecycle | Separate process entry point | 5 |
 | `cli/` | User-facing CLI commands | Thin layer over engine | 3 |
-| `db/` | Data access (stores) | One file per table/concern | 15 |
+| `db/` | Data access (stores) | One file per table/concern | 16 |
 | `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability | 8 |
 | `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
 | `engine/` | Build orchestration | Core business logic | 16 |
 | `model/` | Data validation (specs) | Schema definitions | 1 |
-| `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 13 |
+| `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 15 |
 | `web/` | HTTP handling | Handlers + middleware | 11 |
 | `web/views/` | Hiccup templates | One file per page/component | 15 |
 

@@ -2,6 +2,129 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [Unreleased] - Security Remediation
+
+### Batch 1: Critical + High Findings (17 remediations)
+
+- **SQL portability** — Replaced `datetime('now')` with `CURRENT_TIMESTAMP` across all runtime queries
+- **Transaction wrapping** — Wrapped multi-step store operations in transactions for atomicity
+- **Rate limit hardening** — Fixed race conditions in concurrent rate limit checks
+- **Account lockout** — Tightened lockout logic to prevent timing-based bypasses
+- **Webhook security** — Builds inherit org-id from the matched job (prevents cross-tenant attribution)
+- **SSE authorization** — SSE endpoints verify the requesting user's org owns the build
+- **Alert scoping** — Alerts filtered by org-id; no cross-org build metadata exposure
+- **Auth bypass** — Webhook endpoint explicitly listed in public paths when auth is enabled
+- **Secret scoping** — Build secrets loaded with org-id filter to prevent cross-org leakage
+- **Config hardening** — Sensitive defaults and environment variable handling tightened
+- **Scheduler safety** — Cron scheduler validates org context before triggering builds
+- **SCM status** — Commit status reporting scoped to org credentials
+- **Approval store** — Multi-approver workflows enforce org boundaries
+
+### Batch 1: Handler Org-Scoping (16 fixes)
+
+- All 16 web handlers that were missing `org-id` scoping now correctly extract and propagate org context from the request
+
+### External Review Findings (4 fixes)
+
+- Scope escalation prevention in role updates
+- OIDC state parameter bypass fix
+- JWT validation tightened (clock skew, audience)
+- Auth middleware ordering corrected
+
+### Regression Tests
+
+- Cross-org SSE denial test
+- Webhook build org-attribution test
+- Alerts org-scoping test
+- Webhook auth-bypass test
+- Cross-org build secret isolation test
+
+### Test Suite
+- 403 tests, 1781 assertions — all passing
+- 60 test files across 7 test subdirectories
+
+---
+
+## [0.9.0] - 2026
+
+### Multi-Tenancy & Resource Isolation
+
+**Organization Model**
+- New `organizations` table with id, name, slug, and settings
+- `org_members` join table linking users to organizations with roles
+- Default organization ("default-org") created on migration for backward compatibility
+- All resource tables gain `org_id` column with foreign key to organizations
+
+**Org-Scoped Stores**
+- `job-store` — jobs filtered by org-id in list, get, create operations
+- `build-store` — builds and build stats scoped to org
+- `secret-store` — secrets isolated per org (same name allowed in different orgs)
+- `template-store` — pipeline templates scoped per org
+- `audit-store` — audit logs filtered by org
+- `webhook-log` — webhook events scoped to org
+- `approval-store` — approval gates scoped to org
+- `secret-audit` — secret access logs scoped to org
+
+**Org Context Middleware**
+- `wrap-org-context` resolves org via: session cookie → user's first org membership → default-org
+- All handlers receive `:org-id` in request map
+- Agents inherit org context from the dispatching job
+
+**Multi-Approver Workflows**
+- Approval gates support configurable required-approvals threshold
+- Multiple users can approve the same gate
+- Gate proceeds when approval count meets threshold
+- Concurrent approval handling with atomic operations
+
+**Migrations 023-028**
+- 023: SSO/OIDC user fields (provider, provider_id, email)
+- 024: API token scopes (scopes column on api_tokens)
+- 025: Organizations table and org_members
+- 026: org_id columns on jobs, builds, secrets, templates, audit_logs, webhook_events, approvals
+- 027: Secret backend configuration (secret_backends table)
+- 028: Multi-approver fields on build_approvals
+
+### Test Suite
+- New test suites: org-store, org-isolation, multi-approver, cross-org security
+- 362 tests, 1566 assertions at this phase
+
+---
+
+## [0.8.0] - 2026
+
+### Enterprise Identity Foundation
+
+**SSO/OIDC Authentication**
+- OpenID Connect integration for single sign-on
+- Support for Google, Okta, and generic OIDC providers
+- OIDC discovery endpoint auto-configuration
+- State parameter validation to prevent CSRF attacks
+- Automatic user provisioning on first SSO login
+
+**API Token Scopes**
+- Tokens can be restricted to specific scopes (e.g., `build:trigger`, `job:read`)
+- Scope validation middleware checks token capabilities per endpoint
+- Token management UI updated to show and configure scopes
+
+**Secret Backend System**
+- `SecretBackend` protocol for pluggable secret storage
+- `local-secrets` builtin: default local encrypted storage (AES-256-GCM)
+- `vault-secrets` builtin: HashiCorp Vault integration (KV v2 engine)
+- Config-driven backend selection via `:secrets {:backend "local"|"vault"}`
+
+**Security Hardening (Phase 1)**
+- 43 new security-focused tests
+- Constant-time token comparison across all auth paths
+- Session version validation on every authenticated request
+- JWT audience and issuer validation
+- Auth lifecycle end-to-end tests
+
+### Test Suite
+- New test suites: auth-lifecycle-e2e, auth-scopes, authorization-parity, oidc, security-concurrency, vault-secrets
+- 362 tests, 1566 assertions at this phase
+
+---
+
 ## [0.7.0] - 2026
 
 ### PostgreSQL Dual-Driver Support
@@ -442,4 +565,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 319 passed, 1427 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 403 passed, 1781 assertions | varies | SUCCESS |
