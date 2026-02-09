@@ -116,6 +116,12 @@
         [:a {:href "/admin/policies"
              :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
          "Policies"]
+        [:a {:href "/admin/plugins/policies"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "Plugin Policies"]
+        [:a {:href "/admin/docker/policies"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "Docker Policies"]
         [:form {:method "POST" :action "/admin/retention" :class "inline"}
          [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
          [:button {:type "submit"

@@ -43,10 +43,11 @@
    :distributed {:enabled false
                  :mode :master
                  :auth-token nil
+                 :heartbeat-timeout-ms 90000
                  :agent {:port 9090
                          :labels #{}
                          :max-builds 2}
-                 :dispatch {:fallback-local true
+                 :dispatch {:fallback-local false
                             :queue-enabled false
                             :max-retries 3
                             :retry-backoff-ms 1000
@@ -126,7 +127,8 @@
    :matrix {:max-combinations 25}
    :feature-flags {:policy-engine false
                    :artifact-checksums false
-                   :compliance-reports false}
+                   :compliance-reports false
+                   :distributed-dispatch false}
    :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
@@ -164,6 +166,9 @@
    "CHENGIS_DISTRIBUTED_MODE"                   [:distributed :mode]
    "CHENGIS_DISTRIBUTED_AUTH_TOKEN"             [:distributed :auth-token]
    "CHENGIS_DISTRIBUTED_DISPATCH_QUEUE_ENABLED" [:distributed :dispatch :queue-enabled]
+   "CHENGIS_DISTRIBUTED_HEARTBEAT_TIMEOUT_MS"  [:distributed :heartbeat-timeout-ms]
+   "CHENGIS_DISTRIBUTED_FALLBACK_LOCAL"        [:distributed :dispatch :fallback-local]
+   "CHENGIS_FEATURE_DISTRIBUTED_DISPATCH"      [:feature-flags :distributed-dispatch]
    "CHENGIS_METRICS_ENABLED"                    [:metrics :enabled]
    "CHENGIS_LOG_LEVEL"                          [:log :level]
    "CHENGIS_LOG_FORMAT"                         [:log :format]

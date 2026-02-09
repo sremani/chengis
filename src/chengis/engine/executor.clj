@@ -417,7 +417,9 @@
                            :cancelled? (:cancelled? params)
                            :mask-values secret-values
                            :docker-config (get-in system [:config :docker])
-                           :metrics-registry (:metrics system)}
+                           :metrics-registry (:metrics system)
+                           :db (:db system)
+                           :org-id org-id}
                 ;; Propagate pipeline-level :container to stages that don't have their own
                 pipeline-container (:container effective-pipeline)
                 pre-matrix-stages (if pipeline-container

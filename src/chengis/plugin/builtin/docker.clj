@@ -2,7 +2,8 @@
   "Builtin Docker step executor plugin.
    Supports :docker and :docker-compose step types.
    Generates Docker commands and delegates to process/execute-command."
-  (:require [chengis.engine.docker :as docker]
+  (:require [chengis.db.docker-policy-store :as docker-policy-store]
+            [chengis.engine.docker :as docker]
             [chengis.engine.process :as process]
             [chengis.plugin.protocol :as proto]
             [chengis.plugin.registry :as registry]
@@ -20,6 +21,14 @@
           pull-policy (or (:pull-policy step-def)
                          (get-in build-ctx [:docker-config :pull-policy])
                          :if-not-present)]
+      ;; Check Docker image policy before pulling/running
+      (when (and image (:db build-ctx))
+        (let [check (docker-policy-store/check-image-allowed
+                      (:db build-ctx) image :org-id (:org-id build-ctx))]
+          (when-not (:allowed check)
+            (throw (ex-info (str "Docker image blocked by policy: " (:reason check))
+                            {:type :docker-policy-denied :image image
+                             :reason (:reason check)})))))
       ;; Pull image if needed
       (when image
         (log/info "Ensuring Docker image:" image "policy:" pull-policy)

@@ -65,7 +65,7 @@
   (let [dist-config (get-in system [:config :distributed])
         enabled? (:enabled dist-config)
         queue-enabled? (get-in dist-config [:dispatch :queue-enabled] false)
-        fallback-local? (get-in dist-config [:dispatch :fallback-local] true)
+        fallback-local? (get-in dist-config [:dispatch :fallback-local] false)
         auth-token (get-in dist-config [:auth-token])
         max-retries (get-in dist-config [:dispatch :max-retries] 3)
         org-id (:org-id build-payload)]

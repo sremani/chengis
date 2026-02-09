@@ -6,8 +6,10 @@
             [chengis.db.job-store :as job-store]
             [chengis.db.build-store :as build-store]
             [chengis.db.webhook-log :as webhook-log]
+            [chengis.distributed.dispatcher :as dispatcher]
             [chengis.engine.build-runner :as build-runner]
             [chengis.engine.events :as events]
+            [chengis.feature-flags :as feature-flags]
             [chengis.metrics :as metrics]
             [taoensso.timbre :as log])
   (:import [java.util.concurrent RejectedExecutionException]
@@ -91,7 +93,7 @@
    Uses constant-time comparison to prevent timing attacks."
   [secret req body-bytes]
   (if-not secret
-    (do (log/warn "SECURITY: Webhook secret not configured — accepting unverified GitHub webhook. Set :webhook :secret for production!")
+    (do (log/warn "SECURITY: Webhook secret not configured \u2014 accepting unverified GitHub webhook. Set :webhook :secret for production!")
         true)
     (let [signature (get-in req [:headers "x-hub-signature-256"])]
       (if-not signature
@@ -107,7 +109,7 @@
    Uses constant-time comparison to prevent timing attacks."
   [secret req]
   (if-not secret
-    (do (log/warn "SECURITY: Webhook secret not configured — accepting unverified GitLab webhook. Set :webhook :secret for production!")
+    (do (log/warn "SECURITY: Webhook secret not configured \u2014 accepting unverified GitLab webhook. Set :webhook :secret for production!")
         true)
     (let [token (get-in req [:headers "x-gitlab-token"])]
       (if-not token
@@ -170,7 +172,7 @@
           webhook-secret (get-in system [:config :webhook :secret])
           ds (:db system)
           registry (:metrics system)
-          ;; Detect provider FIRST — needed for provider-aware signature check
+          ;; Detect provider FIRST \u2014 needed for provider-aware signature check
           provider (detect-provider req)
           event-type (or (get-in req [:headers "x-github-event"])
                          (get-in req [:headers "x-gitlab-event"]))]
@@ -237,29 +239,68 @@
                                               :org-id (:org-id job)
                                               :parameters {:branch (:branch webhook-data)
                                                            :commit (:commit webhook-data)}})
-                              build-id (:id build-record)]
+                              build-id (:id build-record)
+                              build-params {:branch (:branch webhook-data)
+                                            :commit (:commit webhook-data)}]
                           (log/info "Webhook triggered build #" (:build-number build-record)
                                     "for" (:name job)
                                     "branch:" (:branch webhook-data))
-                          (try
-                            (.submit build-executor
-                              ^Runnable (fn []
-                                (try
-                                  (build-runner/execute-build-for-record!
-                                    system job build-record
-                                    {:event-fn events/publish!
-                                     :parameters {:branch (:branch webhook-data)
-                                                  :commit (:commit webhook-data)}})
-                                  (catch Exception e
-                                    (log/error e "Webhook-triggered build failed:" build-id)
-                                    (build-store/update-build-status! ds build-id :failure
-                                      :completed-at (str (java.time.Instant/now)))))))
-                            (swap! triggered inc)
-                            (catch RejectedExecutionException _
-                              (log/warn "Build queue full, cannot trigger for" (:name job)
-                                        "— marking build" build-id "as failed")
-                              (build-store/update-build-status! ds build-id :failure
-                                :completed-at (str (java.time.Instant/now)))))))
+                          ;; Try distributed dispatch when feature flag is enabled
+                          (let [dispatch-result
+                                (when (feature-flags/enabled? (:config system) :distributed-dispatch)
+                                  (try
+                                    (dispatcher/dispatch-build! system
+                                      {:build-id build-id
+                                       :job-id (:id job)
+                                       :pipeline (:pipeline job)
+                                       :org-id (:org-id job)
+                                       :parameters build-params}
+                                      (:labels job))
+                                    (catch Exception e
+                                      (log/warn "Dispatcher error in webhook, falling back to local:"
+                                                (.getMessage e))
+                                      nil)))]
+                            (cond
+                              ;; Dispatched remotely or queued
+                              (and dispatch-result
+                                   (#{:remote :queued} (:mode dispatch-result)))
+                              (do (log/info "Build" build-id "dispatched:" (:mode dispatch-result))
+                                  (swap! triggered inc))
+
+                              ;; Dispatch explicitly failed (no agents, fallback-local=false)
+                              ;; Mark build failed rather than silently running locally
+                              (and dispatch-result
+                                   (= :failed (:mode dispatch-result)))
+                              (do (log/warn "Build" build-id "dispatch failed:" (:error dispatch-result))
+                                  (build-store/update-build-status! ds build-id :failure
+                                    :completed-at (str (java.time.Instant/now)))
+                                  (events/publish! {:build-id build-id
+                                                    :event-type :build-completed
+                                                    :timestamp (str (java.time.Instant/now))
+                                                    :data {:build-status :failure
+                                                           :error (str "Dispatch failed: "
+                                                                       (:error dispatch-result))}}))
+
+                              ;; Local execution (flag disabled, dispatcher returned :local, or exception)
+                              :else
+                              (try
+                                (.submit build-executor
+                                  ^Runnable (fn []
+                                    (try
+                                      (build-runner/execute-build-for-record!
+                                        system job build-record
+                                        {:event-fn events/publish!
+                                         :parameters build-params})
+                                      (catch Exception e
+                                        (log/error e "Webhook-triggered build failed:" build-id)
+                                        (build-store/update-build-status! ds build-id :failure
+                                          :completed-at (str (java.time.Instant/now)))))))
+                                (swap! triggered inc)
+                                (catch RejectedExecutionException _
+                                  (log/warn "Build queue full, cannot trigger for" (:name job)
+                                            "\u2014 marking build" build-id "as failed")
+                                  (build-store/update-build-status! ds build-id :failure
+                                    :completed-at (str (java.time.Instant/now)))))))))
                       (let [duration (- (System/currentTimeMillis) start-ms)]
                         (log-webhook-event! ds registry
                           {:provider provider :event-type event-type
@@ -272,4 +313,3 @@
                         {:status 200
                          :headers {"Content-Type" "application/json"}
                          :body (str "{\"triggered\":" @triggered "}")}))))))))))))
-

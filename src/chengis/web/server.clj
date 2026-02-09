@@ -7,6 +7,7 @@
             [chengis.logging :as logging]
             [chengis.metrics :as metrics]
             [chengis.engine.events :as events]
+            [chengis.distributed.agent-registry :as agent-reg]
             [chengis.distributed.queue-processor :as queue-processor]
             [chengis.distributed.orphan-monitor :as orphan-monitor]
             [chengis.engine.retention :as retention]
@@ -66,6 +67,8 @@
                                nil)))
         ;; Set metrics registry on event bus
         _ (events/set-metrics-registry! metrics-registry)
+        ;; Set database reference on event bus for durable persistence
+        _ (events/set-db! ds)
         ;; Start audit writer
         audit-writer (when (get-in cfg [:audit :enabled] true)
                        (audit/start-audit-writer! ds cfg))
@@ -83,6 +86,8 @@
               (let [create-fn (requiring-resolve 'chengis.plugin.builtin.local-secrets/create-backend)]
                 (plugin-reg "local" (create-fn ds))
                 (log/info "Secret backend: local (AES-256-GCM encrypted database)"))))
+        ;; Configure agent registry with heartbeat timeout from config
+        _ (agent-reg/set-config! cfg)
         ;; Start queue processor when distributed + queue enabled
         _ (when (and (get-in cfg [:distributed :enabled])
                      (get-in cfg [:distributed :dispatch :queue-enabled]))

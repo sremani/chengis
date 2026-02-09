@@ -210,12 +210,21 @@
          ["/:id/edit" {:get {:handler (auth/wrap-require-role :admin (h/policy-edit-page system))}
                        :post {:handler (auth/wrap-require-role :admin (h/update-policy-handler system))}}]
          ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-policy-handler system))}}]
-         ["/:id/toggle" {:post {:handler (auth/wrap-require-role :admin (h/toggle-policy-handler system))}}]]]
+         ["/:id/toggle" {:post {:handler (auth/wrap-require-role :admin (h/toggle-policy-handler system))}}]]
+        ["/plugins/policies"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/plugin-policies-page system))}
+              :post {:handler (auth/wrap-require-role :admin (h/set-plugin-policy-handler system))}}]
+         ["/:name/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-plugin-policy-handler system))}}]]
+        ["/docker/policies"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/docker-policies-page system))}
+              :post {:handler (auth/wrap-require-role :admin (h/create-docker-policy-handler system))}}]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-docker-policy-handler system))}}]]]
        ["/api"
         ["/alerts" {:get {:handler (alerts/alerts-handler system)}}]
         ["/alerts/fragment" {:get {:handler (alerts/alerts-fragment-handler system)}}]
         ["/auth/token" {:post {:handler (h/api-generate-token system)}}]
         ["/builds/:id/events" {:get {:handler (h/build-events-sse system)}}]
+        ["/builds/:id/events/replay" {:get {:handler (h/build-events-handler system)}}]
         ;; Agent communication — developer+
         ["/builds/:id/agent-events" {:post {:handler (master-api/ingest-event-handler system)}}]
         ["/builds/:id/result" {:post {:handler (master-api/ingest-result-handler system)}}]

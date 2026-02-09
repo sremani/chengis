@@ -15,9 +15,23 @@
 
 (defonce ^:private agents (atom {}))  ;; agent-id -> agent-info
 
-(def ^:private heartbeat-timeout-ms
-  "Agents are considered offline after this many ms without heartbeat."
+(def ^:private default-heartbeat-timeout-ms
+  "Default: agents considered offline after 90s without heartbeat."
   90000)
+
+(defonce ^:private config-ref (atom {}))
+
+(defn set-config!
+  "Set the config map for the agent registry. Called at server startup.
+   Used to make heartbeat timeout configurable without hardcoding."
+  [cfg]
+  (reset! config-ref cfg))
+
+(defn- heartbeat-timeout-ms
+  "Get the configured heartbeat timeout, falling back to the default."
+  []
+  (get-in @config-ref [:distributed :heartbeat-timeout-ms]
+          default-heartbeat-timeout-ms))
 
 (defn- now-instant [] (Instant/now))
 
@@ -89,9 +103,10 @@
    When org-id is provided, returns agents assigned to that org plus shared agents (nil org-id).
    When org-id is nil, returns all agents."
   [& {:keys [org-id]}]
-  (let [all-agents (mapv (fn [[_id agent]]
+  (let [timeout (heartbeat-timeout-ms)
+        all-agents (mapv (fn [[_id agent]]
                            (let [elapsed (ms-since-str (:last-heartbeat agent))
-                                 status (if (and elapsed (> elapsed heartbeat-timeout-ms))
+                                 status (if (and elapsed (> elapsed timeout))
                                           :offline
                                           (:status agent))]
                              (assoc agent :status status
@@ -109,11 +124,12 @@
   "Check if an agent can accept a new build.
    Computes availability from heartbeat elapsed time for freshness."
   [agent]
-  (let [elapsed (ms-since-str (:last-heartbeat agent))]
+  (let [elapsed (ms-since-str (:last-heartbeat agent))
+        timeout (heartbeat-timeout-ms)]
     (and (= :online (:status agent))
          (< (:current-builds agent 0) (:max-builds agent 2))
          ;; Verify heartbeat is recent (guards against stale :online status)
-         (or (nil? elapsed) (< elapsed heartbeat-timeout-ms)))))
+         (or (nil? elapsed) (< elapsed timeout)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Agent selection
@@ -159,14 +175,15 @@
   "Update status of all agents based on heartbeat timeout atomically.
    Returns count of agents that went offline."
   []
-  (let [[old-state new-state]
+  (let [timeout (heartbeat-timeout-ms)
+        [old-state new-state]
         (swap-vals! agents
                     (fn [state]
                       (reduce-kv
                         (fn [acc agent-id agent]
                           (let [elapsed (ms-since-str (:last-heartbeat agent))]
                             (if (and elapsed
-                                     (> elapsed heartbeat-timeout-ms)
+                                     (> elapsed timeout)
                                      (not= :offline (:status agent)))
                               (assoc-in acc [agent-id :status] :offline)
                               acc)))

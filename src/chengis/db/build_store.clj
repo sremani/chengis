@@ -27,23 +27,76 @@
                  {:builder-fn rs/as-unqualified-kebab-maps})]
     (inc (or (:max-num result) 0))))
 
+(defn- get-root-build-id*
+  "Internal: follow the parent chain to find the original build ID.
+   Uses a loop to handle arbitrary chain depth."
+  [ds build-id]
+  (loop [current-id build-id
+         depth 0]
+    (if (> depth 100)  ;; safety: prevent infinite loops
+      current-id
+      (let [build (jdbc/execute-one! ds
+                    (sql/format {:select [:root-build-id :parent-build-id]
+                                 :from :builds
+                                 :where [:= :id current-id]})
+                    {:builder-fn rs/as-unqualified-kebab-maps})]
+        (cond
+          ;; If this build already has a root-build-id, use it (fast path)
+          (:root-build-id build) (:root-build-id build)
+          ;; If no parent, this IS the root
+          (nil? (:parent-build-id build)) current-id
+          ;; Otherwise follow the parent chain
+          :else (recur (:parent-build-id build) (inc depth)))))))
+
+(defn- compute-attempt-info
+  "Compute the attempt number and root-build-id for a retry.
+   Looks at the parent build to determine the root of the retry chain
+   and the next attempt number."
+  [ds parent-build-id]
+  (let [root-id (get-root-build-id* ds parent-build-id)
+        max-result (jdbc/execute-one! ds
+                     (sql/format {:select [[[:max :attempt-number] :max-attempt]]
+                                  :from :builds
+                                  :where [:or
+                                          [:= :id root-id]
+                                          [:= :root-build-id root-id]]})
+                     {:builder-fn rs/as-unqualified-kebab-maps})
+        max-attempt (or (:max-attempt max-result) 1)]
+    {:root-build-id root-id
+     :attempt-number (inc max-attempt)}))
+
 (defn create-build!
   "Create a new build record. Returns the build map.
    When :org-id is provided, stores it for fast org-scoped queries.
+   When :parent-build-id is set (retry), automatically computes
+   :attempt-number and :root-build-id unless explicitly provided.
    Uses a transaction to prevent build number race conditions —
    SELECT MAX(build_number) and INSERT are atomic."
-  [ds {:keys [job-id trigger-type parameters workspace parent-build-id org-id]}]
+  [ds {:keys [job-id trigger-type parameters workspace parent-build-id org-id
+              attempt-number root-build-id]}]
   (jdbc/with-transaction [tx ds]
     (let [id (util/generate-id)
           build-number (next-build-number tx job-id)
+          ;; Auto-compute attempt tracking for retries
+          [eff-root-id eff-attempt]
+          (if parent-build-id
+            (let [provided-root root-build-id
+                  computed (when-not (and provided-root attempt-number)
+                             (compute-attempt-info tx parent-build-id))
+                  root-id (or provided-root (:root-build-id computed) parent-build-id)
+                  attempt (or attempt-number (:attempt-number computed) 2)]
+              [root-id attempt])
+            [root-build-id (or attempt-number 1)])
           row (cond-> {:id id
                        :job-id job-id
                        :build-number build-number
                        :status "queued"
                        :trigger-type (when trigger-type (name trigger-type))
                        :parameters (util/serialize-edn parameters)
-                       :workspace workspace}
+                       :workspace workspace
+                       :attempt-number eff-attempt}
                 parent-build-id (assoc :parent-build-id parent-build-id)
+                eff-root-id (assoc :root-build-id eff-root-id)
                 org-id (assoc :org-id org-id))]
       (jdbc/execute-one! tx
         (sql/format {:insert-into :builds
@@ -284,3 +337,34 @@
        (jdbc/execute! ds
          (sql/format base-query)
          {:builder-fn rs/as-unqualified-kebab-maps})))))
+
+;; --- Attempt tracking ---
+
+(defn get-root-build-id
+  "Follow the parent chain to find the original (root) build ID.
+   Returns nil if the build has no parent (is itself the root)."
+  [ds build-id]
+  (let [build (jdbc/execute-one! ds
+                (sql/format {:select [:root-build-id :parent-build-id]
+                             :from :builds
+                             :where [:= :id build-id]})
+                {:builder-fn rs/as-unqualified-kebab-maps})]
+    (cond
+      (:root-build-id build) (:root-build-id build)
+      (:parent-build-id build) (get-root-build-id* ds build-id)
+      :else nil)))
+
+(defn list-attempts
+  "List all builds in a retry chain, ordered by attempt_number.
+   Takes the root-build-id (the original build that started the chain).
+   Returns the root build plus all retries sharing that root."
+  [ds root-build-id]
+  (mapv normalize-build
+    (jdbc/execute! ds
+      (sql/format {:select :*
+                   :from :builds
+                   :where [:or
+                           [:= :id root-build-id]
+                           [:= :root-build-id root-build-id]]
+                   :order-by [[:attempt-number :asc]]})
+      {:builder-fn rs/as-unqualified-kebab-maps})))

@@ -168,12 +168,47 @@
           (when (:details notif)
             [:span {:class "text-gray-400 text-xs truncate max-w-xs"} (:details notif)])])]]]))
 
+(defn- render-retry-history
+  "Render the retry history section showing all attempts in the chain."
+  [attempts current-build-id]
+  (when (and (seq attempts) (> (count attempts) 1))
+    [:div {:class "bg-white rounded-lg shadow-sm border mb-6"}
+     [:div {:class "px-5 py-4 border-b"}
+      [:h2 {:class "text-lg font-semibold text-gray-900"} "Retry History"]]
+     [:div {:class "p-0"}
+      [:table {:class "w-full text-sm"}
+       [:thead
+        [:tr {:class "text-left text-gray-500 border-b bg-gray-50"}
+         [:th {:class "px-5 py-2 font-medium"} "Attempt"]
+         [:th {:class "px-5 py-2 font-medium"} "Build"]
+         [:th {:class "px-5 py-2 font-medium"} "Status"]
+         [:th {:class "px-5 py-2 font-medium"} "Trigger"]
+         [:th {:class "px-5 py-2 font-medium"} "Started"]]]
+       [:tbody {:class "divide-y"}
+        (for [attempt attempts]
+          (let [is-current? (= (:id attempt) current-build-id)]
+            [:tr {:class (if is-current? "bg-blue-50" "hover:bg-gray-50")}
+             [:td {:class "px-5 py-3 font-medium"}
+              (str "#" (or (:attempt-number attempt) 1))
+              (when is-current?
+                [:span {:class "ml-1 text-xs text-blue-600"} "(current)"])]
+             [:td {:class "px-5 py-3"}
+              [:a {:href (str "/builds/" (:id attempt))
+                   :class "text-blue-600 hover:underline font-mono text-sm"}
+               (str "Build #" (:build-number attempt))]]
+             [:td {:class "px-5 py-3"} (c/status-badge (:status attempt))]
+             [:td {:class "px-5 py-3 text-gray-500"}
+              (or (:trigger-type attempt) "manual")]
+             [:td {:class "px-5 py-3 text-gray-400 font-mono text-xs"}
+              (or (:started-at attempt) "-")]]))]]]]))
+
 (defn render-detail
   "Build detail page with stages, steps, and log output.
    For running builds, includes SSE connection for live updates."
-  [{:keys [build stages steps job artifacts notifications csrf-token]}]
+  [{:keys [build stages steps job artifacts notifications attempts csrf-token]}]
   (let [build-id (:id build)
-        running? (= :running (:status build))]
+        running? (= :running (:status build))
+        attempt-num (or (:attempt-number build) 1)]
     (layout/base-layout
       {:title (str "Build #" (:build-number build)) :csrf-token csrf-token}
       [:div (when running?
@@ -184,7 +219,12 @@
        [:div {:class "flex items-center justify-between mb-6"}
         [:div
          [:h1 {:class "text-2xl font-bold text-gray-900"}
-          (str "Build #" (:build-number build))]
+          (str "Build #" (:build-number build))
+          ;; Attempt badge (only show when attempt > 1)
+          (when (> attempt-num 1)
+            [:span {:class "ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                            bg-orange-100 text-orange-700 border border-orange-200"}
+             (str "Attempt #" attempt-num)])]
          [:p {:class "text-sm text-gray-500 mt-1"}
           (str "Job: ")
           [:a {:href (str "/jobs/" (or (:name job) ""))
@@ -269,6 +309,9 @@
 
        ;; Git info (only for git-sourced builds)
        (render-git-info-section build)
+
+       ;; Retry history (when build is part of a retry chain)
+       (render-retry-history attempts build-id)
 
        ;; Artifacts (if any)
        (render-artifacts-section (:id build) artifacts)

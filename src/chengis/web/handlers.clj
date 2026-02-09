@@ -1,6 +1,7 @@
 (ns chengis.web.handlers
   (:require [chengis.db.job-store :as job-store]
             [chengis.db.build-store :as build-store]
+            [chengis.db.build-event-store :as build-event-store]
             [chengis.db.artifact-store :as artifact-store]
             [chengis.db.notification-store :as notification-store]
             [chengis.db.secret-store :as secret-store]
@@ -28,6 +29,8 @@
             [chengis.distributed.agent-registry :as agent-reg]
             [chengis.distributed.circuit-breaker :as cb]
             [chengis.distributed.build-queue :as bq]
+            [chengis.distributed.dispatcher :as dispatcher]
+            [chengis.feature-flags :as feature-flags]
             [chengis.web.account-lockout :as lockout]
             [chengis.db.approval-store :as approval-store]
             [chengis.db.template-store :as template-store]
@@ -39,8 +42,12 @@
             [chengis.web.views.compliance :as v-compliance]
             [chengis.db.compliance-store :as compliance-store]
             [chengis.db.policy-store :as policy-store]
+            [chengis.db.plugin-policy-store :as plugin-policy-store]
+            [chengis.db.docker-policy-store :as docker-policy-store]
             [chengis.engine.compliance :as compliance]
             [chengis.web.views.policies :as v-policies]
+            [chengis.web.views.plugin-policies :as v-plugin-policies]
+            [chengis.web.views.docker-policies :as v-docker-policies]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -148,6 +155,72 @@
                    (v-trigger-form/render-trigger-form
                      job-name parameters (csrf-token req))))))))))
 
+(defn- dispatch-or-execute!
+  "Try distributed dispatch first (if feature flag enabled), otherwise execute locally.
+   When dispatch returns :failed (no agents and fallback-local=false), marks the build
+   as failed rather than silently running locally — respecting the operator's intent.
+   Returns the HTTP response (303 redirect to build page, or 503 if queue full)."
+  [system ds build-id job build-record build-params]
+  (let [dispatch-result (when (feature-flags/enabled? (:config system) :distributed-dispatch)
+                          (try
+                            (dispatcher/dispatch-build! system
+                              {:build-id build-id
+                               :job-id (:id job)
+                               :pipeline (:pipeline job)
+                               :org-id (:org-id build-record)
+                               :parameters build-params}
+                              (:labels job))
+                            (catch Exception e
+                              (log/warn "Dispatcher error, falling back to local:" (.getMessage e))
+                              nil)))]
+    (cond
+      ;; Dispatched remotely or queued — don't execute locally
+      (and dispatch-result
+           (#{:remote :queued} (:mode dispatch-result)))
+      (do (log/info "Build" build-id "dispatched:" (:mode dispatch-result))
+          {:status 303
+           :headers {"Location" (str "/builds/" build-id)}})
+
+      ;; Dispatch explicitly failed (no agents, fallback-local=false) — mark build failed
+      (and dispatch-result
+           (= :failed (:mode dispatch-result)))
+      (do (log/warn "Build" build-id "dispatch failed:" (:error dispatch-result))
+          (build-store/update-build-status! ds build-id :failure
+            :completed-at (str (java.time.Instant/now)))
+          (events/publish! {:build-id build-id
+                            :event-type :build-completed
+                            :timestamp (str (java.time.Instant/now))
+                            :data {:build-status :failure
+                                   :error (str "Dispatch failed: " (:error dispatch-result))}})
+          {:status 303
+           :headers {"Location" (str "/builds/" build-id)}})
+
+      ;; Local execution (flag disabled, dispatcher returned :local, or nil)
+      :else
+      (try
+        (.submit build-runner/build-executor
+          ^Runnable (fn []
+            (try
+              (build-runner/execute-build-for-record!
+                system job build-record
+                {:event-fn events/publish!
+                 :parameters build-params})
+              (catch Exception e
+                (log/error e "Build failed:" build-id)
+                (build-store/update-build-status! ds build-id :failure
+                  :completed-at (str (java.time.Instant/now)))
+                (events/publish! {:build-id build-id
+                                  :event-type :build-completed
+                                  :timestamp (str (java.time.Instant/now))
+                                  :data {:build-status :failure}})))))
+        {:status 303
+         :headers {"Location" (str "/builds/" build-id)}}
+        (catch RejectedExecutionException _
+          {:status 503
+           :headers {"Content-Type" "text/html; charset=utf-8"
+                     "Retry-After" "30"}
+           :body "<h1>503</h1><p>Build queue full. Try again shortly.</p>"})))))
+
 (defn trigger-build [system]
   (fn [req]
     (let [ds (:db system)
@@ -166,31 +239,7 @@
               build-id (:id build-record)]
           (log/info "Web trigger: build #" (:build-number build-record) "for" job-name
                     "(id:" build-id ")" (when (seq build-params) (str "params:" build-params)))
-          ;; Run build on bounded thread pool
-          (try
-            (.submit build-runner/build-executor
-              ^Runnable (fn []
-                (try
-                  (build-runner/execute-build-for-record!
-                    system job build-record
-                    {:event-fn events/publish!
-                     :parameters build-params})
-                  (catch Exception e
-                    (log/error e "Build failed:" build-id)
-                    (build-store/update-build-status! ds build-id :failure
-                      :completed-at (str (java.time.Instant/now)))
-                    (events/publish! {:build-id build-id
-                                      :event-type :build-completed
-                                      :timestamp (str (java.time.Instant/now))
-                                      :data {:build-status :failure}})))))
-            ;; Redirect to build page
-            {:status 303
-             :headers {"Location" (str "/builds/" build-id)}}
-            (catch RejectedExecutionException _
-              {:status 503
-               :headers {"Content-Type" "text/html; charset=utf-8"
-                         "Retry-After" "30"}
-               :body "<h1>503</h1><p>Build queue full. Try again shortly.</p>"})))))))
+          (dispatch-or-execute! system ds build-id job build-record build-params))))))
 
 (defn build-detail-page [system]
   (fn [req]
@@ -204,7 +253,13 @@
               steps (build-store/get-build-steps ds build-id)
               job (job-store/get-job-by-id ds (:job-id build) :org-id org-id)
               artifacts (artifact-store/list-artifacts ds build-id)
-              notifications (notification-store/list-notifications ds build-id)]
+              notifications (notification-store/list-notifications ds build-id)
+              ;; Fetch retry attempt history when this build is part of a retry chain
+              root-id (or (:root-build-id build)
+                          (when (:parent-build-id build) build-id))
+              attempts (when root-id
+                         (try (build-store/list-attempts ds root-id)
+                              (catch Exception _ nil)))]
           (html-response
             (v-builds/render-detail {:build build
                                      :stages stages
@@ -212,6 +267,7 @@
                                      :job job
                                      :artifacts artifacts
                                      :notifications notifications
+                                     :attempts attempts
                                      :csrf-token (csrf-token req)})))))))
 
 (defn build-log-page [system]
@@ -264,29 +320,7 @@
                             :org-id org-id})
               new-id (:id new-record)]
           (log/info "Retry build #" (:build-number new-record) "from" build-id)
-          (try
-            (.submit build-runner/build-executor
-              ^Runnable (fn []
-                (try
-                  (build-runner/execute-build-for-record!
-                    system job new-record
-                    {:event-fn events/publish!
-                     :parameters (:parameters build)})
-                  (catch Exception e
-                    (log/error e "Retry build failed:" new-id)
-                    (build-store/update-build-status! ds new-id :failure
-                      :completed-at (str (java.time.Instant/now)))
-                    (events/publish! {:build-id new-id
-                                      :event-type :build-completed
-                                      :timestamp (str (java.time.Instant/now))
-                                      :data {:build-status :failure}})))))
-            {:status 303
-             :headers {"Location" (str "/builds/" new-id)}}
-            (catch RejectedExecutionException _
-              {:status 503
-               :headers {"Content-Type" "text/html; charset=utf-8"
-                         "Retry-After" "30"}
-               :body "<h1>503</h1><p>Build queue full. Try again shortly.</p>"})))))))
+          (dispatch-or-execute! system ds new-id job new-record (:parameters build)))))))
 
 (defn build-events-sse [system]
   (fn [req]
@@ -299,6 +333,43 @@
          :headers {"Content-Type" "text/html; charset=utf-8"}
          :body "<p>Build not found.</p>"}
         ((sse/sse-handler system build-id) req)))))
+
+;; --- Build Events API (replay) ---
+
+(defn build-events-handler
+  "GET /api/builds/:id/events/replay — JSON array of persisted build events.
+   Supports ?after=<event-id> for cursor pagination and ?type=<event-type> filtering."
+  [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :id])
+          build (build-store/get-build ds build-id :org-id org-id)]
+      (if-not build
+        {:status 404
+         :headers {"Content-Type" "application/json"}
+         :body "{\"error\":\"Build not found\"}"}
+        (let [after-id (get-in req [:params :after])
+              event-type (get-in req [:params :type])
+              limit (try (some-> (get-in req [:params :limit]) Integer/parseInt)
+                         (catch Exception _ nil))
+              events (build-event-store/list-events ds build-id
+                       :after-id after-id
+                       :event-type event-type
+                       :limit limit)]
+          {:status 200
+           :headers {"Content-Type" "application/json"}
+           :body (json/write-str
+                   {:build-id build-id
+                    :count (count events)
+                    :events (mapv (fn [e]
+                                    {:id (:id e)
+                                     :event-type (name (:event-type e))
+                                     :stage-name (:stage-name e)
+                                     :step-name (:step-name e)
+                                     :data (:data e)
+                                     :created-at (:created-at e)})
+                                  events)})})))))
 
 ;; --- Secrets ---
 
@@ -1441,3 +1512,93 @@
        :body (json/write-str {:policy-count (count policies)
                               :policies (mapv #(select-keys % [:id :name :policy-type :priority])
                                               policies)})})))
+
+;; --- Plugin Policies (admin) ---
+
+(defn plugin-policies-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          policies (try (plugin-policy-store/list-plugin-policies ds :org-id org-id)
+                        (catch Exception _ []))
+          flash (get-in req [:params :flash])]
+      (html-response
+        (v-plugin-policies/render
+          {:policies policies
+           :flash flash
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)
+           :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn set-plugin-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          plugin-name (get-in req [:params :plugin-name])
+          trust-level (get-in req [:params :trust-level] "trusted")]
+      (when (and plugin-name (not (str/blank? plugin-name)))
+        (plugin-policy-store/set-plugin-policy! ds
+          {:org-id org-id
+           :plugin-name (str/trim plugin-name)
+           :trust-level trust-level
+           :allowed true
+           :created-by (:username (auth/current-user req))}))
+      {:status 303
+       :headers {"Location" "/admin/plugins/policies"}})))
+
+(defn delete-plugin-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          plugin-name (get-in req [:path-params :name])]
+      (plugin-policy-store/delete-plugin-policy! ds plugin-name :org-id org-id)
+      {:status 303
+       :headers {"Location" "/admin/plugins/policies"}})))
+
+;; --- Docker Policies (admin) ---
+
+(defn docker-policies-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          policies (try (docker-policy-store/list-docker-policies ds :org-id org-id)
+                        (catch Exception _ []))
+          flash (get-in req [:params :flash])]
+      (html-response
+        (v-docker-policies/render
+          {:policies policies
+           :flash flash
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)
+           :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn create-docker-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policy-type (get-in req [:params :policy-type])
+          pattern (get-in req [:params :pattern])
+          action (get-in req [:params :action] "allow")
+          priority (try (Integer/parseInt (str (get-in req [:params :priority])))
+                        (catch Exception _ 100))]
+      (when (and policy-type pattern (not (str/blank? pattern)))
+        (docker-policy-store/create-docker-policy! ds
+          {:org-id org-id
+           :policy-type policy-type
+           :pattern (str/trim pattern)
+           :action action
+           :priority priority
+           :created-by (:username (auth/current-user req))}))
+      {:status 303
+       :headers {"Location" "/admin/docker/policies"}})))
+
+(defn delete-docker-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policy-id (get-in req [:path-params :id])]
+      (docker-policy-store/delete-docker-policy! ds policy-id :org-id org-id)
+      {:status 303
+       :headers {"Location" "/admin/docker/policies"}})))
