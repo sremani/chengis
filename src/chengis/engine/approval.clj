@@ -32,7 +32,14 @@
 (defn wait-for-approval!
   "Wait for an approval gate to be approved/rejected/timed-out.
    Polls the database every poll-interval-ms.
-   Returns {:approved true} or {:approved false :reason \"...\"}."
+   Returns {:approved true} or {:approved false :reason \"...\"}.
+
+   ARCHITECTURE NOTE: This function blocks the calling build thread while
+   waiting for approval (up to 1440 minutes by default). With the default
+   4-thread build pool, 4 simultaneous approval gates will exhaust all build
+   threads, preventing new builds from starting. Mitigations:
+   - Increase :build-executor-threads in config for approval-heavy pipelines
+   - Consider async/channel-based approval in a future release"
   [ds gate-id {:keys [poll-interval-ms cancelled?]}]
   (let [poll-ms (or poll-interval-ms 5000)]
     (loop []

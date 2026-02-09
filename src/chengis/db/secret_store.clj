@@ -89,32 +89,34 @@
 
 (defn set-secret!
   "Create or update a secret. Scope is 'global' or a job-id.
-   Optional :user-id, :ip-address, :registry, :org-id for audit logging and org scoping."
+   Optional :user-id, :ip-address, :registry, :org-id for audit logging and org scoping.
+   Uses a transaction to prevent race conditions on concurrent upserts."
   [ds config secret-name value & {:keys [scope user-id ip-address registry org-id] :or {scope "global"}}]
   (let [key (get-master-key config)
         encrypted (encrypt key value)
         where-conds (cond-> [:and [:= :scope scope] [:= :name secret-name]]
-                      org-id (conj [:= :org-id org-id]))
-        existing (jdbc/execute-one! ds
-                   (sql/format {:select [:id]
-                                :from :secrets
-                                :where where-conds})
-                   {:builder-fn rs/as-unqualified-kebab-maps})]
-    (if existing
-      ;; Update
-      (jdbc/execute-one! ds
-        (sql/format {:update :secrets
-                     :set {:encrypted-value encrypted
-                           :updated-at [:raw "CURRENT_TIMESTAMP"]}
-                     :where where-conds}))
-      ;; Insert
-      (jdbc/execute-one! ds
-        (sql/format {:insert-into :secrets
-                     :values [(cond-> {:id (util/generate-id)
-                                       :scope scope
-                                       :name secret-name
-                                       :encrypted-value encrypted}
-                                org-id (assoc :org-id org-id))]})))
+                      org-id (conj [:= :org-id org-id]))]
+    (jdbc/with-transaction [tx ds]
+      (let [existing (jdbc/execute-one! tx
+                       (sql/format {:select [:id]
+                                    :from :secrets
+                                    :where where-conds})
+                       {:builder-fn rs/as-unqualified-kebab-maps})]
+        (if existing
+          ;; Update
+          (jdbc/execute-one! tx
+            (sql/format {:update :secrets
+                         :set {:encrypted-value encrypted
+                               :updated-at [:raw "CURRENT_TIMESTAMP"]}
+                         :where where-conds}))
+          ;; Insert
+          (jdbc/execute-one! tx
+            (sql/format {:insert-into :secrets
+                         :values [(cond-> {:id (util/generate-id)
+                                           :scope scope
+                                           :name secret-name
+                                           :encrypted-value encrypted}
+                                    org-id (assoc :org-id org-id))]})))))
     (audit-secret! ds :write secret-name scope
       {:user-id user-id :ip-address ip-address :registry registry :org-id org-id})))
 

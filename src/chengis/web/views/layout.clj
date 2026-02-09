@@ -29,8 +29,10 @@
         [:title (str title " | Chengis CI")]
         [:script {:src "https://cdn.tailwindcss.com"}]
         [:script {:src "https://unpkg.com/htmx.org@2.0.4"
+                  :integrity "sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
                   :crossorigin "anonymous"}]
         [:script {:src "https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"
+                  :integrity "sha384-fw+eTlCc7suMV/1w/7fr2/PmwElUIt5i82bi+qTiLXvjRXZ2/FkiTNA/w0MhXnGI"
                   :crossorigin "anonymous"}]
         ;; Configure htmx to send CSRF token with every request
         (when csrf-token

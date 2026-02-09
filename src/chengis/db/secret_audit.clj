@@ -66,8 +66,8 @@
 (defn cleanup-old-accesses!
   "Delete secret access log entries older than retention-days."
   [ds retention-days]
-  (let [result (jdbc/execute-one! ds
+  (let [cutoff (str (.minus (java.time.Instant/now) (java.time.Duration/ofDays retention-days)))
+        result (jdbc/execute-one! ds
                  (sql/format {:delete-from :secret-access-log
-                              :where [:< :created-at
-                                      [:datetime "now" (str "-" retention-days " days")]]}))]
+                              :where [:< :created-at cutoff]}))]
     (:next.jdbc/update-count result 0)))

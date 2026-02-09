@@ -83,6 +83,10 @@
                      :allowed-origins ["*"]
                      :allowed-methods ["GET" "POST" "PUT" "DELETE"]
                      :max-age 3600}
+              ;; CSP: 'unsafe-inline' is required for Tailwind CDN (generates
+              ;; inline styles at runtime) and htmx (inline event handlers).
+              ;; To remove 'unsafe-inline', self-host a compiled Tailwind build
+              ;; and use htmx nonce-based CSP support.
               :csp {:enabled true
                     :directives {:default-src "'self'"
                                  :script-src "'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com"
@@ -112,8 +116,7 @@
           :default-role "viewer"
           :auto-create-users true ;; JIT provision users on first OIDC login
           :provider-name nil}     ;; Display name, e.g., "Okta" (auto-detected if nil)
-   :multi-tenancy {:enabled true          ;; Enable org-based resource isolation
-                   :default-org-slug "default"  ;; Slug of the auto-created default org
+   :multi-tenancy {:default-org-slug "default"  ;; Slug of the auto-created default org
                    :auto-assign-default true}   ;; Auto-assign new users to default org
    :approvals {:enabled true
                :default-timeout-minutes 1440

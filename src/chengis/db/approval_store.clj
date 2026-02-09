@@ -244,7 +244,7 @@
                          (sql/format {:update :approval-gates
                                       :set {:status "approved"
                                             :approved-by user-id
-                                            :approved-at [:datetime "now"]}
+                                            :approved-at [:raw "CURRENT_TIMESTAMP"]}
                                       :where [:and
                                               [:= :id gate-id]
                                               [:= :status "pending"]]}))]
@@ -260,7 +260,7 @@
                                (sql/format {:update :approval-gates
                                             :set {:status "approved"
                                                   :approved-by user-id
-                                                  :approved-at [:datetime "now"]}
+                                                  :approved-at [:raw "CURRENT_TIMESTAMP"]}
                                             :where [:and
                                                     [:= :id gate-id]
                                                     [:= :status "pending"]]}))]
@@ -289,7 +289,7 @@
                          (sql/format {:update :approval-gates
                                       :set {:status "rejected"
                                             :rejected-by user-id
-                                            :rejected-at [:datetime "now"]}
+                                            :rejected-at [:raw "CURRENT_TIMESTAMP"]}
                                       :where [:and
                                               [:= :id gate-id]
                                               [:= :status "pending"]]}))]
@@ -310,7 +310,7 @@
                                (sql/format {:update :approval-gates
                                             :set {:status "rejected"
                                                   :rejected-by user-id
-                                                  :rejected-at [:datetime "now"]}
+                                                  :rejected-at [:raw "CURRENT_TIMESTAMP"]}
                                             :where [:and
                                                     [:= :id gate-id]
                                                     [:= :status "pending"]]}))]
@@ -332,18 +332,17 @@
   "Delete gates and their responses older than retention-days.
    Returns number of gates deleted."
   [ds retention-days]
-  ;; Delete responses for old gates first (referential integrity)
-  (try
-    (jdbc/execute-one! ds
-      (sql/format {:delete-from :approval-responses
-                   :where [:in :gate-id
-                           {:select [:id]
-                            :from :approval-gates
-                            :where [:< :created-at
-                                    [:datetime "now" (str "-" retention-days " days")]]}]}))
-    (catch Exception _))
-  (let [result (jdbc/execute-one! ds
-                 (sql/format {:delete-from :approval-gates
-                              :where [:< :created-at
-                                      [:datetime "now" (str "-" retention-days " days")]]}))]
-    (:next.jdbc/update-count result 0)))
+  (let [cutoff (str (.minus (java.time.Instant/now) (java.time.Duration/ofDays retention-days)))]
+    ;; Delete responses for old gates first (referential integrity)
+    (try
+      (jdbc/execute-one! ds
+        (sql/format {:delete-from :approval-responses
+                     :where [:in :gate-id
+                             {:select [:id]
+                              :from :approval-gates
+                              :where [:< :created-at cutoff]}]}))
+      (catch Exception _))
+    (let [result (jdbc/execute-one! ds
+                   (sql/format {:delete-from :approval-gates
+                                :where [:< :created-at cutoff]}))]
+      (:next.jdbc/update-count result 0))))

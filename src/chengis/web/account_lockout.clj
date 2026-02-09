@@ -81,7 +81,7 @@
                                           [:>= [:+ :failed-attempts 1] max-attempts]
                                           locked-until-str
                                           :else :locked-until]
-                           :updated-at [:datetime "now"]}
+                           :updated-at [:raw "CURRENT_TIMESTAMP"]}
                      :where [:= :id (:id user)]}))
       ;; Re-read to check if lockout was triggered
       (let [updated (jdbc/execute-one! ds
@@ -104,7 +104,7 @@
       (sql/format {:update :users
                    :set {:failed-attempts 0
                          :locked-until nil
-                         :updated-at [:datetime "now"]}
+                         :updated-at [:raw "CURRENT_TIMESTAMP"]}
                    :where [:= :id user-id]}))))
 
 ;; ---------------------------------------------------------------------------
@@ -118,6 +118,6 @@
     (sql/format {:update :users
                  :set {:failed-attempts 0
                        :locked-until nil
-                       :updated-at [:datetime "now"]}
+                       :updated-at [:raw "CURRENT_TIMESTAMP"]}
                  :where [:= :id user-id]}))
   (log/info "Account unlocked by admin:" user-id))

@@ -82,12 +82,17 @@
 
 (defn get-client-ip
   "Extract the client IP from the request.
-   Checks X-Forwarded-For first (for reverse proxies), falls back to :remote-addr."
-  [req]
-  (or (when-let [xff (get-in req [:headers "x-forwarded-for"])]
-        (-> xff (str/split #",") first str/trim))
-      (:remote-addr req)
-      "unknown"))
+   Only trusts X-Forwarded-For when trust-proxy? is true (i.e., when behind a
+   known reverse proxy). Without a proxy, X-Forwarded-For can be trivially
+   spoofed to bypass rate limiting."
+  ([req] (get-client-ip req false))
+  ([req trust-proxy?]
+   (if trust-proxy?
+     (or (when-let [xff (get-in req [:headers "x-forwarded-for"])]
+           (-> xff (str/split #",") first str/trim))
+         (:remote-addr req)
+         "unknown")
+     (or (:remote-addr req) "unknown"))))
 
 ;; ---------------------------------------------------------------------------
 ;; Endpoint classification
@@ -136,6 +141,7 @@
         general-rpm (get-in config [:rate-limit :requests-per-minute] 60)
         auth-rpm (get-in config [:rate-limit :auth-requests-per-minute] 10)
         webhook-rpm (get-in config [:rate-limit :webhook-requests-per-minute] 120)
+        trust-proxy? (get-in config [:rate-limit :trust-proxy] false)
         registry (:metrics system)]
     (if-not enabled?
       handler  ;; pass-through when disabled
@@ -146,7 +152,7 @@
                   "webhook=" webhook-rpm "rpm")
         (fn [req]
           (maybe-cleanup-stale!)
-          (let [ip (get-client-ip req)
+          (let [ip (get-client-ip req trust-proxy?)
                 uri (or (:uri req) "")
                 endpoint-type (classify-endpoint uri)
                 [max-tokens refill-rate] (case endpoint-type

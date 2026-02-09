@@ -300,17 +300,21 @@
 ;; --- secret commands ---
 
 (defn cmd-secret-set
-  "Set a secret (global or job-scoped). Use --org <slug> for org scoping."
+  "Set a secret (global or job-scoped). Use --org <slug> for org scoping.
+   Use '-' as value to read from stdin (avoids secret in process list)."
   [args]
   (let [secret-name (first args)
-        secret-value (second args)]
-    (if (or (nil? secret-name) (nil? secret-value))
-      (out/print-error "Usage: chengis secret set <name> <value> [--scope <job-id>] [--org <slug>]")
+        raw-value (second args)]
+    (if (or (nil? secret-name) (nil? raw-value))
+      (out/print-error "Usage: chengis secret set <name> <value|--> [--scope <job-id>] [--org <slug>]\n  Use '-' as value to read from stdin.")
       (let [{:keys [config db]} (load-system)
             org-id (resolve-org-id db (parse-org-slug args))
             scope (let [idx (.indexOf (vec args) "--scope")]
                     (when (and (>= idx 0) (< (inc idx) (count args)))
-                      (nth args (inc idx))))]
+                      (nth args (inc idx))))
+            secret-value (if (= raw-value "-")
+                           (clojure.string/trim (slurp *in*))
+                           raw-value)]
         (secret-store/set-secret! db config secret-name secret-value
                                   :scope (or scope "global")
                                   :org-id org-id)

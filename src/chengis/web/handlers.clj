@@ -413,8 +413,11 @@
 (defn admin-backup [system]
   (fn [req]
     (let [ds (:db system)
+          user (auth/current-user req)
           backup-dir (or (get-in system [:config :backup :directory]) "/tmp")
           output-path (backup/generate-backup-path backup-dir)
+          _ (log/warn "Database backup requested by" (:username user)
+                      "— backup includes ALL organizations' data")
           result (backup/backup! ds output-path)
           backup-file (io/file (:path result))]
       (log/info "Admin backup created:" (:path result))
@@ -523,11 +526,11 @@
          :body (json/write-str {:status "ready"
                                 :database "connected"})})
       (catch Exception e
+        (log/warn "Readiness check failed:" (.getMessage e))
         {:status 503
          :headers {"Content-Type" "application/json"}
          :body (json/write-str {:status "not-ready"
-                                :database "unavailable"
-                                :error (.getMessage e)})}))))
+                                :database "unavailable"})}))))
 
 ;; ---------------------------------------------------------------------------
 ;; API Auth token generation

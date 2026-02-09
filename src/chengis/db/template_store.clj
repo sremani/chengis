@@ -69,7 +69,7 @@
    When org-id is provided, verifies the template belongs to that org."
   [ds template-id {:keys [description format content parameters]} & {:keys [org-id]}]
   (let [sets (cond-> {:version [:+ :version 1]
-                      :updated-at [:datetime "now"]}
+                      :updated-at [:raw "CURRENT_TIMESTAMP"]}
                description (assoc :description description)
                format      (assoc :format format)
                content     (assoc :content content)

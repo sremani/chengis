@@ -84,18 +84,20 @@
 
 (defn delete-org!
   "Delete an organization by ID. Also removes all memberships.
+   Wrapped in a transaction so membership removal and org deletion are atomic.
    WARNING: Does NOT cascade to jobs/builds/secrets — those must be
    cleaned up separately or the org should be archived instead."
   [ds org-id]
-  ;; Remove memberships first (foreign key)
-  (jdbc/execute-one! ds
-    (sql/format {:delete-from :org-memberships
-                 :where [:= :org-id org-id]}))
-  (let [result (jdbc/execute-one! ds
-                 (sql/format {:delete-from :organizations
-                              :where [:= :id org-id]}))]
-    (log/info "Deleted organization" {:org-id org-id})
-    (pos? (:next.jdbc/update-count result 0))))
+  (jdbc/with-transaction [tx ds]
+    ;; Remove memberships first (foreign key)
+    (jdbc/execute-one! tx
+      (sql/format {:delete-from :org-memberships
+                   :where [:= :org-id org-id]}))
+    (let [result (jdbc/execute-one! tx
+                   (sql/format {:delete-from :organizations
+                                :where [:= :id org-id]}))]
+      (log/info "Deleted organization" {:org-id org-id})
+      (pos? (:next.jdbc/update-count result 0)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Membership management

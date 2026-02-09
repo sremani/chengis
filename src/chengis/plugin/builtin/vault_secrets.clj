@@ -72,12 +72,20 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- resolve-vault-config
-  "Resolve Vault configuration from config map, with env var fallbacks."
+  "Resolve Vault configuration from config map, with env var fallbacks.
+   Warns when using plaintext HTTP for non-localhost Vault URLs."
   [config]
-  (let [vault-cfg (get-in config [:secrets :vault] {})]
-    {:url   (or (:url vault-cfg)
+  (let [vault-cfg (get-in config [:secrets :vault] {})
+        url (or (:url vault-cfg)
                 (System/getenv "VAULT_ADDR")
-                "http://127.0.0.1:8200")
+                "http://127.0.0.1:8200")]
+    ;; Warn on non-local HTTP Vault URLs (production should use HTTPS)
+    (when (and (str/starts-with? url "http://")
+              (not (str/starts-with? url "http://127.0.0.1"))
+              (not (str/starts-with? url "http://localhost")))
+      (log/warn "SECURITY: Vault URL uses HTTP —" url
+                "— secrets transmitted in plaintext. Use HTTPS for production!"))
+    {:url   url
      :token (or (:token vault-cfg)
                 (System/getenv "VAULT_TOKEN"))
      :mount (or (:mount vault-cfg) "secret")

@@ -99,7 +99,7 @@
    Bumps session_version on role or active changes to invalidate
    existing JWTs and force session re-read from DB."
   [ds user-id {:keys [role active]}]
-  (let [updates (cond-> {:updated-at [:datetime "now"]}
+  (let [updates (cond-> {:updated-at [:raw "CURRENT_TIMESTAMP"]}
                   role   (assoc :role role)
                   (some? active) (assoc :active (if active 1 0))
                   ;; Bump session_version on role or active changes
@@ -118,7 +118,7 @@
     (sql/format {:update :users
                  :set {:password-hash (hash-password new-password)
                        :session-version [:+ :session-version 1]
-                       :updated-at [:datetime "now"]}
+                       :updated-at [:raw "CURRENT_TIMESTAMP"]}
                  :where [:= :id user-id]})))
 
 (defn delete-user!
@@ -129,7 +129,7 @@
     (sql/format {:update :users
                  :set {:active 0
                        :session-version [:+ :session-version 1]
-                       :updated-at [:datetime "now"]}
+                       :updated-at [:raw "CURRENT_TIMESTAMP"]}
                  :where [:= :id user-id]})))
 
 (defn count-users
@@ -209,7 +209,7 @@
           ;; Update last-used timestamp
           (jdbc/execute-one! ds
             (sql/format {:update :api-tokens
-                         :set {:last-used-at [:datetime "now"]}
+                         :set {:last-used-at [:raw "CURRENT_TIMESTAMP"]}
                          :where [:= :id (:id match)]}))
           ;; Return the associated user with token scopes attached
           (when-let [user (get-user ds (:user-id match))]
@@ -237,7 +237,7 @@
   [ds token-id]
   (jdbc/execute-one! ds
     (sql/format {:update :api-tokens
-                 :set {:revoked-at [:datetime "now"]}
+                 :set {:revoked-at [:raw "CURRENT_TIMESTAMP"]}
                  :where [:= :id token-id]})))
 
 ;; ---------------------------------------------------------------------------

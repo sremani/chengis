@@ -13,13 +13,21 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest get-client-ip-test
-  (testing "extracts IP from x-forwarded-for header"
+  (testing "extracts IP from x-forwarded-for when trust-proxy is true"
     (is (= "1.2.3.4"
-           (rl/get-client-ip {:headers {"x-forwarded-for" "1.2.3.4"}}))))
+           (rl/get-client-ip {:headers {"x-forwarded-for" "1.2.3.4"}} true))))
 
-  (testing "uses first IP from x-forwarded-for chain"
+  (testing "uses first IP from x-forwarded-for chain when trust-proxy is true"
     (is (= "1.2.3.4"
-           (rl/get-client-ip {:headers {"x-forwarded-for" "1.2.3.4, 5.6.7.8"}}))))
+           (rl/get-client-ip {:headers {"x-forwarded-for" "1.2.3.4, 5.6.7.8"}} true))))
+
+  (testing "ignores x-forwarded-for when trust-proxy is false (default)"
+    (is (= "10.0.0.1"
+           (rl/get-client-ip {:headers {"x-forwarded-for" "1.2.3.4"}
+                              :remote-addr "10.0.0.1"})))
+    (is (= "10.0.0.1"
+           (rl/get-client-ip {:headers {"x-forwarded-for" "1.2.3.4"}
+                              :remote-addr "10.0.0.1"} false))))
 
   (testing "falls back to remote-addr"
     (is (= "10.0.0.1"

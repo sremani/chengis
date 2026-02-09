@@ -80,10 +80,13 @@
       secret)))
 
 (defn- resolve-jwt-secret
-  "Resolve the JWT secret: use configured value, or auto-generate one."
+  "Resolve the JWT secret: use configured value, or auto-generate one.
+   Treats empty/blank strings as unconfigured."
   [config]
-  (or (get-in config [:auth :jwt-secret])
-      @auto-jwt-secret))
+  (let [configured (get-in config [:auth :jwt-secret])]
+    (if (and configured (not (str/blank? configured)))
+      configured
+      @auto-jwt-secret)))
 
 (defn generate-jwt
   "Generate a JWT token for a user. Includes jti (JWT ID) for blacklist support

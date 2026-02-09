@@ -19,7 +19,7 @@
                      :repo-name repo-name
                      :branch branch
                      :commit-sha commit-sha
-                     :signature-valid (if (false? signature-valid) 0 1)
+                     :signature-valid (if signature-valid 1 0)
                      :status (if status (name status) "processed")
                      :matched-jobs (or matched-jobs 0)
                      :triggered-builds (or triggered-builds 0)
@@ -84,8 +84,8 @@
 (defn cleanup-old-events!
   "Delete webhook events older than retention-days. Returns number of rows deleted."
   [ds retention-days]
-  (let [result (jdbc/execute-one! ds
+  (let [cutoff (str (.minus (java.time.Instant/now) (java.time.Duration/ofDays retention-days)))
+        result (jdbc/execute-one! ds
                  (sql/format {:delete-from :webhook-events
-                              :where [:< :created-at
-                                      [:datetime "now" (str "-" retention-days " days")]]}))]
+                              :where [:< :created-at cutoff]}))]
     (:next.jdbc/update-count result 0)))

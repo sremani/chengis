@@ -84,7 +84,7 @@
                  :set {:pipeline (util/serialize-edn pipeline-def)
                        :triggers (util/serialize-edn (:triggers pipeline-def))
                        :parameters (util/serialize-edn (:parameters pipeline-def))
-                       :updated-at [:datetime "now"]}
+                       :updated-at [:raw "CURRENT_TIMESTAMP"]}
                  :where (if org-id
                           [:and [:= :name job-name] [:= :org-id org-id]]
                           [:= :name job-name])})))

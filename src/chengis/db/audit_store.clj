@@ -72,8 +72,8 @@
 (defn purge-old!
   "Delete audit logs older than retention-days. Returns number of rows deleted."
   [ds retention-days]
-  (let [result (jdbc/execute-one! ds
+  (let [cutoff (str (.minus (java.time.Instant/now) (java.time.Duration/ofDays retention-days)))
+        result (jdbc/execute-one! ds
                  (sql/format {:delete-from :audit-logs
-                              :where [:< :timestamp
-                                      [:datetime "now" (str "-" retention-days " days")]]}))]
+                              :where [:< :timestamp cutoff]}))]
     (:next.jdbc/update-count result 0)))

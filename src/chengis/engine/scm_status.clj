@@ -14,15 +14,22 @@
 
 (defn detect-provider
   "Detect the SCM provider from a repository URL.
+   Uses proper host matching to avoid false positives (e.g., evil-github.com).
    Returns :github, :gitlab, or nil."
   [repo-url]
   (when (seq repo-url)
-    (cond
-      (str/includes? repo-url "github.com")  :github
-      (str/includes? repo-url "gitlab.com")  :gitlab
-      (str/includes? repo-url "github")      :github
-      (str/includes? repo-url "gitlab")      :gitlab
-      :else nil)))
+    (try
+      (let [host (str/lower-case (.getHost (java.net.URI. repo-url)))]
+        (cond
+          (or (= host "github.com") (str/ends-with? host ".github.com")) :github
+          (or (= host "gitlab.com") (str/ends-with? host ".gitlab.com")) :gitlab
+          :else nil))
+      (catch Exception _
+        ;; Fallback for non-URL formats (e.g., git@github.com:user/repo.git)
+        (cond
+          (str/includes? repo-url "github.com") :github
+          (str/includes? repo-url "gitlab.com") :gitlab
+          :else nil)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Status mapping
