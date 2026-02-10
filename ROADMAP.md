@@ -148,25 +148,23 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 - 9 regression tests covering all 5 findings
 - **525 tests, 2,126 assertions — all passing**
 
----
+### Phase 4: Build Performance & Caching
 
-## Phase 4: Build Performance & Caching (current)
-
-**Theme:** Reduce build times through intelligent caching and parallel execution.
-
-| Feature | Description | Priority |
-|---------|-------------|----------|
-| Docker layer caching | Persistent Docker build cache shared across builds and agents | High |
-| Artifact caching | Content-addressable cache for dependencies (e.g., `~/.m2`, `node_modules`) | High |
-| Parallel stage execution | Option to run independent stages concurrently (currently sequential) | High |
-| Build result caching | Skip stages when inputs (source hash + step commands) match a previous successful run | Medium |
-| Incremental artifact storage | Delta compression for large artifacts across consecutive builds | Medium |
-| Resource-aware scheduling | Consider agent CPU/memory when dispatching builds | Medium |
-| Build deduplication | Automatically skip redundant builds triggered on the same commit within a window | Low |
+- Parallel stage execution via DAG-based dependency graph (`:depends-on` with Kahn's topological sort, bounded semaphore concurrency)
+- Docker layer caching via persistent named volumes (`:cache-volumes` in container config)
+- Content-addressable artifact/dependency caching (`{{ hashFiles('...') }}` expressions, restore-keys prefix matching)
+- Build result caching with stage fingerprinting (SHA-256 of git-commit + commands + env, skip unchanged stages)
+- Resource-aware agent scheduling (weighted scoring: load 60% + CPU 20% + memory 20%, minimum resource filtering)
+- Incremental artifact storage via block-level delta compression (4KB blocks, MD5 hashing, >20% savings threshold)
+- Build deduplication (skip redundant builds on same commit within configurable time window)
+- 7 new feature flags (all default `false` for safe rollout)
+- 12 new environment variables for configuration
+- Migrations 037-039
+- **587 tests, 2,275 assertions — all passing**
 
 ---
 
-## Phase 5: Observability & Analytics
+## Phase 5: Observability & Analytics (current)
 
 **Theme:** Deep visibility into build performance, trends, and system health.
 
@@ -296,4 +294,5 @@ These items are under consideration but not yet scheduled:
 | 1.0.0 | Governance | Policy engine, Checksums, Compliance, Feature flags | 449 | 29-31 |
 | Phase 2 | Hardening | Dispatcher, Attempts, Durable events, Plugin/Docker policy | 488 | 32-34 |
 | Phase 3 | K8s & HA | Persistent agents, Leader election, K8s manifests, Helm | 516 | 35 |
-| Security II | Review | Auth bypass, Org scoping, Hash-chain integrity | **525** | 36 |
+| Security II | Review | Auth bypass, Org scoping, Hash-chain integrity | 525 | 36 |
+| Phase 4 | Performance | DAG execution, Caching, Delta artifacts, Resource scheduling, Dedup | **587** | 37-39 |

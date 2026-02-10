@@ -72,10 +72,11 @@ src/chengis/
     connection.clj      # SQLite + PostgreSQL connection pool (HikariCP)
     migrate.clj         # Migratus migration runner
     job_store.clj       # Job CRUD
-    build_store.clj     # Build + stage + step CRUD (with attempt tracking)
+    build_store.clj     # Build + stage + step CRUD (with attempt tracking + dedup)
     build_event_store.clj # Durable build event persistence
     secret_store.clj    # Encrypted secrets
-    artifact_store.clj  # Artifact metadata (with checksums)
+    artifact_store.clj  # Artifact metadata (with checksums + delta columns)
+    cache_store.clj     # Artifact/dependency cache metadata
     notification_store.clj  # Notification events
     user_store.clj      # User accounts, API tokens, password hashing
     org_store.clj       # Organization CRUD + membership
@@ -100,19 +101,23 @@ src/chengis/
     expressions.clj     # ${{ }} expression resolver
     templates.clj       # Pipeline template DSL
 
-  engine/               # Build execution (18 files)
-    executor.clj        # Core pipeline runner
-    build_runner.clj    # Build lifecycle + thread pool
+  engine/               # Build execution (22 files)
+    executor.clj        # Core pipeline runner (sequential + DAG modes)
+    build_runner.clj    # Build lifecycle + thread pool + deduplication
+    dag.clj             # DAG utilities (topological sort, ready-stages)
     process.clj         # Shell command execution
     git.clj             # Git clone + metadata extraction
     workspace.clj       # Build workspace management
     artifacts.clj       # Glob-based artifact collection
+    artifact_delta.clj  # Incremental artifact storage (block-level delta)
+    cache.clj           # Artifact/dependency caching (content-addressable)
+    stage_cache.clj     # Build result caching (stage fingerprinting)
     notify.clj          # Notification dispatch
     events.clj          # core.async event bus + durable persistence
     scheduler.clj       # Cron-based scheduling
     cleanup.clj         # Workspace/artifact cleanup
     log_masker.clj      # Secret masking in output
-    docker.clj          # Docker command generation + validation
+    docker.clj          # Docker command generation + validation + cache volumes
     matrix.clj          # Matrix build expansion (cartesian product)
     retention.clj       # Data retention scheduler
     approval.clj        # Approval gate engine
@@ -196,8 +201,8 @@ src/chengis/
       plugin_policies.clj # Plugin trust allowlist management
       docker_policies.clj # Docker image policy management
 
-test/chengis/           # Test suite (82 files, mirrors src/ structure)
-resources/migrations/   # SQL migration files (36 versions × 2 drivers)
+test/chengis/           # Test suite (88 files, mirrors src/ structure)
+resources/migrations/   # SQL migration files (39 versions × 2 drivers)
 pipelines/              # Example pipeline definitions (5 files)
 benchmarks/             # Performance benchmark suite
 k8s/base/               # Raw Kubernetes manifests
@@ -217,7 +222,7 @@ lein test chengis.engine.executor-test
 lein test chengis.dsl.chengisfile-test
 ```
 
-The test suite currently has **525 tests with 2,126 assertions**. All tests must pass before submitting a PR.
+The test suite currently has **587 tests with 2,275 assertions**. All tests must pass before submitting a PR.
 
 ### Test Organization
 
@@ -261,6 +266,15 @@ Tests mirror the source layout:
 | `web/handlers.clj` (probes) | `web/probes_test.clj` |
 | Security review regressions | `security_review_regression_test.clj` |
 | `web/views/*.clj` | `web/views_test.clj` |
+| `engine/dag.clj` | `engine/dag_test.clj` |
+| `engine/executor.clj` (DAG) | `engine/executor_dag_test.clj` |
+| `engine/docker.clj` (cache) | `engine/docker_cache_test.clj` |
+| `engine/cache.clj` | `engine/cache_test.clj` |
+| `db/cache_store.clj` | `db/cache_store_test.clj` |
+| `engine/stage_cache.clj` | `engine/stage_cache_test.clj` |
+| `distributed/agent_registry.clj` (resources) | `distributed/resource_scheduling_test.clj` |
+| `engine/artifact_delta.clj` | `engine/artifact_delta_test.clj` |
+| `engine/build_runner.clj` (dedup) | `engine/build_dedup_test.clj` |
 
 ### Writing Tests
 
@@ -286,24 +300,24 @@ Chengis uses [Migratus](https://github.com/yogthos/migratus) for schema evolutio
 
 ```
 resources/migrations/sqlite/
-  037-my-feature.up.sql
-  037-my-feature.down.sql
+  040-my-feature.up.sql
+  040-my-feature.down.sql
 resources/migrations/postgresql/
-  037-my-feature.up.sql
-  037-my-feature.down.sql
+  040-my-feature.up.sql
+  040-my-feature.down.sql
 ```
 
 2. Write the SQL (SQLite example):
 
 ```sql
--- 037-my-feature.up.sql
+-- 040-my-feature.up.sql
 CREATE TABLE IF NOT EXISTS my_table (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- 037-my-feature.down.sql
+-- 040-my-feature.down.sql
 DROP TABLE IF EXISTS my_table;
 ```
 

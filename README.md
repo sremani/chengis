@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**525 tests | 2,126 assertions | 0 failures**
+**587 tests | 2,275 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -82,10 +82,12 @@ Build #1 — SUCCESS (8.3 sec)
 - **YAML Workflows** &mdash; GitHub Actions-style YAML (`chengis.yml`) with `${{ }}` expression syntax
 - **Git integration** &mdash; Clone any Git repo, extract commit metadata (SHA, branch, author, message)
 - **Parallel execution** &mdash; Steps within a stage can run concurrently via `core.async`
+- **DAG-based stage execution** &mdash; Stages declare `:depends-on` for parallel execution; Kahn's topological sort, bounded concurrency via semaphore
 - **Post-build actions** &mdash; `always`, `on-success`, `on-failure` hooks that never affect build status
 - **Conditional execution** &mdash; `when-branch` and `when-param` for environment-aware pipelines
 - **Build cancellation** &mdash; Graceful cancellation with interrupt propagation
 - **Build retry** &mdash; One-click retry of failed builds
+- **Build deduplication** &mdash; Skip redundant builds on the same commit within a configurable time window
 - **Matrix builds** &mdash; Run pipelines across parameter combinations (e.g., OS x JDK), `MATRIX_*` env vars, exclude filters
 
 ### Docker Integration
@@ -94,9 +96,10 @@ Build #1 — SUCCESS (8.3 sec)
 - **Stage-level containers** &mdash; All steps in a stage share a Docker image
 - **Pipeline-level containers** &mdash; Default container config propagated to all stages
 - **Docker Compose** &mdash; Run steps via `docker-compose run` with custom compose files
+- **Layer caching** &mdash; Persistent Docker named volumes (`:cache-volumes`) for dependency caches across builds
 - **Image management** &mdash; Automatic pull with configurable policies (`:always`, `:if-not-present`, `:never`)
 - **Image policies** &mdash; Org-scoped Docker image allow/deny policies with priority-based evaluation and glob patterns
-- **Input validation** &mdash; Docker image names, service names, and args validated against injection attacks
+- **Input validation** &mdash; Docker image names, service names, args, and mount paths validated against injection attacks
 
 ### GitHub Actions-style YAML
 
@@ -118,6 +121,7 @@ Build #1 — SUCCESS (8.3 sec)
 
 - **Master/agent architecture** &mdash; HTTP-based with shared-secret auth
 - **Label-based dispatch** &mdash; Route builds to agents matching required labels
+- **Resource-aware scheduling** &mdash; Weighted scoring considers load, CPU, and memory; minimum resource requirements per stage
 - **Heartbeat monitoring** &mdash; Agents send periodic heartbeats; configurable offline detection (default 90s)
 - **Local fallback** &mdash; Configurable fallback to local execution when no agents match (default: disabled for fail-fast)
 - **Feature-flagged dispatch** &mdash; Dispatcher wiring gated by `:distributed-dispatch` feature flag for safe rollout
@@ -165,7 +169,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Policy engine** &mdash; Org-scoped build policies with priority ordering and short-circuit evaluation
 - **Artifact checksums** &mdash; SHA-256 integrity verification on collected artifacts
 - **Compliance reports** &mdash; Policy evaluation results tracked per build with admin dashboard
-- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables
+- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (9 flags for safe rollout)
 - **Plugin trust** &mdash; External plugin allowlist with admin management UI
 - **Docker image policies** &mdash; Allow/deny rules for Docker registries and images per organization
 
@@ -175,6 +179,16 @@ Build #1 — SUCCESS (8.3 sec)
 - **Durable events** &mdash; Build events persisted to database with time-ordered IDs for replay after restarts
 - **Event replay API** &mdash; `GET /api/builds/:id/events/replay` with cursor-based pagination
 - **Dispatcher wiring** &mdash; All trigger paths (UI, webhooks, retry) route through distributed dispatcher when enabled
+
+### Build Performance & Caching
+
+- **Parallel stage execution** &mdash; DAG-based dependency graph via `:depends-on`; Kahn's topological sort with bounded semaphore concurrency (configurable max)
+- **Docker layer caching** &mdash; Persistent named volumes (`:cache-volumes`) for npm, Maven, pip caches across builds
+- **Artifact/dependency caching** &mdash; Content-addressable cache keyed by `{{ hashFiles('...') }}` expressions; restore-keys prefix matching for partial hits
+- **Build result caching** &mdash; Stage fingerprinting (SHA-256 of git commit + commands + env); skip unchanged stages and reuse cached results
+- **Resource-aware scheduling** &mdash; Weighted agent scoring: `(1 - load) × 0.6 + cpu × 0.2 + memory × 0.2`; minimum resource filtering
+- **Incremental artifact storage** &mdash; Block-level delta compression (4KB blocks, MD5 hashing); stores only changed blocks when >20% savings
+- **Build deduplication** &mdash; Skip redundant builds on the same commit within a configurable time window
 
 ### Approval Gates
 
@@ -205,7 +219,7 @@ Build #1 — SUCCESS (8.3 sec)
 ### Persistence
 
 - **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
-- **36 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
+- **39 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -651,7 +665,25 @@ Chengis uses sensible defaults. Override via `resources/config.edn` or environme
 
  ;; Feature flags (opt-in for new features)
  :feature-flags {:distributed-dispatch false
-                 :persistent-agents true}
+                 :persistent-agents true
+                 :parallel-stage-execution false
+                 :docker-layer-cache false
+                 :artifact-cache false
+                 :build-result-cache false
+                 :resource-aware-scheduling false
+                 :incremental-artifacts false
+                 :build-deduplication false}
+
+ ;; Parallel stage execution (DAG mode)
+ :parallel-stages {:max-concurrent 4}
+
+ ;; Artifact/dependency caching
+ :cache {:root "cache"
+         :max-size-gb 10
+         :retention-days 30}
+
+ ;; Build deduplication
+ :deduplication {:window-minutes 10}
 
  ;; Prometheus metrics
  :metrics    {:enabled false
@@ -699,6 +731,18 @@ All configuration can be overridden with `CHENGIS_*` environment variables. Nest
 | `CHENGIS_DISTRIBUTED_HEARTBEAT_TIMEOUT_MS` | `[:distributed :heartbeat-timeout-ms]` | `90000` |
 | `CHENGIS_FEATURE_DISTRIBUTED_DISPATCH` | `[:feature-flags :distributed-dispatch]` | `true` |
 | `CHENGIS_FEATURE_PERSISTENT_AGENTS` | `[:feature-flags :persistent-agents]` | `true` |
+| `CHENGIS_FEATURE_PARALLEL_STAGES` | `[:feature-flags :parallel-stage-execution]` | `false` |
+| `CHENGIS_PARALLEL_STAGES_MAX` | `[:parallel-stages :max-concurrent]` | `4` |
+| `CHENGIS_FEATURE_DOCKER_LAYER_CACHE` | `[:feature-flags :docker-layer-cache]` | `false` |
+| `CHENGIS_FEATURE_ARTIFACT_CACHE` | `[:feature-flags :artifact-cache]` | `false` |
+| `CHENGIS_CACHE_ROOT` | `[:cache :root]` | `cache` |
+| `CHENGIS_CACHE_MAX_SIZE_GB` | `[:cache :max-size-gb]` | `10` |
+| `CHENGIS_CACHE_RETENTION_DAYS` | `[:cache :retention-days]` | `30` |
+| `CHENGIS_FEATURE_BUILD_RESULT_CACHE` | `[:feature-flags :build-result-cache]` | `false` |
+| `CHENGIS_FEATURE_RESOURCE_SCHEDULING` | `[:feature-flags :resource-aware-scheduling]` | `false` |
+| `CHENGIS_FEATURE_INCREMENTAL_ARTIFACTS` | `[:feature-flags :incremental-artifacts]` | `false` |
+| `CHENGIS_FEATURE_BUILD_DEDUP` | `[:feature-flags :build-deduplication]` | `false` |
+| `CHENGIS_DEDUP_WINDOW_MINUTES` | `[:deduplication :window-minutes]` | `10` |
 | `CHENGIS_HA_ENABLED` | `[:ha :enabled]` | `true` |
 | `CHENGIS_HA_LEADER_POLL_MS` | `[:ha :leader-poll-ms]` | `15000` |
 | `CHENGIS_HA_INSTANCE_ID` | `[:ha :instance-id]` | `pod-name` |
@@ -772,10 +816,11 @@ chengis/
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
-      build_store.clj       # Build + stage + step CRUD (with attempt tracking)
+      build_store.clj       # Build + stage + step CRUD (with attempt tracking + dedup)
       build_event_store.clj # Durable build event persistence
       secret_store.clj      # Encrypted secrets
-      artifact_store.clj    # Artifact metadata (with checksums)
+      artifact_store.clj    # Artifact metadata (with checksums + delta columns)
+      cache_store.clj       # Artifact/dependency cache metadata
       notification_store.clj # Notification events
       user_store.clj        # User accounts + API tokens
       org_store.clj         # Organization CRUD + membership
@@ -808,13 +853,17 @@ chengis/
       yaml.clj              # YAML workflow parser
       expressions.clj       # ${{ }} expression resolver
       templates.clj         # Pipeline template DSL
-    engine/                 # Build execution engine (18 files)
-      executor.clj          # Core pipeline runner
-      build_runner.clj      # Build lifecycle + thread pool
-      docker.clj            # Docker command generation
+    engine/                 # Build execution engine (22 files)
+      executor.clj          # Core pipeline runner (sequential + DAG modes)
+      build_runner.clj      # Build lifecycle + thread pool + deduplication
+      dag.clj               # DAG utilities (topological sort, ready-stages)
+      docker.clj            # Docker command generation + cache volumes
       process.clj           # Shell command execution
       git.clj               # Git clone + metadata
       artifacts.clj         # Glob-based artifact collection
+      artifact_delta.clj    # Incremental artifact storage (block-level delta)
+      cache.clj             # Artifact/dependency caching (content-addressable)
+      stage_cache.clj       # Build result caching (stage fingerprinting)
       notify.clj            # Notification dispatch
       cleanup.clj           # Workspace/artifact cleanup
       events.clj            # core.async event bus + durable persistence
@@ -885,8 +934,8 @@ chengis/
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (82 files)
-  resources/migrations/     # Database migrations (36 versions × 2 drivers)
+  test/chengis/             # Test suite (88 files)
+  resources/migrations/     # Database migrations (39 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
@@ -898,7 +947,7 @@ chengis/
   docker-compose.ha.yml     # HA override: PostgreSQL + 2 masters for multi-master testing
 ```
 
-**Codebase:** ~20,000 lines source + ~12,500 lines tests across 198+ files
+**Codebase:** ~22,000 lines source + ~14,000 lines tests across 214+ files
 
 ## Technology Stack
 
@@ -909,7 +958,7 @@ chengis/
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
 | Connection pool | HikariCP | PostgreSQL connection pooling |
-| Migrations | Migratus | Schema evolution (36 versions × 2 drivers) |
+| Migrations | Migratus | Schema evolution (39 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -968,15 +1017,21 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **525 tests, 2,126 assertions, 0 failures**
+Current test suite: **587 tests, 2,275 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
 - Chengisfile parsing and conversion
 - YAML parsing, validation, and expression resolution
-- Pipeline execution engine
+- Pipeline execution engine (sequential and DAG modes)
+- DAG utilities (topological sort, cycle detection, ready-stages)
 - Matrix build expansion
-- Docker command generation and input validation
+- Docker command generation, input validation, and cache volumes
+- Artifact/dependency caching (content-addressable, restore-keys)
+- Build result caching (stage fingerprinting, cache hit/miss)
+- Incremental artifact storage (block-level delta compression)
+- Build deduplication (commit-based, time window)
+- Resource-aware agent scheduling (weighted scoring, resource filtering)
 - Plugin registry, loader, and trust enforcement
 - Distributed agent registry, dispatcher, and master API
 - Dispatcher integration (feature flag gating, fallback behavior)

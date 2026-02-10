@@ -7,6 +7,7 @@
             [chengis.engine.executor :as executor]
             [chengis.engine.events :as events]
             [chengis.engine.scm-status :as scm-status]
+            [chengis.feature-flags :as ff]
             [chengis.metrics :as metrics]
             [taoensso.timbre :as log])
   (:import [java.time Instant]
@@ -54,6 +55,23 @@
   [build-id]
   (contains? @active-builds build-id))
 
+(defn- check-dedup
+  "Check for build deduplication. If a recent build for the same job+commit
+   exists within the configured window, returns it. Otherwise returns nil."
+  [system ds job-id pipeline parameters]
+  (when (ff/enabled? (:config system) :build-deduplication)
+    (let [window-minutes (get-in system [:config :deduplication :window-minutes] 10)
+          ;; We need the git commit. For webhook triggers, it's typically in parameters.
+          ;; For git-based pipelines, we check the source config.
+          git-commit (or (get-in parameters [:commit])
+                         (get-in parameters [:git-commit]))]
+      (when git-commit
+        (when-let [existing (build-store/find-recent-build-by-commit
+                              ds job-id git-commit window-minutes)]
+          (log/info "Build deduplication: reusing build" (:id existing)
+                    "for commit" git-commit "within" window-minutes "min window")
+          existing)))))
+
 (defn- persist-result!
   "Persist build results: update workspace, save stages/steps/git/pipeline-source."
   [ds build-id result]
@@ -81,6 +99,7 @@
 (defn execute-build!
   "Full build lifecycle: create record, execute, persist results.
    Used by CLI and scheduler (synchronous callers).
+   Checks for build deduplication before creating a new build record.
 
    Arguments:
      system       - system map with :config and :db
@@ -90,44 +109,48 @@
                     :event-fn    - fn for live event streaming (SSE)
                     :parameters  - build parameters map
 
-   Returns the build result map (augmented with :build-id and :build-number)."
+   Returns the build result map (augmented with :build-id and :build-number).
+   If deduplicated, returns the existing build record with :deduplicated? true."
   [system job trigger-type & [{:keys [event-fn parameters]}]]
-  (let [ds (:db system)
-        registry (:metrics system)
-        pipeline (:pipeline job)
-        build-record (build-store/create-build! ds
+  ;; Dedup check: if a recent build for the same commit exists, reuse it
+  (if-let [existing (check-dedup system (:db system) (:id job) (:pipeline job) parameters)]
+    (assoc existing :deduplicated? true)
+    (let [ds (:db system)
+          registry (:metrics system)
+          pipeline (:pipeline job)
+          build-record (build-store/create-build! ds
+                         (cond-> {:job-id (:id job)
+                                  :trigger-type trigger-type
+                                  :parameters parameters}
+                           (:org-id job) (assoc :org-id (:org-id job))))
+          build-id (:id build-record)
+          build-number (:build-number build-record)
+          cancelled-atom (atom false)
+          start-ns (System/nanoTime)]
+      (log/info "Build #" build-number "triggered for" (:name job)
+                "(id:" build-id "trigger:" (name trigger-type) ")")
+      (try (metrics/record-build-start! registry)
+           (catch Exception e (log/debug "Failed to record build-start metric:" (.getMessage e))))
+      (register-build! build-id cancelled-atom)
+      (try
+        (let [result (executor/run-build system pipeline
                        (cond-> {:job-id (:id job)
-                                :trigger-type trigger-type
-                                :parameters parameters}
-                         (:org-id job) (assoc :org-id (:org-id job))))
-        build-id (:id build-record)
-        build-number (:build-number build-record)
-        cancelled-atom (atom false)
-        start-ns (System/nanoTime)]
-    (log/info "Build #" build-number "triggered for" (:name job)
-              "(id:" build-id "trigger:" (name trigger-type) ")")
-    (try (metrics/record-build-start! registry)
-         (catch Exception e (log/debug "Failed to record build-start metric:" (.getMessage e))))
-    (register-build! build-id cancelled-atom)
-    (try
-      (let [result (executor/run-build system pipeline
-                     (cond-> {:job-id (:id job)
-                              :build-number build-number
-                              :cancelled? cancelled-atom}
-                       (:org-id job) (assoc :org-id (:org-id job))
-                       event-fn   (assoc :event-fn event-fn)
-                       parameters (assoc :parameters parameters)))]
-        (persist-result! ds build-id result)
-        (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
-          (try (metrics/record-build-end! registry (:build-status result) duration-s)
-               (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
-        (log/info "Build #" build-number "for" (:name job)
-                  "completed:" (name (:build-status result)))
-        (report-scm-status! system build-id (:id job) result
-          (:build-status result) (str "Build #" build-number " " (name (:build-status result))))
-        (assoc result :build-id build-id :build-number build-number))
-      (finally
-        (deregister-build! build-id)))))
+                                :build-number build-number
+                                :cancelled? cancelled-atom}
+                         (:org-id job) (assoc :org-id (:org-id job))
+                         event-fn   (assoc :event-fn event-fn)
+                         parameters (assoc :parameters parameters)))]
+          (persist-result! ds build-id result)
+          (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
+            (try (metrics/record-build-end! registry (:build-status result) duration-s)
+                 (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
+          (log/info "Build #" build-number "for" (:name job)
+                    "completed:" (name (:build-status result)))
+          (report-scm-status! system build-id (:id job) result
+            (:build-status result) (str "Build #" build-number " " (name (:build-status result))))
+          (assoc result :build-id build-id :build-number build-number))
+        (finally
+          (deregister-build! build-id))))))
 
 (defn execute-build-for-record!
   "Execute a build for a pre-created build record.

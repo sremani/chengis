@@ -116,7 +116,13 @@
     (:container yaml-stage)
     (assoc :container (:container yaml-stage))
     (:approval yaml-stage)
-    (assoc :approval (:approval yaml-stage))))
+    (assoc :approval (:approval yaml-stage))
+    (:depends-on yaml-stage)
+    (assoc :depends-on (vec (:depends-on yaml-stage)))
+    (:cache yaml-stage)
+    (assoc :cache (vec (:cache yaml-stage)))
+    (:resources yaml-stage)
+    (assoc :resources (:resources yaml-stage))))
 
 (defn- convert-yaml-post-steps
   "Convert a vector of YAML post-action steps."

@@ -62,7 +62,10 @@
                              (not (:step-name (first body)))
                              (not (:parallel? (first body)))
                              (or (:approval (first body))
-                                 (:container (first body))))
+                                 (:container (first body))
+                                 (:depends-on (first body))
+                                 (:cache (first body))
+                                 (:resources (first body))))
                       [(first body) (rest body)]
                       [nil body])
         ;; Flatten the body: parallel groups contribute :parallel? and :steps,
@@ -83,8 +86,11 @@
                       {:stage-name name :parallel? false :steps []}
                       body)]
     (cond-> items
-      (:approval opts)  (assoc :approval (:approval opts))
-      (:container opts) (assoc :container (:container opts)))))
+      (:approval opts)   (assoc :approval (:approval opts))
+      (:container opts)  (assoc :container (:container opts))
+      (:depends-on opts) (assoc :depends-on (:depends-on opts))
+      (:cache opts)      (assoc :cache (:cache opts))
+      (:resources opts)  (assoc :resources (:resources opts)))))
 
 ;; --- Post-build actions ---
 

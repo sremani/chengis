@@ -1,6 +1,7 @@
 (ns chengis.engine.executor
-  "Pipeline execution engine. Runs stages sequentially, steps within a stage
-   either sequentially or in parallel, handles failures and abort signals."
+  "Pipeline execution engine. Runs stages sequentially or in parallel (DAG mode),
+   steps within a stage either sequentially or in parallel, handles failures
+   and abort signals."
   (:require [clojure.core.async :refer [<!! thread]]
             [clojure.string :as str]
             [chengis.db.artifact-store :as artifact-store]
@@ -8,19 +9,24 @@
             [chengis.dsl.chengisfile :as chengisfile]
             [chengis.dsl.yaml :as yaml-parser]
             [chengis.engine.approval :as approval]
+            [chengis.engine.cache :as cache]
+            [chengis.engine.dag :as dag]
             [chengis.engine.policy :as policy]
+            [chengis.engine.stage-cache :as stage-cache]
             [chengis.engine.matrix :as matrix]
             [chengis.engine.artifacts :as artifacts]
             [chengis.engine.notify :as notify]
             [chengis.engine.git :as git]
             [chengis.engine.process :as process]
             [chengis.engine.workspace :as workspace]
+            [chengis.feature-flags :as ff]
             [chengis.metrics :as metrics]
             [chengis.plugin.protocol :as proto]
             [chengis.plugin.registry :as plugin-reg]
             [chengis.util :as util]
             [taoensso.timbre :as log])
-  (:import [java.time Instant]))
+  (:import [java.time Instant]
+           [java.util.concurrent Semaphore]))
 
 (defn- now []
   (str (Instant/now)))
@@ -165,7 +171,9 @@
                      (when (:pull-policy container-config)
                        {:pull-policy (:pull-policy container-config)})
                      (when (:docker-args container-config)
-                       {:docker-args (:docker-args container-config)}))
+                       {:docker-args (:docker-args container-config)})
+                     (when (:cache-volumes container-config)
+                       {:cache-volumes (:cache-volumes container-config)}))
               step-def))
           steps)))
 
@@ -262,6 +270,198 @@
         (when-let [result (run-post-action-group build-ctx "post:on-failure" (:on-failure post-actions))]
           (swap! results conj result)))
       @results)))
+
+;; ---------------------------------------------------------------------------
+;; Stage execution with policy + approval checks
+;; ---------------------------------------------------------------------------
+
+(defn- execute-stage-with-checks
+  "Run a single stage through the cache → policy → approval → execution pipeline.
+   Includes build result caching (skip if cached) and artifact cache restore/save.
+   Returns a stage result map. Used by both sequential and DAG execution."
+  [system build-ctx stage-def]
+  ;; 0. Build result cache check (skip stage if inputs match a previous success)
+  (let [cache-check (stage-cache/should-skip-stage? system build-ctx stage-def)]
+    (if (:skip? cache-check)
+      (do
+        (log/info "Stage" (:stage-name stage-def) "skipped (cached result)")
+        (emit build-ctx :stage-cached {:stage-name (:stage-name stage-def)})
+        (:cached-result cache-check))
+      ;; 1. Policy check (can deny outright or override approval requirements)
+      (let [policy-result (policy/check-stage-policies! system build-ctx stage-def)]
+        (if-not (:proceed policy-result)
+          ;; Policy denied — abort
+          (do
+            (log/warn "Stage" (:stage-name stage-def)
+                      "blocked by policy:" (:reason policy-result))
+            (emit build-ctx :stage-policy-denied
+                  {:stage-name (:stage-name stage-def)
+                   :reason (:reason policy-result)})
+            {:stage-name (:stage-name stage-def)
+             :stage-status :aborted
+             :step-results []
+             :reason (:reason policy-result)})
+          ;; 2. Apply approval overrides from policy, then check approval
+          (let [effective-stage (if-let [overrides (:approval-overrides policy-result)]
+                                  (policy/apply-approval-overrides stage-def overrides)
+                                  stage-def)
+                approval-result (approval/check-stage-approval!
+                                  system build-ctx effective-stage)]
+            (if-not (:proceed approval-result)
+              ;; Approval denied/timed-out — abort
+              (do
+                (log/warn "Stage" (:stage-name stage-def)
+                          "approval denied:" (:reason approval-result))
+                (emit build-ctx :stage-skipped
+                      {:stage-name (:stage-name stage-def)
+                       :reason (:reason approval-result)})
+                {:stage-name (:stage-name stage-def)
+                 :stage-status :aborted
+                 :step-results []
+                 :reason (:reason approval-result)})
+              ;; 3. Cache restore (before stage execution)
+              (let [_ (when-let [cache-decls (:cache stage-def)]
+                        (try
+                          (cache/restore-cache!
+                            (:workspace build-ctx) (:config system) (:db system)
+                            (:job-id build-ctx) cache-decls)
+                          (catch Exception e
+                            (log/debug "Cache restore failed:" (.getMessage e)))))
+                    ;; 4. Run stage
+                    result (run-stage build-ctx stage-def)]
+                ;; 5. Cache save (after successful stage)
+                (when (and (= :success (:stage-status result))
+                           (seq (:cache stage-def)))
+                  (try
+                    (cache/save-cache!
+                      (:workspace build-ctx) (:config system) (:db system)
+                      (:job-id build-ctx) (:cache stage-def))
+                    (catch Exception e
+                      (log/debug "Cache save failed:" (.getMessage e)))))
+                ;; 6. Save stage result to cache for future builds
+                (when (and (= :success (:stage-status result))
+                           (:fingerprint cache-check))
+                  (try
+                    (stage-cache/save-stage-result!
+                      (:db system)
+                      {:job-id (:job-id build-ctx)
+                       :fingerprint (:fingerprint cache-check)
+                       :stage-name (:stage-name stage-def)
+                       :stage-result result
+                       :git-commit (get-in build-ctx [:env "GIT_COMMIT"])
+                       :org-id (:org-id build-ctx)})
+                    (catch Exception e
+                      (log/debug "Stage cache save failed:" (.getMessage e)))))
+                result))))))))
+
+
+;; ---------------------------------------------------------------------------
+;; Sequential stage execution (original behavior)
+;; ---------------------------------------------------------------------------
+
+(defn- run-stages-sequential
+  "Run stages in sequential order. Stops on first failure or cancellation.
+   This is the original execution mode, used when no :depends-on is present."
+  [system build-ctx stages]
+  (reduce (fn [results stage-def]
+            (if (cancelled? build-ctx)
+              (reduced results)
+              (let [result (execute-stage-with-checks system build-ctx stage-def)
+                    updated (conj results result)]
+                (if (#{:failure :aborted} (:stage-status result))
+                  (do
+                    (log/error "Pipeline stopped: stage"
+                               (:stage-name stage-def)
+                               (name (:stage-status result)))
+                    (reduced updated))
+                  updated))))
+          []
+          stages))
+
+;; ---------------------------------------------------------------------------
+;; DAG-based parallel stage execution
+;; ---------------------------------------------------------------------------
+
+(defn- run-stages-dag
+  "Run stages in parallel according to their :depends-on DAG.
+   Stages with no dependencies (or empty deps) start immediately.
+   Stages wait until all their dependencies have completed successfully.
+   On failure/abort, downstream dependents are skipped.
+
+   Uses a semaphore to limit concurrent stage execution."
+  [system build-ctx stages]
+  (let [dag-map (dag/build-dag stages)
+        max-concurrent (get-in system [:config :parallel-stages :max-concurrent] 4)
+        semaphore (Semaphore. max-concurrent)
+        ;; Track results and state
+        completed (atom #{})       ;; set of completed stage names
+        failed (atom #{})          ;; set of failed/aborted stage names
+        results (atom [])          ;; ordered results vector
+        stage-map (into {} (map (fn [s] [(:stage-name s) s]) stages))]
+    (log/info "DAG execution mode: max-concurrent=" max-concurrent
+              "stages=" (count stages))
+    (loop []
+      (when-not (cancelled? build-ctx)
+        (let [ready (dag/ready-stages dag-map @completed)
+              ;; Remove stages that are already done or currently being processed
+              all-done (into @completed @failed)
+              remaining (remove #(contains? all-done %) (keys dag-map))
+              runnable (remove #(contains? all-done %) ready)]
+          (if (and (empty? runnable) (seq remaining))
+            ;; Stages remain but none are runnable — check if they have failed deps
+            (let [blocked (filter (fn [stage-name]
+                                    (let [deps (get dag-map stage-name)]
+                                      (some #(contains? @failed %) deps)))
+                                  remaining)]
+              (if (seq blocked)
+                ;; Mark blocked stages as skipped due to failed dependencies
+                (do
+                  (doseq [stage-name blocked]
+                    (let [result {:stage-name stage-name
+                                  :stage-status :aborted
+                                  :step-results []
+                                  :reason "Dependency failed"}]
+                      (log/warn "Stage" stage-name "skipped: dependency failed")
+                      (emit build-ctx :stage-skipped
+                            {:stage-name stage-name :reason "Dependency failed"})
+                      (swap! results conj result)
+                      (swap! failed conj stage-name)))
+                  (recur))
+                ;; Stages still waiting for deps — wait and retry
+                (do
+                  (Thread/sleep 50)
+                  (recur))))
+            (when (seq runnable)
+              ;; Launch ready stages in parallel (bounded by semaphore)
+              (let [futures (doall
+                              (map (fn [stage-name]
+                                     (let [stage-def (get stage-map stage-name)]
+                                       (thread
+                                         (.acquire semaphore)
+                                         (try
+                                           (let [result (execute-stage-with-checks
+                                                          system build-ctx stage-def)]
+                                             {:stage-name stage-name
+                                              :result result})
+                                           (finally
+                                             (.release semaphore))))))
+                                   runnable))
+                    ;; Wait for all launched stages to complete
+                    stage-results (mapv <!! futures)]
+                ;; Process results
+                (doseq [{:keys [stage-name result]} stage-results]
+                  (swap! results conj result)
+                  (if (#{:failure :aborted} (:stage-status result))
+                    (swap! failed conj stage-name)
+                    (swap! completed conj stage-name)))
+                ;; Continue if there are more stages to run
+                (when (< (+ (count @completed) (count @failed)) (count dag-map))
+                  (recur))))))))
+    @results))
+
+;; ---------------------------------------------------------------------------
+;; Build entry point
+;; ---------------------------------------------------------------------------
 
 (defn run-build
   "Execute a complete build for a pipeline definition.
@@ -439,57 +639,14 @@
                                                          :max max-combos)
                                    pre-matrix-stages)]
             (emit build-ctx :build-started {:job-id job-id :build-number build-number})
-            (let [stage-results
-                  (reduce (fn [results stage-def]
-                            (if (cancelled? build-ctx)
-                              (reduced results)
-                              ;; 1. Policy check (can deny outright or override approval requirements)
-                              (let [policy-result (policy/check-stage-policies!
-                                                    system build-ctx stage-def)]
-                                (if-not (:proceed policy-result)
-                                  ;; Policy denied — abort
-                                  (do
-                                    (log/warn "Stage" (:stage-name stage-def)
-                                              "blocked by policy:" (:reason policy-result))
-                                    (emit build-ctx :stage-policy-denied
-                                          {:stage-name (:stage-name stage-def)
-                                           :reason (:reason policy-result)})
-                                    (reduced (conj results
-                                               {:stage-name (:stage-name stage-def)
-                                                :stage-status :aborted
-                                                :step-results []
-                                                :reason (:reason policy-result)})))
-                                  ;; 2. Apply approval overrides from policy, then check approval
-                                  (let [effective-stage (if-let [overrides (:approval-overrides policy-result)]
-                                                          (policy/apply-approval-overrides stage-def overrides)
-                                                          stage-def)
-                                        approval-result (approval/check-stage-approval!
-                                                          system build-ctx effective-stage)]
-                                    (if-not (:proceed approval-result)
-                                      ;; Approval denied/timed-out — abort pipeline
-                                      (do
-                                        (log/warn "Stage" (:stage-name stage-def)
-                                                  "approval denied:" (:reason approval-result))
-                                        (emit build-ctx :stage-skipped
-                                              {:stage-name (:stage-name stage-def)
-                                               :reason (:reason approval-result)})
-                                        (reduced (conj results
-                                                   {:stage-name (:stage-name stage-def)
-                                                    :stage-status :aborted
-                                                    :step-results []
-                                                    :reason (:reason approval-result)})))
-                                      ;; Approval granted (or not required) — run stage
-                                      (let [result (run-stage build-ctx stage-def)]
-                                        (let [updated (conj results result)]
-                                          (if (#{:failure :aborted} (:stage-status result))
-                                            (do
-                                              (log/error "Pipeline stopped: stage"
-                                                         (:stage-name stage-def)
-                                                         (name (:stage-status result)))
-                                              (reduced updated))
-                                            updated)))))))))
-                          []
-                          effective-stages)
+            (let [;; Choose execution mode: DAG (parallel) or sequential
+                  use-dag? (and (dag/has-dag? effective-stages)
+                                (ff/enabled? (:config system) :parallel-stage-execution))
+                  stage-results
+                  (if use-dag?
+                    (do (log/info "Using DAG execution mode")
+                        (run-stages-dag system build-ctx effective-stages))
+                    (run-stages-sequential system build-ctx effective-stages))
                   any-failed? (some #(= :failure (:stage-status %)) stage-results)
                   any-aborted? (some #(= :aborted (:stage-status %)) stage-results)
                   build-status (cond

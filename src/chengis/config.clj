@@ -125,6 +125,11 @@
    :templates {:enabled true
                :max-depth 3}
    :matrix {:max-combinations 25}
+   :parallel-stages {:max-concurrent 4}
+   :cache {:root "cache"
+           :max-size-gb 10
+           :retention-days 30}
+   :deduplication {:window-minutes 10}
    :ha {:enabled false
         :leader-poll-ms 15000
         :instance-id nil}      ;; defaults to "standalone" if nil; set from K8s pod name via CHENGIS_HA_INSTANCE_ID
@@ -132,7 +137,14 @@
                    :artifact-checksums false
                    :compliance-reports false
                    :distributed-dispatch false
-                   :persistent-agents true}
+                   :persistent-agents true
+                   :parallel-stage-execution false
+                   :docker-layer-cache false
+                   :artifact-cache false
+                   :build-result-cache false
+                   :resource-aware-scheduling false
+                   :incremental-artifacts false
+                   :build-deduplication false}
    :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
@@ -204,7 +216,20 @@
    "CHENGIS_FEATURE_POLICY_ENGINE"              [:feature-flags :policy-engine]
    "CHENGIS_FEATURE_ARTIFACT_CHECKSUMS"         [:feature-flags :artifact-checksums]
    "CHENGIS_FEATURE_COMPLIANCE_REPORTS"         [:feature-flags :compliance-reports]
-   "CHENGIS_POLICIES_EVALUATION_TIMEOUT_MS"     [:policies :evaluation-timeout-ms]})
+   "CHENGIS_POLICIES_EVALUATION_TIMEOUT_MS"     [:policies :evaluation-timeout-ms]
+   ;; Phase 4: Build Performance & Caching
+   "CHENGIS_FEATURE_PARALLEL_STAGES"            [:feature-flags :parallel-stage-execution]
+   "CHENGIS_PARALLEL_STAGES_MAX"                [:parallel-stages :max-concurrent]
+   "CHENGIS_FEATURE_DOCKER_LAYER_CACHE"         [:feature-flags :docker-layer-cache]
+   "CHENGIS_FEATURE_ARTIFACT_CACHE"             [:feature-flags :artifact-cache]
+   "CHENGIS_CACHE_ROOT"                         [:cache :root]
+   "CHENGIS_CACHE_MAX_SIZE_GB"                  [:cache :max-size-gb]
+   "CHENGIS_CACHE_RETENTION_DAYS"               [:cache :retention-days]
+   "CHENGIS_FEATURE_BUILD_RESULT_CACHE"         [:feature-flags :build-result-cache]
+   "CHENGIS_FEATURE_RESOURCE_SCHEDULING"        [:feature-flags :resource-aware-scheduling]
+   "CHENGIS_FEATURE_INCREMENTAL_ARTIFACTS"      [:feature-flags :incremental-artifacts]
+   "CHENGIS_FEATURE_BUILD_DEDUP"                [:feature-flags :build-deduplication]
+   "CHENGIS_DEDUP_WINDOW_MINUTES"               [:deduplication :window-minutes]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.

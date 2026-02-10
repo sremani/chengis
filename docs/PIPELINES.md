@@ -10,7 +10,10 @@ This guide walks through the example pipelines included with Chengis, from simpl
 - [4. C# CI with .NET (dotnet-demo.clj)](#4-c-ci-with-net)
 - [5. Self-Hosting Build (chengis.clj)](#5-self-hosting-build)
 - [6. Writing Your Own Pipeline](#6-writing-your-own-pipeline)
-- [7. Pipeline as Code (Chengisfile)](#7-pipeline-as-code)
+- [7. Parallel Stages (DAG Mode)](#7-parallel-stages-dag-mode)
+- [8. Dependency Caching](#8-dependency-caching)
+- [9. Docker Layer Caching](#9-docker-layer-caching)
+- [10. Pipeline as Code (Chengisfile)](#10-pipeline-as-code)
 
 ---
 
@@ -323,10 +326,169 @@ lein run -- build trigger my-project
 | `on-failure` | Runs after failure only | `(on-failure (step "Alert" ...))` |
 | `artifacts` | Collect files by glob | `(artifacts "target/*.jar")` |
 | `notify` | Send notifications | `(notify :slack {:webhook-url "..."})` |
+| `matrix` | Parameter combinations | `(matrix {:os ["linux" "macos"]})` |
+| `:depends-on` | Stage dependencies (DAG) | `(stage "Test" {:depends-on ["Build"]} ...)` |
+| `:cache` | Dependency caching | `(stage "Build" {:cache [{:key "..." :paths [...]}]} ...)` |
+| `:cache-volumes` | Docker layer cache | `{:container {:cache-volumes {"npm" "/root/.npm"}}}` |
 
 ---
 
-## 7. Pipeline as Code
+## 7. Parallel Stages (DAG Mode)
+
+When stages declare `:depends-on`, Chengis runs independent stages in parallel using a DAG (Directed Acyclic Graph) scheduler.
+
+### Clojure DSL
+
+```clojure
+(defpipeline my-app
+  {:description "Parallel build pipeline"}
+
+  (stage "Build"
+    (step "Compile" (sh "mvn compile")))
+
+  ;; Unit Tests and Lint run in parallel (both depend only on Build)
+  (stage "Unit Tests" {:depends-on ["Build"]}
+    (step "Test" (sh "mvn test")))
+
+  (stage "Lint" {:depends-on ["Build"]}
+    (step "Checkstyle" (sh "mvn checkstyle:check")))
+
+  ;; Deploy waits for both Unit Tests and Lint to succeed
+  (stage "Deploy" {:depends-on ["Unit Tests" "Lint"]}
+    (step "Deploy" (sh "./deploy.sh"))))
+```
+
+### YAML
+
+```yaml
+stages:
+  - name: Build
+    steps:
+      - name: Compile
+        run: mvn compile
+
+  - name: Unit Tests
+    depends-on: [Build]
+    steps:
+      - name: Test
+        run: mvn test
+
+  - name: Lint
+    depends-on: [Build]
+    steps:
+      - name: Checkstyle
+        run: mvn checkstyle:check
+
+  - name: Deploy
+    depends-on: [Unit Tests, Lint]
+    steps:
+      - name: Deploy
+        run: ./deploy.sh
+```
+
+**What it demonstrates:**
+- `Build` runs first (no dependencies)
+- `Unit Tests` and `Lint` start concurrently once `Build` succeeds
+- `Deploy` waits for both `Unit Tests` and `Lint` to complete
+- If any stage fails, its downstream dependents are cancelled
+
+**Notes:**
+- Requires feature flag: `:parallel-stage-execution true`
+- Max concurrent stages configurable via `:parallel-stages {:max-concurrent 4}`
+- Pipelines without `:depends-on` run sequentially (backward compatible)
+- Cycle detection prevents invalid dependency graphs
+
+---
+
+## 8. Dependency Caching
+
+Cache dependency directories (e.g., `node_modules`, `~/.m2`) between builds using content-addressable keys.
+
+### Clojure DSL
+
+```clojure
+(stage "Build"
+  {:cache [{:key "npm-{{ hashFiles('package-lock.json') }}"
+            :paths ["node_modules"]
+            :restore-keys ["npm-"]}]}
+  (step "Install" (sh "npm ci"))
+  (step "Build" (sh "npm run build")))
+```
+
+### YAML
+
+```yaml
+stages:
+  - name: Build
+    cache:
+      - key: "npm-{{ hashFiles('package-lock.json') }}"
+        paths: [node_modules]
+        restore-keys: [npm-]
+    steps:
+      - name: Install
+        run: npm ci
+      - name: Build
+        run: npm run build
+```
+
+**How it works:**
+1. Before the stage runs, Chengis resolves `{{ hashFiles('...') }}` by computing SHA-256 of the specified files
+2. It looks for a cached directory matching the exact key (e.g., `npm-a1b2c3d4...`)
+3. If no exact match, it tries each `restore-keys` prefix (e.g., any key starting with `npm-`)
+4. After the stage succeeds, workspace paths are saved to the cache (immutable: never overwritten)
+
+**Notes:**
+- Requires feature flag: `:artifact-cache true`
+- Cache storage configurable: `:cache {:root "cache" :max-size-gb 10 :retention-days 30}`
+- Cache entries are immutable (first-write-wins) for deterministic builds
+
+---
+
+## 9. Docker Layer Caching
+
+Use persistent Docker named volumes to cache package manager directories across builds.
+
+### Clojure DSL
+
+```clojure
+(stage "Build"
+  {:container {:image "node:18"
+               :cache-volumes {"npm-cache" "/root/.npm"
+                               "build-cache" "/app/.cache"}}}
+  (step "Install" (sh "npm ci"))
+  (step "Build" (sh "npm run build")))
+```
+
+### YAML
+
+```yaml
+stages:
+  - name: Build
+    container:
+      image: node:18
+      cache-volumes:
+        npm-cache: /root/.npm
+        build-cache: /app/.cache
+    steps:
+      - name: Install
+        run: npm ci
+      - name: Build
+        run: npm run build
+```
+
+**How it works:**
+- Cache volumes are mounted as Docker named volumes (not bind mounts)
+- Named volumes persist across container removals and are shared across builds on the same agent
+- Volume names must be alphanumeric + hyphens; mount paths must be absolute
+
+**Notes:**
+- Requires feature flag: `:docker-layer-cache true`
+- Volume name validation: `[a-zA-Z0-9-]+`
+- Mount path validation: absolute paths only, no `..` traversal
+
+---
+
+## 10. Pipeline as Code
 
 Instead of defining pipelines on the server, you can commit a `Chengisfile` directly in your repository.
 

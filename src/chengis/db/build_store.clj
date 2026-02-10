@@ -338,6 +338,34 @@
          (sql/format base-query)
          {:builder-fn rs/as-unqualified-kebab-maps})))))
 
+;; --- Build deduplication ---
+
+(defn find-recent-build-by-commit
+  "Find a recent successful or in-progress build for the same job+commit.
+   Used for build deduplication: if a matching build exists within the
+   time window, the new build can be skipped.
+   Formats cutoff as 'YYYY-MM-DD HH:MM:SS' to match SQLite datetime('now') format.
+   Returns the build map or nil if no match found."
+  [ds job-id git-commit window-minutes]
+  (when (and (seq git-commit) (pos? window-minutes))
+    (let [cutoff-instant (.minus (java.time.Instant/now)
+                                 (java.time.Duration/ofMinutes window-minutes))
+          ;; Format as 'YYYY-MM-DD HH:MM:SS' to match SQLite's datetime('now') format
+          cutoff (.format (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss")
+                          (.atZone cutoff-instant (java.time.ZoneOffset/UTC)))]
+      (normalize-build
+        (jdbc/execute-one! ds
+          (sql/format {:select :*
+                       :from :builds
+                       :where [:and
+                               [:= :job-id job-id]
+                               [:= :git-commit git-commit]
+                               [:in :status ["success" "running" "queued"]]
+                               [:> :created-at cutoff]]
+                       :order-by [[:created-at :desc]]
+                       :limit 1})
+          {:builder-fn rs/as-unqualified-kebab-maps})))))
+
 ;; --- Attempt tracking ---
 
 (defn get-root-build-id

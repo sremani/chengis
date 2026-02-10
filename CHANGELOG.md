@@ -2,6 +2,119 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [Unreleased] — Phase 4: Build Performance & Caching
+
+### Feature 4a: Parallel Stage Execution (DAG Mode)
+
+- **DAG-based execution** — Stages can declare `:depends-on` for parallel execution; independent stages run concurrently
+- **Kahn's topological sort** — Validates dependency graph, detects cycles, ensures all dependencies exist
+- **Bounded concurrency** — `Semaphore`-based limit on parallel stages (configurable via `:parallel-stages {:max-concurrent 4}`)
+- **Failure propagation** — Stage failure cancels all downstream dependents
+- **Backward compatible** — No `:depends-on` → sequential mode (existing behavior unchanged)
+- **DSL + YAML support** — `:depends-on` works in Clojure DSL, Chengisfile EDN, and YAML workflows
+- **New source**: `src/chengis/engine/dag.clj` — DAG utilities (build-dag, topological-sort, ready-stages, has-dag?)
+
+### Feature 4b: Docker Layer Caching
+
+- **Persistent named volumes** — `:cache-volumes` in container config mounts Docker named volumes for dependency caches
+- **Cross-build persistence** — Named volumes survive container removal, shared across builds on the same agent
+- **Volume name validation** — Alphanumeric + hyphens only; rejects invalid characters
+- **Mount path validation** — Absolute paths required; rejects relative paths, path traversal (`..`), and special characters
+- **Container propagation** — Cache volumes propagate from pipeline-level → stage-level → step-level container config
+
+### Feature 4c: Artifact/Dependency Caching
+
+- **Content-addressable cache** — Cache keyed by `{{ hashFiles('package-lock.json') }}` SHA-256 expressions
+- **Restore-keys prefix matching** — Fallback to partial cache matches when exact key misses
+- **Immutable cache entries** — Once saved, cache entries are never overwritten (first-write-wins)
+- **Configurable retention** — Evict cache entries older than N days (default 30)
+- **Streaming file hashing** — 8KB buffer for SHA-256 computation to avoid OOM on large files
+- **New source**: `src/chengis/engine/cache.clj`, `src/chengis/db/cache_store.clj`
+- **Migration 037** — `cache_entries` table with UNIQUE(job_id, cache_key)
+
+### Feature 4d: Build Result Caching
+
+- **Stage fingerprinting** — SHA-256 of `git-commit | stage-name | sorted commands | sorted stable-env`
+- **Build-specific env exclusion** — BUILD_ID, BUILD_NUMBER, WORKSPACE, JOB_NAME excluded from fingerprint to prevent false cache misses
+- **Cache hit → skip** — Matching fingerprint with successful status skips stage execution, reuses cached results
+- **New source**: `src/chengis/engine/stage_cache.clj`
+- **Migration 038** — `stage_cache` table with UNIQUE(job_id, fingerprint)
+
+### Feature 4e: Resource-Aware Agent Scheduling
+
+- **Weighted scoring** — `score = (1 - load_ratio) × 0.6 + cpu_score × 0.2 + memory_score × 0.2`
+- **Minimum resource filtering** — Exclude agents below required CPU cores or memory GB
+- **Backward compatible** — No resource requirements → original least-loaded selection
+- **Stage-level resources** — `:resources {:cpu 4 :memory 8}` on stage definitions in DSL and YAML
+
+### Feature 4f: Incremental Artifact Storage
+
+- **Block-level delta compression** — Files split into 4KB blocks, MD5 hash per block, store only changed blocks
+- **Savings threshold** — Delta applied only when >20% storage savings achieved
+- **Appended block support** — Handles files that grow beyond previous version length
+- **New source**: `src/chengis/engine/artifact_delta.clj`
+- **Migration 039** — `delta_base_id`, `is_delta`, `original_size_bytes` columns on `build_artifacts`
+
+### Feature 4g: Build Deduplication
+
+- **Commit-based dedup** — Skip redundant builds on the same job + git commit within a configurable time window
+- **Configurable window** — Default 10 minutes via `:deduplication {:window-minutes 10}`
+- **Status filtering** — Only dedup against successful, running, or queued builds; failed builds always re-run
+- **SQLite datetime compatibility** — Cutoff formatted as `yyyy-MM-dd HH:mm:ss` for cross-DB compatibility
+
+### Code Review Fixes (8 bugs resolved)
+
+- **Stage fingerprint env exclusion** — BUILD_ID, BUILD_NUMBER, WORKSPACE, JOB_NAME no longer cause false cache misses
+- **apply-delta appended blocks** — Delta reconstruction now handles files that grow beyond base file length
+- **SQLite datetime format** — `find-recent-build-by-commit` and `delete-cache-entries!` use `yyyy-MM-dd HH:mm:ss` format instead of ISO-8601 for SQLite compatibility
+- **cache.clj streaming hash** — `sha256-file` uses 8KB streaming buffer instead of `Files/readAllBytes` to avoid OOM
+- **cache.clj null guard** — `copy-directory!` and `directory-size` handle null `.listFiles()` results
+- **docker.clj mount path validation** — New `validate-mount-path!` rejects relative paths, path traversal, and special characters
+- **build_runner.clj dedup wiring** — `check-dedup` now called at top of `execute-build!` (was dead code)
+
+### New Feature Flags (7)
+
+| Flag | Default | Feature |
+|------|---------|---------|
+| `:parallel-stage-execution` | `false` | DAG-based parallel stage execution |
+| `:docker-layer-cache` | `false` | Docker layer caching via named volumes |
+| `:artifact-cache` | `false` | Content-addressable dependency caching |
+| `:build-result-cache` | `false` | Stage fingerprint result caching |
+| `:resource-aware-scheduling` | `false` | CPU/memory-aware agent dispatch |
+| `:incremental-artifacts` | `false` | Block-level delta compression |
+| `:build-deduplication` | `false` | Commit-based build dedup |
+
+### New Environment Variables (12)
+
+| Variable | Config Path | Default |
+|----------|-------------|---------|
+| `CHENGIS_FEATURE_PARALLEL_STAGES` | `[:feature-flags :parallel-stage-execution]` | `false` |
+| `CHENGIS_PARALLEL_STAGES_MAX` | `[:parallel-stages :max-concurrent]` | `4` |
+| `CHENGIS_FEATURE_DOCKER_LAYER_CACHE` | `[:feature-flags :docker-layer-cache]` | `false` |
+| `CHENGIS_FEATURE_ARTIFACT_CACHE` | `[:feature-flags :artifact-cache]` | `false` |
+| `CHENGIS_CACHE_ROOT` | `[:cache :root]` | `cache` |
+| `CHENGIS_CACHE_MAX_SIZE_GB` | `[:cache :max-size-gb]` | `10` |
+| `CHENGIS_CACHE_RETENTION_DAYS` | `[:cache :retention-days]` | `30` |
+| `CHENGIS_FEATURE_BUILD_RESULT_CACHE` | `[:feature-flags :build-result-cache]` | `false` |
+| `CHENGIS_FEATURE_RESOURCE_SCHEDULING` | `[:feature-flags :resource-aware-scheduling]` | `false` |
+| `CHENGIS_FEATURE_INCREMENTAL_ARTIFACTS` | `[:feature-flags :incremental-artifacts]` | `false` |
+| `CHENGIS_FEATURE_BUILD_DEDUP` | `[:feature-flags :build-deduplication]` | `false` |
+| `CHENGIS_DEDUP_WINDOW_MINUTES` | `[:deduplication :window-minutes]` | `10` |
+
+### Migrations 037-039
+
+- 037: `cache_entries` table for artifact/dependency cache metadata
+- 038: `stage_cache` table for build result caching (stage fingerprints)
+- 039: `build_artifacts` table gains `delta_base_id`, `is_delta`, `original_size_bytes` columns
+
+### Test Suite
+- **587 tests, 2,275 assertions — all passing**
+- 88 test files across 7 test subdirectories
+- 62 new tests added in Phase 4 + code review
+- New test files: dag_test, executor_dag_test, docker_cache_test, cache_test, cache_store_test, stage_cache_test, resource_scheduling_test, artifact_delta_test, build_dedup_test
+
+---
+
 ## [Unreleased] — Security Review II
 
 ### Security Fixes (5 findings, all resolved)
@@ -730,4 +843,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 525 passed, 2,126 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 587 passed, 2,275 assertions | varies | SUCCESS |

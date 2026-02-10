@@ -231,14 +231,46 @@
 ;; Agent selection
 ;; ---------------------------------------------------------------------------
 
+(defn- score-agent
+  "Score an agent for resource-aware scheduling.
+   Higher score = more preferred.
+   Formula: (1 - load_ratio) * 0.6 + cpu_score * 0.2 + memory_score * 0.2"
+  [agent]
+  (let [load-ratio (/ (double (:current-builds agent 0))
+                      (double (max 1 (:max-builds agent 2))))
+        si (:system-info agent)
+        cpu-score (if si
+                    (min 1.0 (/ (double (:cpu-count si 1)) 16.0))
+                    0.5)
+        mem-score (if si
+                    (min 1.0 (/ (double (:memory-gb si 1)) 32.0))
+                    0.5)]
+    (+ (* (- 1.0 load-ratio) 0.6)
+       (* cpu-score 0.2)
+       (* mem-score 0.2))))
+
+(defn- meets-resource-requirements?
+  "Check if an agent meets the specified resource requirements."
+  [agent resources]
+  (if resources
+    (let [si (:system-info agent)]
+      (and (or (nil? (:cpu resources))
+               (and si (>= (:cpu-count si 0) (:cpu resources))))
+           (or (nil? (:memory resources))
+               (and si (>= (:memory-gb si 0) (:memory resources))))))
+    true))
+
 (defn find-available-agent
-  "Find an available agent matching the given labels and org context.
+  "Find an available agent matching the given labels, org context, and resource requirements.
    When org-id is provided, considers agents assigned to that org plus shared agents (nil org-id).
    When org-id is nil, considers all agents (backward compatible).
+   When resources is provided and resource-aware-scheduling feature flag is enabled,
+   filters by CPU/memory and ranks by weighted score.
    Returns the agent record or nil if none available.
-   Selection strategy: least loaded agent matching all labels."
-  [required-labels & {:keys [org-id]}]
-  (let [candidates (->> (vals @agents)
+   Selection strategy: resource-aware scoring (if enabled) or least loaded."
+  [required-labels & {:keys [org-id resources]}]
+  (let [resource-aware? (get-in @config-ref [:feature-flags :resource-aware-scheduling])
+        candidates (->> (vals @agents)
                         (filter agent-available?)
                         ;; Filter by org context when provided
                         (filter (fn [agent]
@@ -250,8 +282,16 @@
                                   (if (seq required-labels)
                                     (every? (:labels agent) required-labels)
                                     true)))
-                        (sort-by :current-builds))]
-    (first candidates)))
+                        ;; Filter by resource requirements when resource-aware scheduling is enabled
+                        (filter (fn [agent]
+                                  (if (and resource-aware? resources)
+                                    (meets-resource-requirements? agent resources)
+                                    true))))]
+    (if resource-aware?
+      ;; Score-based selection
+      (first (sort-by (fn [a] (- (score-agent a))) candidates))
+      ;; Original: least-loaded selection
+      (first (sort-by :current-builds candidates)))))
 
 (defn increment-builds!
   "Increment the current build count for an agent.

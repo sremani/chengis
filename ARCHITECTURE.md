@@ -77,6 +77,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   events.clj   scheduler.clj   cleanup.clj   log_masker.clj  |
 |   docker.clj   matrix.clj   retention.clj   approval.clj     |
 |   scm_status.clj   compliance.clj   policy.clj               |
+|   dag.clj   cache.clj   stage_cache.clj   artifact_delta.clj |
 +---------------------------------------------------------------+
 |                    Metrics & Observability Layer               |
 |   metrics.clj   logging.clj                                  |
@@ -125,7 +126,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/approval_store.clj  db/template_store.clj                |
 |   db/policy_store.clj  db/compliance_store.clj                |
 |   db/plugin_policy_store.clj  db/docker_policy_store.clj      |
-|   db/agent_store.clj                                          |
+|   db/agent_store.clj   db/cache_store.clj                     |
 |   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |
@@ -184,29 +185,54 @@ Executor: Matrix Expansion
   |-- Max combinations enforced (default 25) to prevent explosion
   |
   v
-Executor: Stage Execution (sequential)
+Executor: Build Deduplication (if enabled)
+  |-- Compute commit fingerprint
+  |-- Check for recent successful/running build on same commit
+  |-- If match found within dedup window: return existing build
   |
-  |  For each stage:
+  v
+Executor: Stage Execution (sequential or DAG-parallel)
+  |
+  |  Mode selection:
+  |    |-- Any stage has :depends-on? → DAG mode (parallel)
+  |    |-- Otherwise → sequential mode (default)
+  |
+  |  DAG mode:
+  |    |-- Build dependency graph from :depends-on declarations
+  |    |-- Topological sort (Kahn's algorithm, detect cycles)
+  |    |-- Launch ready stages concurrently (bounded semaphore)
+  |    |-- Collect results, fail downstream dependents on failure
+  |
+  |  For each stage (sequential or when ready in DAG):
   |    |-- Check cancellation flag
+  |    |-- Check build result cache (stage fingerprint)
+  |    |    |-- SHA-256(git-commit | stage-name | commands | stable-env)
+  |    |    |-- If cache hit: emit :stage-cached, skip execution
+  |    |-- Check policy engine (if configured)
   |    |-- Check approval gate (if configured)
   |    |    |-- Create approval record in DB
   |    |    |-- Emit :approval-required event (shown in UI)
   |    |    |-- Wait for approve/reject/timeout
   |    |    |-- If rejected or timed out: mark build as failed
+  |    |-- Restore artifact/dependency cache (if :cache declared)
+  |    |    |-- Resolve {{ hashFiles('...') }} for cache key
+  |    |    |-- Try exact key match, then restore-keys prefix match
   |    |-- Emit :stage-started event
   |    |
   |    |  For each step (sequential or parallel):
   |    |    |-- Evaluate conditions (branch, param)
   |    |    |-- Look up StepExecutor plugin by :type
   |    |    |    :shell → ShellExecutor (babashka/process)
-  |    |    |    :docker → DockerExecutor (docker run command)
+  |    |    |    :docker → DockerExecutor (docker run + cache volumes)
   |    |    |    :docker-compose → DockerComposeExecutor
   |    |    |-- Execute step, capture stdout/stderr (masked)
   |    |    |-- Emit :step-completed event
   |    |    |-- Record result in DB
   |    |
+  |    |-- Save artifact/dependency cache (on success)
+  |    |-- Save build result cache (stage fingerprint → result)
   |    |-- Emit :stage-completed event
-  |    |-- If stage fails: skip remaining stages
+  |    |-- If stage fails: skip remaining stages (or cancel dependents in DAG)
   |
   v
 Executor: Post-Build Actions
@@ -219,7 +245,12 @@ Executor: Post-Build Actions
 Executor: Artifact Collection
   |-- Match glob patterns against workspace files
   |-- Copy matching files to persistent artifact directory
-  |-- Record metadata in DB (filename, size, content-type)
+  |-- Compute SHA-256 checksums for integrity verification
+  |-- Record metadata in DB (filename, size, content-type, checksum)
+  |-- If incremental artifacts enabled:
+  |    |-- Compare against previous build's artifacts (block-level delta)
+  |    |-- 4KB blocks with MD5 hashing, store only changed blocks
+  |    |-- Apply delta when savings > 20%
   |
   v
 Executor: Notifications
@@ -480,6 +511,8 @@ Docker commands are shell strings passed to `babashka/process`. Input validation
 - Environment values shell-quoted with single quotes
 - Volume paths shell-quoted
 - Docker args filtered (must start with `-`)
+- Cache volume names validated (alphanumeric + hyphens only)
+- Cache volume mount paths validated (absolute, no traversal, no special chars)
 
 ### Container Propagation
 
@@ -487,6 +520,11 @@ Docker commands are shell strings passed to `babashka/process`. Input validation
 Pipeline level                    Stage level                 Step level
 :container {:image node:18}  →  stage gets :container  →  shell steps become :docker
                                                             with :image from container
+
+Cache volumes propagate through the same chain:
+:container {:image node:18             step gets :cache-volumes
+            :cache-volumes             → Docker named volumes mounted
+            {"npm" "/root/.npm"}}      → -v npm-cache:'/root/.npm'
 ```
 
 ## Distributed Builds
@@ -555,7 +593,8 @@ Is distributed enabled?
                |-- Label matching: agent.labels ⊇ pipeline.labels
                |-- Capacity check: current-builds < max-builds
                |-- Heartbeat fresh: < 90s since last heartbeat
-               |-- Selection: least-loaded agent
+               |-- Resource filtering: CPU ≥ required, memory ≥ required
+               |-- Weighted scoring: (1-load)×0.6 + cpu×0.2 + mem×0.2
                |-- Circuit breaker: skip agents in :open state
                |
                v
@@ -663,6 +702,20 @@ Build Runner Thread Pool (4 threads)
   +-- Queue: Build #46, #47 (waiting)
 ```
 
+### Stage-Level Parallelism (DAG Mode)
+
+When stages declare `:depends-on`, independent stages execute concurrently:
+
+```clojure
+;; Stages B and C run in parallel (both depend only on A)
+(stage "A" ...)
+(stage "B" {:depends-on ["A"]} ...)
+(stage "C" {:depends-on ["A"]} ...)
+(stage "D" {:depends-on ["B" "C"]} ...)
+```
+
+DAG execution uses `core.async/thread` per stage, bounded by a `Semaphore` (default max-concurrent: 4). On any stage failure, all downstream dependents are cancelled.
+
 ### Step-Level Parallelism
 
 Within a stage, steps can run sequentially (default) or in parallel:
@@ -713,7 +766,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 36 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 39 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -811,6 +864,75 @@ build_logs        -- Structured log entries
 -- 035: Persistent agent registry (current_builds column on agents table)
 -- 036: Audit hash-chain ordering (seq_num column on audit_logs for
 --       cross-DB insertion-order tiebreaking, replacing SQLite-specific rowid)
+```
+
+### Build Performance & Caching Tables (Migrations 037-039)
+
+```sql
+-- 037: Artifact/dependency cache metadata (cache_entries table — job_id,
+--       cache_key, paths, size_bytes, hit_count, org_id; UNIQUE(job_id, cache_key))
+-- 038: Build result cache (stage_cache table — job_id, fingerprint, stage_name,
+--       stage_result, git_commit; UNIQUE(job_id, fingerprint))
+-- 039: Incremental artifact storage (delta_base_id, is_delta, original_size_bytes
+--       columns on build_artifacts)
+```
+
+## Build Performance & Caching
+
+### DAG-Based Parallel Stage Execution
+
+When any stage in a pipeline declares `:depends-on`, the executor switches from sequential to DAG mode:
+
+```
+Pipeline Definition                   DAG Execution
+  Build (no deps)           ┌──> Lint (depends-on Build)
+  Lint (depends-on Build)   │         ↓
+  Test (depends-on Build) ──┼──> Test (depends-on Build)   [parallel]
+  Deploy (depends-on         │         ↓
+    Lint, Test)              └──> Deploy (depends-on Lint, Test)
+```
+
+- **Kahn's algorithm** — Topological sort detects cycles and validates all dependencies exist
+- **Bounded concurrency** — `java.util.concurrent.Semaphore` limits parallel stages (configurable, default 4)
+- **Failure propagation** — Stage failure cancels all downstream dependents
+- **Backward compatible** — No `:depends-on` annotations → sequential mode (existing behavior)
+
+### Caching Architecture
+
+```
+Artifact/Dependency Cache                Build Result Cache
+  |                                        |
+  |-- resolve-cache-key                    |-- stage-fingerprint
+  |     {{ hashFiles('lock') }}            |     SHA-256(commit|name|cmds|env)
+  |     → SHA-256 of file contents         |
+  |                                        |-- check-stage-cache(fingerprint)
+  |-- restore-cache!                       |     → cached result or nil
+  |     exact key → prefix match           |
+  |     → copy dirs to workspace           |-- save-stage-result!(fingerprint, result)
+  |                                        |     → persist for future builds
+  |-- save-cache!                          |
+  |     → copy workspace dirs to store     |-- Build-specific env vars excluded:
+  |     (immutable: skip if key exists)    |     BUILD_ID, BUILD_NUMBER, WORKSPACE,
+  |                                        |     JOB_NAME (prevents false cache misses)
+  |-- DB: cache_entries table              |
+  |     job_id, cache_key, paths,          |-- DB: stage_cache table
+  |     size_bytes, hit_count              |     job_id, fingerprint, stage_result
+```
+
+### Resource-Aware Agent Scheduling
+
+```
+Agent Selection Pipeline
+  |
+  |-- Filter: label matching (agent.labels ⊇ required)
+  |-- Filter: capacity (current-builds < max-builds)
+  |-- Filter: heartbeat freshness (< timeout threshold)
+  |-- Filter: minimum resources (CPU ≥ required, memory ≥ required)
+  |-- Score: weighted formula per agent
+  |     score = (1 - load_ratio) × 0.6
+  |           + cpu_score × 0.2
+  |           + memory_score × 0.2
+  |-- Sort: highest score wins
 ```
 
 ## Secrets Management
@@ -957,7 +1079,7 @@ The retention scheduler runs periodically (default every 24 hours) and cleans up
 | `db/` | Data access (stores) | One file per table/concern | 23 |
 | `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability, HA | 9 |
 | `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
-| `engine/` | Build orchestration | Core business logic | 18 |
+| `engine/` | Build orchestration | Core business logic | 22 |
 | `model/` | Data validation (specs) | Schema definitions | 1 |
 | `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 15 |
 | `web/` | HTTP handling | Handlers + middleware | 12 |

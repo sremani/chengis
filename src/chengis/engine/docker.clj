@@ -80,17 +80,63 @@
 ;; Docker command generation
 ;; ---------------------------------------------------------------------------
 
+(def ^:private safe-cache-volume-pattern
+  "Pattern for valid Docker named volume names (alphanumeric, hyphens, underscores)."
+  #"^[a-zA-Z0-9][a-zA-Z0-9_\-]*$")
+
+(def ^:private safe-mount-path-pattern
+  "Pattern for valid container mount paths (absolute paths with common chars)."
+  #"^/[a-zA-Z0-9._/\-]+$")
+
+(defn- validate-cache-volume-name!
+  "Validate a cache volume name. Throws on invalid input."
+  [vol-name]
+  (when (or (str/blank? (str vol-name))
+            (not (re-matches safe-cache-volume-pattern (str vol-name)))
+            (> (count (str vol-name)) 128))
+    (throw (ex-info "Invalid cache volume name"
+                    {:volume-name vol-name
+                     :pattern (str safe-cache-volume-pattern)}))))
+
+(defn- validate-mount-path!
+  "Validate a container mount path. Must be an absolute path with safe characters."
+  [mount-path]
+  (let [path-str (str mount-path)]
+    (when (or (str/blank? path-str)
+              (not (re-matches safe-mount-path-pattern path-str))
+              (> (count path-str) 256)
+              ;; Reject path traversal attempts
+              (str/includes? path-str ".."))
+      (throw (ex-info "Invalid cache volume mount path"
+                      {:mount-path mount-path
+                       :pattern (str safe-mount-path-pattern)})))))
+
+(defn- cache-volume-flags
+  "Convert cache volumes map to docker -v flags with named volumes.
+   Cache volumes use Docker named volumes (not bind mounts).
+   Validates both volume name and mount path for security.
+   Format: {\"vol-name\" \"/mount/path\"} → [\"-v\" \"vol-name:/mount/path\"]"
+  [cache-volumes]
+  (when (seq cache-volumes)
+    (mapcat (fn [[vol-name mount-path]]
+              (let [vname (name vol-name)]
+                (validate-cache-volume-name! vname)
+                (validate-mount-path! mount-path)
+                ["-v" (str vname ":" (shell-quote (str mount-path)))]))
+            cache-volumes)))
+
 (defn build-docker-run-cmd
   "Build a 'docker run' command string from a step definition and build context.
 
    Step-def keys:
-     :image      - Docker image name (required, validated)
-     :command    - Command to run inside the container (required)
-     :env        - Additional environment variables map
-     :volumes    - Volume mount specifications
-     :workdir    - Working directory inside the container (default: /workspace)
-     :network    - Docker network mode (validated)
-     :docker-args - Additional docker arguments (validated, only flags allowed)
+     :image         - Docker image name (required, validated)
+     :command       - Command to run inside the container (required)
+     :env           - Additional environment variables map
+     :volumes       - Volume mount specifications
+     :cache-volumes - Named Docker volumes for persistent caching {name mount-path}
+     :workdir       - Working directory inside the container (default: /workspace)
+     :network       - Docker network mode (validated)
+     :docker-args   - Additional docker arguments (validated, only flags allowed)
 
    Build-ctx keys:
      :workspace  - Host workspace directory
@@ -119,6 +165,7 @@
         parts (concat
                 ["docker" "run" "--rm"]
                 (volume-flags all-vols)
+                (cache-volume-flags (:cache-volumes step-def))
                 ["-w" (shell-quote workdir)]
                 (env-flags all-env)
                 (when-let [net (:network step-def)] ["--network" net])
