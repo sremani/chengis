@@ -2,6 +2,108 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [Unreleased] — Phase 6: Advanced SCM & Workflow
+
+### Feature 6a: PR/MR Status Checks
+
+- **Automatic PR status updates** — Build results automatically reported as PR status checks
+- **Required check enforcement** — Configure which checks must pass before merging
+- **PR check views** — Web UI for viewing and managing PR check status
+- **Feature flag** — `:pr-status-checks` (default false)
+- **New source**: `src/chengis/engine/pr_checks.clj`, `src/chengis/db/pr_check_store.clj`
+
+### Feature 6b: Branch-Based Pipeline Overrides
+
+- **Branch pattern matching** — Different pipeline behavior per branch pattern (exact, glob, regex)
+- **Override configuration** — Configure stage additions, removals, or parameter changes per branch
+- **Feature flag** — `:branch-overrides` (default false)
+- **New source**: `src/chengis/engine/branch_overrides.clj`
+
+### Feature 6c: Monorepo Support
+
+- **Path-based trigger filtering** — Only build when files in specified directories change
+- **Changed file detection** — Analyze git diff to determine affected paths
+- **Feature flag** — `:monorepo-filtering` (default false)
+- **New source**: `src/chengis/engine/monorepo.clj`
+
+### Feature 6d: Build Dependencies
+
+- **Job dependency graphs** — Explicit dependency declarations between jobs
+- **Downstream triggering** — Automatically trigger dependent jobs on successful build completion
+- **Dependency API** — `GET /api/jobs/:job-id/dependencies` for querying dependency graphs
+- **Feature flag** — `:build-dependencies` (default false)
+- **New source**: `src/chengis/engine/build_deps.clj`, `src/chengis/db/dependency_store.clj`
+
+### Feature 6e: Cron Scheduling
+
+- **Database-backed schedules** — Persistent cron schedules stored in DB
+- **Missed-run detection** — Catch-up logic for schedules missed during downtime
+- **Admin UI** — `/admin/cron` for managing cron schedules
+- **API** — `/api/cron` for programmatic schedule management
+- **Feature flag** — `:cron-scheduling` (default false)
+- **New source**: `src/chengis/engine/cron.clj`, `src/chengis/db/cron_store.clj`
+
+### Feature 6f: Additional SCM Providers
+
+- **Gitea status reporter** — Build status reporting via Gitea API (`ScmStatusReporter` protocol)
+- **Bitbucket status reporter** — Build status reporting via Bitbucket API (`ScmStatusReporter` protocol)
+- **14 builtin plugins** — Up from 12, now supporting GitHub, GitLab, Gitea, Bitbucket status reporting
+- **New source**: `src/chengis/plugin/builtin/gitea_status.clj`, `src/chengis/plugin/builtin/bitbucket_status.clj`
+
+### Feature 6g: Webhook Replay
+
+- **Re-deliver failed webhooks** — Replay webhooks from stored payloads
+- **Admin UI** — `/admin/webhook-replay` for browsing and replaying failed webhooks
+- **API** — `POST /api/webhooks/:id/replay` for programmatic replay
+- **Feature flag** — `:webhook-replay` (default false)
+- **New source**: `src/chengis/engine/webhook_replay.clj`
+
+### Feature 6h: Auto-Merge on Success
+
+- **Automatic PR merging** — Merge PRs when all required checks pass
+- **Configurable behavior** — Merge strategy and conditions configurable per job
+- **Feature flag** — `:auto-merge` (default false)
+- **New source**: `src/chengis/engine/auto_merge.clj`
+
+### New Feature Flags (7)
+
+| Flag | Default | Feature |
+|------|---------|---------|
+| `:pr-status-checks` | `false` | Automatic PR status updates |
+| `:branch-overrides` | `false` | Branch-based pipeline overrides |
+| `:monorepo-filtering` | `false` | Path-based trigger filtering |
+| `:build-dependencies` | `false` | Job dependency graphs |
+| `:cron-scheduling` | `false` | Database-backed cron schedules |
+| `:webhook-replay` | `false` | Webhook replay from stored payloads |
+| `:auto-merge` | `false` | Auto-merge PRs on success |
+
+### New Environment Variables (16)
+
+| Variable | Feature |
+|----------|---------|
+| `CHENGIS_FEATURE_PR_STATUS_CHECKS` | Enable PR status checks |
+| `CHENGIS_FEATURE_BRANCH_OVERRIDES` | Enable branch-based overrides |
+| `CHENGIS_FEATURE_MONOREPO_FILTERING` | Enable monorepo path filtering |
+| `CHENGIS_FEATURE_BUILD_DEPENDENCIES` | Enable build dependency graphs |
+| `CHENGIS_FEATURE_CRON_SCHEDULING` | Enable cron scheduling |
+| `CHENGIS_FEATURE_WEBHOOK_REPLAY` | Enable webhook replay |
+| `CHENGIS_FEATURE_AUTO_MERGE` | Enable auto-merge on success |
+| `CHENGIS_CRON_*` | Cron scheduling configuration |
+| `CHENGIS_AUTO_MERGE_*` | Auto-merge configuration |
+| `CHENGIS_SCM_GITEA_*` | Gitea SCM provider configuration |
+| `CHENGIS_SCM_BITBUCKET_*` | Bitbucket SCM provider configuration |
+
+### Migrations 044-047
+
+- 044-047: Tables for PR checks, build dependencies, cron schedules, and related indexes (both SQLite and PostgreSQL)
+
+### Test Suite
+- **838 tests, 2,849 assertions — all passing**
+- 14 new source files, 13 new test files added in Phase 6
+- 160 new tests added in Phase 6
+
+---
+
 ## [Unreleased] — Phase 5: Observability & Analytics
 
 ### Feature 5a: Grafana Dashboards
@@ -954,4 +1056,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 678 passed, 2,529 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 838 passed, 2,849 assertions | varies | SUCCESS |

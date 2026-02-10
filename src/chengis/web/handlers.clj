@@ -56,6 +56,16 @@
             [chengis.engine.analytics :as analytics]
             [chengis.engine.cost :as cost]
             [chengis.db.test-result-store :as test-result-store]
+            [chengis.db.cron-store :as cron-store]
+            [chengis.db.dependency-store :as dep-store]
+            [chengis.db.pr-check-store :as pr-check-store]
+            [chengis.engine.cron :as cron]
+            [chengis.engine.build-deps :as build-deps]
+            [chengis.engine.webhook-replay :as webhook-replay]
+            [chengis.web.views.cron :as v-cron]
+            [chengis.web.views.dependencies :as v-deps]
+            [chengis.web.views.webhook-replay :as v-replay]
+            [chengis.web.webhook :as webhook]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -1806,3 +1816,127 @@
        :headers {"Content-Type" "application/json"}
        :body (json/write-str {:count (count flaky)
                               :flaky-tests flaky})})))
+
+;; ---------------------------------------------------------------------------
+;; Phase 6: Advanced SCM & Workflow handlers
+;; ---------------------------------------------------------------------------
+
+(defn cron-schedules-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          schedules (cron-store/list-schedules ds :org-id org-id)
+          jobs (job-store/list-jobs ds :org-id org-id)]
+      (html-response
+        (str (h/html
+               (v-cron/schedules-panel
+                 {:schedules schedules :jobs jobs :csrf-token (csrf-token req)})))))))
+
+(defn webhook-replay-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          events (webhook-log/list-replayable-events ds :org-id org-id)]
+      (html-response
+        (str (h/html
+               (v-replay/replayable-events-panel
+                 {:events events :csrf-token (csrf-token req)})))))))
+
+(defn api-replay-webhook [system]
+  (fn [req]
+    (let [event-id (get-in req [:path-params :id])
+          result (webhook-replay/replay-webhook!
+                   system event-id
+                   (webhook/webhook-handler system build-runner/build-executor))]
+      {:status (if (= :replayed (:status result)) 200 400)
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str result)})))
+
+(defn api-create-cron-schedule [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (or (:params req) {})
+          job-id (:job-id params)
+          cron-expr (:cron-expression params)
+          timezone (or (:timezone params) "UTC")
+          validation (cron/validate-cron-expression cron-expr)]
+      (if-not (:valid? validation)
+        {:status 400
+         :headers {"Content-Type" "application/json"}
+         :body (json/write-str {:error "Invalid cron expression"
+                                :details (:error validation)})}
+        (let [next-run (cron/next-run-time cron-expr (str (java.time.Instant/now)) timezone)
+              _sched (cron-store/create-schedule! ds
+                       {:job-id job-id :org-id org-id
+                        :cron-expression cron-expr
+                        :timezone timezone
+                        :next-run-at next-run})]
+          {:status 303
+           :headers {"Location" "/admin/cron"}})))))
+
+(defn api-delete-cron-schedule [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          sched-id (get-in req [:path-params :id])]
+      (cron-store/delete-schedule! ds sched-id :org-id org-id)
+      {:status 303
+       :headers {"Location" "/admin/cron"}})))
+
+(defn api-create-dependency [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (or (:params req) {})
+          job-id (get-in req [:path-params :job-id])
+          upstream-job-id (:upstream-job-id params)
+          trigger-on (or (:trigger-on params) "success")]
+      (try
+        (build-deps/add-dependency!
+          ds
+          {:job-id job-id
+           :depends-on-job-id upstream-job-id
+           :trigger-on trigger-on
+           :org-id org-id})
+        {:status 303
+         :headers {"Location" (str "/jobs/" job-id)}}
+        (catch Exception e
+          {:status 400
+           :headers {"Content-Type" "application/json"}
+           :body (json/write-str {:error (.getMessage e)})})))))
+
+(defn api-delete-dependency [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          dep-id (get-in req [:path-params :id])]
+      (dep-store/delete-dependency! ds dep-id :org-id org-id)
+      {:status 303
+       :headers {"Location" "/"}})))
+
+(defn api-create-pr-check [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          job-id (get-in req [:path-params :job-id])
+          params (or (:params req) {})
+          check-name (:check-name params)
+          description (:description params)
+          required (= "true" (:required params))]
+      (pr-check-store/create-check! ds
+        {:job-id job-id :org-id org-id
+         :check-name check-name :description description
+         :required required})
+      {:status 303
+       :headers {"Location" (str "/jobs/" job-id)}})))
+
+(defn api-delete-pr-check [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          job-id (get-in req [:path-params :job-id])
+          check-id (get-in req [:path-params :check-id])]
+      (pr-check-store/delete-check! ds check-id :org-id org-id)
+      {:status 303
+       :headers {"Location" (str "/jobs/" job-id)}})))

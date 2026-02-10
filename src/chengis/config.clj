@@ -105,7 +105,12 @@
                   :context "chengis/build"
                   :base-url "https://api.github.com"}
          :gitlab {:token nil
-                  :base-url "https://gitlab.com"}}
+                  :base-url "https://gitlab.com"}
+         :gitea {:token nil
+                 :base-url nil}           ;; e.g., "https://gitea.example.com"
+         :bitbucket {:username nil
+                     :app-password nil
+                     :base-url "https://api.bitbucket.org/2.0"}}
    :oidc {:enabled false
           :issuer-url nil         ;; e.g., "https://keycloak.example.com/realms/chengis"
           :client-id nil
@@ -138,6 +143,12 @@
                      :min-runs 5
                      :lookback-builds 30}
    :deduplication {:window-minutes 10}
+   ;; Phase 6: Advanced SCM & Workflow
+   :cron {:poll-interval-seconds 60
+          :missed-run-threshold-minutes 10}
+   :auto-merge {:require-all-checks true
+                :merge-method "merge"        ;; "merge", "squash", or "rebase"
+                :delete-branch-after false}
    :ha {:enabled false
         :leader-poll-ms 15000
         :instance-id nil}      ;; defaults to "standalone" if nil; set from K8s pod name via CHENGIS_HA_INSTANCE_ID
@@ -158,7 +169,15 @@
                    :build-analytics false
                    :browser-notifications false
                    :cost-attribution false
-                   :flaky-test-detection false}
+                   :flaky-test-detection false
+                   ;; Phase 6: Advanced SCM & Workflow
+                   :pr-status-checks false
+                   :branch-overrides false
+                   :monorepo-filtering false
+                   :build-dependencies false
+                   :cron-scheduling false
+                   :webhook-replay false
+                   :auto-merge false}
    :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
@@ -257,7 +276,23 @@
    "CHENGIS_FEATURE_FLAKY_TEST_DETECTION"       [:feature-flags :flaky-test-detection]
    "CHENGIS_FLAKY_THRESHOLD"                    [:flaky-detection :flakiness-threshold]
    "CHENGIS_FLAKY_MIN_RUNS"                     [:flaky-detection :min-runs]
-   "CHENGIS_FLAKY_LOOKBACK_BUILDS"              [:flaky-detection :lookback-builds]})
+   "CHENGIS_FLAKY_LOOKBACK_BUILDS"              [:flaky-detection :lookback-builds]
+   ;; Phase 6: Advanced SCM & Workflow
+   "CHENGIS_FEATURE_PR_STATUS_CHECKS"           [:feature-flags :pr-status-checks]
+   "CHENGIS_FEATURE_BRANCH_OVERRIDES"           [:feature-flags :branch-overrides]
+   "CHENGIS_FEATURE_MONOREPO_FILTERING"         [:feature-flags :monorepo-filtering]
+   "CHENGIS_FEATURE_BUILD_DEPENDENCIES"         [:feature-flags :build-dependencies]
+   "CHENGIS_FEATURE_CRON_SCHEDULING"            [:feature-flags :cron-scheduling]
+   "CHENGIS_FEATURE_WEBHOOK_REPLAY"             [:feature-flags :webhook-replay]
+   "CHENGIS_FEATURE_AUTO_MERGE"                 [:feature-flags :auto-merge]
+   "CHENGIS_CRON_POLL_INTERVAL_SECONDS"         [:cron :poll-interval-seconds]
+   "CHENGIS_CRON_MISSED_RUN_THRESHOLD_MINUTES"  [:cron :missed-run-threshold-minutes]
+   "CHENGIS_AUTO_MERGE_METHOD"                  [:auto-merge :merge-method]
+   "CHENGIS_AUTO_MERGE_DELETE_BRANCH"           [:auto-merge :delete-branch-after]
+   "CHENGIS_SCM_GITEA_TOKEN"                    [:scm :gitea :token]
+   "CHENGIS_SCM_GITEA_BASE_URL"                 [:scm :gitea :base-url]
+   "CHENGIS_SCM_BITBUCKET_USERNAME"             [:scm :bitbucket :username]
+   "CHENGIS_SCM_BITBUCKET_APP_PASSWORD"         [:scm :bitbucket :app-password]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.

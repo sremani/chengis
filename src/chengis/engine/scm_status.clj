@@ -15,21 +15,40 @@
 (defn detect-provider
   "Detect the SCM provider from a repository URL.
    Uses proper host matching to avoid false positives (e.g., evil-github.com).
-   Returns :github, :gitlab, or nil."
-  [repo-url]
-  (when (seq repo-url)
-    (try
-      (let [host (str/lower-case (.getHost (java.net.URI. repo-url)))]
-        (cond
-          (or (= host "github.com") (str/ends-with? host ".github.com")) :github
-          (or (= host "gitlab.com") (str/ends-with? host ".gitlab.com")) :gitlab
-          :else nil))
-      (catch Exception _
-        ;; Fallback for non-URL formats (e.g., git@github.com:user/repo.git)
-        (cond
-          (str/includes? repo-url "github.com") :github
-          (str/includes? repo-url "gitlab.com") :gitlab
-          :else nil)))))
+   Returns :github, :gitlab, :gitea, :bitbucket, or nil.
+   Gitea detection requires :scm :gitea :base-url in config (self-hosted)."
+  ([repo-url] (detect-provider repo-url nil))
+  ([repo-url config]
+   (when (seq repo-url)
+     (try
+       (let [host (str/lower-case (.getHost (java.net.URI. repo-url)))
+             gitea-base (get-in config [:scm :gitea :base-url])]
+         (cond
+           (or (= host "github.com") (str/ends-with? host ".github.com")) :github
+           (or (= host "gitlab.com") (str/ends-with? host ".gitlab.com")) :gitlab
+           (or (= host "bitbucket.org") (str/ends-with? host ".bitbucket.org")) :bitbucket
+           ;; Gitea is self-hosted — match against configured base URL
+           (and gitea-base
+                (try
+                  (let [gitea-host (str/lower-case (.getHost (java.net.URI. gitea-base)))]
+                    (= host gitea-host))
+                  (catch Exception _ false))) :gitea
+           :else nil))
+       (catch Exception _
+         ;; Fallback for non-URL formats (e.g., git@github.com:user/repo.git)
+         (let [gitea-base (get-in config [:scm :gitea :base-url])]
+           (cond
+             (str/includes? repo-url "github.com") :github
+             (str/includes? repo-url "gitlab.com") :gitlab
+             (str/includes? repo-url "bitbucket.org") :bitbucket
+             ;; Gitea SSH fallback: check if URL contains the gitea host
+             (and gitea-base
+                  (try
+                    (let [gitea-host (.getHost (java.net.URI. gitea-base))]
+                      (str/includes? repo-url gitea-host))
+                    (catch Exception _ false))) :gitea
+             :else nil)))))))
+
 
 ;; ---------------------------------------------------------------------------
 ;; Status mapping
@@ -67,7 +86,7 @@
         config     (:config system)
         registry*  (:metrics system)]
     (when (and (seq commit-sha) (seq repo-url))
-      (let [provider (detect-provider repo-url)]
+      (let [provider (detect-provider repo-url config)]
         (if-not provider
           (log/debug "No SCM provider detected for" repo-url)
           (let [reporter (registry/get-status-reporter provider)]

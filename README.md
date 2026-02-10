@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**678 tests | 2,529 assertions | 0 failures**
+**838 tests | 2,849 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -113,7 +113,7 @@ Build #1 — SUCCESS (8.3 sec)
 
 - **Protocol-based** &mdash; Extension points: `StepExecutor`, `PipelineFormat`, `Notifier`, `ArtifactHandler`, `ScmProvider`, `ScmStatusReporter`, `SecretBackend`
 - **Central registry** &mdash; Register/lookup/introspect plugins at runtime
-- **Builtin plugins** &mdash; Shell, Docker, Docker Compose, Git, Console, Slack, Email, Local Artifacts, Local Secrets, Vault Secrets, YAML Format, GitHub Status, GitLab Status
+- **Builtin plugins** &mdash; Shell, Docker, Docker Compose, Git, Console, Slack, Email, Local Artifacts, Local Secrets, Vault Secrets, YAML Format, GitHub Status, GitLab Status, Gitea Status, Bitbucket Status
 - **External plugins** &mdash; Load `.clj` files from plugins directory with lifecycle management
 - **Plugin trust** &mdash; External plugins gated by DB-backed allowlist; untrusted plugins blocked with admin UI management
 
@@ -169,7 +169,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Policy engine** &mdash; Org-scoped build policies with priority ordering and short-circuit evaluation
 - **Artifact checksums** &mdash; SHA-256 integrity verification on collected artifacts
 - **Compliance reports** &mdash; Policy evaluation results tracked per build with admin dashboard
-- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (14 flags for safe rollout)
+- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (21 flags for safe rollout)
 - **Plugin trust** &mdash; External plugin allowlist with admin management UI
 - **Docker image policies** &mdash; Allow/deny rules for Docker registries and images per organization
 
@@ -179,6 +179,17 @@ Build #1 — SUCCESS (8.3 sec)
 - **Durable events** &mdash; Build events persisted to database with time-ordered IDs for replay after restarts
 - **Event replay API** &mdash; `GET /api/builds/:id/events/replay` with cursor-based pagination
 - **Dispatcher wiring** &mdash; All trigger paths (UI, webhooks, retry) route through distributed dispatcher when enabled
+
+### Advanced SCM & Workflow
+
+- **PR/MR status checks** &mdash; Automatic PR status updates with required check enforcement; configurable per job
+- **Branch-based pipeline overrides** &mdash; Different pipeline behavior per branch pattern (exact, glob, regex); override stages, parameters, or config
+- **Monorepo support** &mdash; Path-based trigger filtering; only build when files in specified directories change
+- **Build dependencies** &mdash; Explicit job dependency graphs with downstream triggering on success
+- **Cron scheduling** &mdash; Database-backed persistent cron schedules with missed-run detection and catch-up
+- **Additional SCM providers** &mdash; Gitea and Bitbucket status reporters via `ScmStatusReporter` protocol (4 providers total: GitHub, GitLab, Gitea, Bitbucket)
+- **Webhook replay** &mdash; Re-deliver failed webhooks from stored payloads via admin UI or API
+- **Auto-merge on success** &mdash; Automatically merge PRs when all required checks pass
 
 ### Build Performance & Caching
 
@@ -226,7 +237,7 @@ Build #1 — SUCCESS (8.3 sec)
 ### Persistence
 
 - **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
-- **43 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
+- **47 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -237,7 +248,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **CLI** &mdash; Full command-line interface for headless/scripted usage
 - **Login page** &mdash; Username/password authentication with lockout protection
 - **Parameterized builds** &mdash; Dynamic trigger forms with text, choice, and boolean parameters
-- **SCM webhooks** &mdash; GitHub/GitLab webhook endpoint for push-triggered builds
+- **SCM webhooks** &mdash; GitHub/GitLab/Gitea/Bitbucket webhook endpoint for push-triggered builds
 - **Agent page** &mdash; Agent status, capacity, labels, and system info
 - **User management** &mdash; Admin panel for creating, editing, and deactivating users
 - **Audit viewer** &mdash; Filterable audit log with date range, action type, and user filters
@@ -684,7 +695,14 @@ Chengis uses sensible defaults. Override via `resources/config.edn` or environme
                  :build-analytics false
                  :browser-notifications false
                  :cost-attribution false
-                 :flaky-test-detection false}
+                 :flaky-test-detection false
+                 :pr-status-checks false
+                 :branch-overrides false
+                 :monorepo-filtering false
+                 :build-dependencies false
+                 :cron-scheduling false
+                 :webhook-replay false
+                 :auto-merge false}
 
  ;; Parallel stage execution (DAG mode)
  :parallel-stages {:max-concurrent 4}
@@ -784,6 +802,13 @@ All configuration can be overridden with `CHENGIS_*` environment variables. Nest
 | `CHENGIS_FLAKY_THRESHOLD` | `[:flaky-detection :flakiness-threshold]` | `0.15` |
 | `CHENGIS_FLAKY_MIN_RUNS` | `[:flaky-detection :min-runs]` | `5` |
 | `CHENGIS_FLAKY_LOOKBACK` | `[:flaky-detection :lookback-builds]` | `30` |
+| `CHENGIS_FEATURE_PR_STATUS_CHECKS` | `[:feature-flags :pr-status-checks]` | `false` |
+| `CHENGIS_FEATURE_BRANCH_OVERRIDES` | `[:feature-flags :branch-overrides]` | `false` |
+| `CHENGIS_FEATURE_MONOREPO_FILTERING` | `[:feature-flags :monorepo-filtering]` | `false` |
+| `CHENGIS_FEATURE_BUILD_DEPENDENCIES` | `[:feature-flags :build-dependencies]` | `false` |
+| `CHENGIS_FEATURE_CRON_SCHEDULING` | `[:feature-flags :cron-scheduling]` | `false` |
+| `CHENGIS_FEATURE_WEBHOOK_REPLAY` | `[:feature-flags :webhook-replay]` | `false` |
+| `CHENGIS_FEATURE_AUTO_MERGE` | `[:feature-flags :auto-merge]` | `false` |
 | `CHENGIS_HA_ENABLED` | `[:ha :enabled]` | `true` |
 | `CHENGIS_HA_LEADER_POLL_MS` | `[:ha :leader-poll-ms]` | `15000` |
 | `CHENGIS_HA_INSTANCE_ID` | `[:ha :instance-id]` | `pod-name` |
@@ -848,6 +873,12 @@ Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings 
 | `GET /api/traces/:trace-id/otlp` | OTLP JSON export for Jaeger/Tempo |
 | `GET /api/events/global` | Global SSE stream for org-scoped build completion events |
 | `GET /api/costs/summary` | Cost summary data (JSON) |
+| `GET /admin/cron` | Cron schedule management |
+| `GET /admin/webhook-replay` | Webhook replay management |
+| `GET /api/cron` | Cron schedule API (JSON) |
+| `POST /api/webhooks/:id/replay` | Replay a failed webhook |
+| `GET /api/jobs/:job-id/dependencies` | Job dependency graph (JSON) |
+| `GET /api/jobs/:job-id/checks` | PR check status for a job (JSON) |
 
 ## Project Structure
 
@@ -864,7 +895,7 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # Database persistence layer (27 files)
+    db/                     # Database persistence layer (30 files)
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
@@ -891,6 +922,9 @@ chengis/
       trace_store.clj       # Distributed trace span persistence
       cost_store.clj        # Build cost attribution records
       test_result_store.clj # Test results and flaky test tracking
+      pr_check_store.clj    # PR status check records
+      dependency_store.clj  # Job dependency graph persistence
+      cron_store.clj        # Persistent cron schedule records
       backup.clj            # Database backup/restore
     distributed/            # Distributed build coordination (9 files)
       agent_registry.clj    # Write-through agent registry (atom + DB)
@@ -909,7 +943,7 @@ chengis/
       yaml.clj              # YAML workflow parser
       expressions.clj       # ${{ }} expression resolver
       templates.clj         # Pipeline template DSL
-    engine/                 # Build execution engine (27 files)
+    engine/                 # Build execution engine (34 files)
       executor.clj          # Core pipeline runner (sequential + DAG modes)
       build_runner.clj      # Build lifecycle + thread pool + deduplication
       dag.clj               # DAG utilities (topological sort, ready-stages)
@@ -937,13 +971,20 @@ chengis/
       log_context.clj       # MDC-like log correlation context
       cost.clj              # Build cost computation
       test_parser.clj       # Test output parser (JUnit XML, TAP, generic)
+      pr_checks.clj         # PR status check enforcement
+      branch_overrides.clj  # Branch-based pipeline overrides
+      monorepo.clj          # Monorepo path-based trigger filtering
+      build_deps.clj        # Build dependency graph and downstream triggering
+      cron.clj              # Database-backed cron scheduling
+      webhook_replay.clj    # Webhook replay from stored payloads
+      auto_merge.clj        # Auto-merge PRs on success
     model/                  # Data specs (1 file)
       spec.clj              # Clojure specs for validation
-    plugin/                 # Plugin system (15 files)
+    plugin/                 # Plugin system (17 files)
       protocol.clj          # Plugin protocols (7 protocols)
       registry.clj          # Central plugin registry
       loader.clj            # Plugin discovery + lifecycle
-      builtin/              # 12 builtin plugins
+      builtin/              # 14 builtin plugins
         shell.clj           # Shell step executor
         docker.clj          # Docker step executor
         docker_compose.clj  # Docker Compose step executor
@@ -957,6 +998,8 @@ chengis/
         yaml_format.clj     # YAML pipeline format
         github_status.clj   # GitHub commit status reporter
         gitlab_status.clj   # GitLab commit status reporter
+        gitea_status.clj    # Gitea commit status reporter
+        bitbucket_status.clj # Bitbucket commit status reporter
     web/                    # HTTP server and UI (36 files)
       server.clj            # http-kit server startup + HA wiring
       routes.clj            # Reitit routes + middleware
@@ -970,7 +1013,7 @@ chengis/
       rate_limit.clj        # Request rate limiting
       account_lockout.clj   # Account lockout logic
       metrics_middleware.clj # HTTP request metrics
-      views/                # Hiccup view templates (24 files)
+      views/                # Hiccup view templates (27 files)
         layout.clj          # Base HTML layout
         dashboard.clj       # Home page
         jobs.clj            # Job list + detail
@@ -995,13 +1038,16 @@ chengis/
         notifications.clj   # Browser notification toggle and script
         cost.clj            # Cost attribution dashboard
         flaky_tests.clj     # Flaky test detection dashboard
+        pr_checks.clj       # PR check status views
+        cron.clj            # Cron schedule management views
+        webhook_replay.clj  # Webhook replay views
     config.clj              # Configuration loading + env var overrides
     logging.clj             # Structured logging setup
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (102 files)
-  resources/migrations/     # Database migrations (43 versions × 2 drivers)
+  test/chengis/             # Test suite (115 files)
+  resources/migrations/     # Database migrations (47 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
@@ -1024,7 +1070,7 @@ chengis/
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
 | Connection pool | HikariCP | PostgreSQL connection pooling |
-| Migrations | Migratus | Schema evolution (43 versions × 2 drivers) |
+| Migrations | Migratus | Schema evolution (47 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -1047,7 +1093,7 @@ chengis/
 | Runtime | Single JVM, optional agent nodes | Master + optional agent nodes |
 | Storage | SQLite (default) or PostgreSQL | XML files on filesystem |
 | UI rendering | Server-side (Hiccup + htmx) | Server-side (Jelly/Groovy) + client JS |
-| Plugin system | Protocol-based (12 builtin plugins) | 1800+ plugins, complex classloader |
+| Plugin system | Protocol-based (14 builtin plugins) | 1800+ plugins, complex classloader |
 | Pipeline formats | Clojure DSL + EDN + YAML | Groovy DSL (scripted/declarative) |
 | Container support | Docker steps (built-in) | Docker Pipeline plugin |
 | Distributed | HTTP master/agent (built-in) | JNLP/SSH agents |
@@ -1083,7 +1129,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **678 tests, 2,529 assertions, 0 failures**
+Current test suite: **838 tests, 2,849 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
@@ -1134,6 +1180,14 @@ Test coverage spans:
 - Test result storage and flaky test computation
 - Health, readiness, and startup probes
 - Security review regression tests (auth bypass, org scoping, hash chain integrity)
+- PR/MR status checks (check enforcement, required checks, PR check store)
+- Branch-based pipeline overrides (exact, glob, regex pattern matching)
+- Monorepo path-based trigger filtering (changed file detection)
+- Build dependencies (dependency graph, downstream triggering)
+- Cron scheduling (persistent schedules, missed-run detection)
+- Additional SCM providers (Gitea and Bitbucket status reporting)
+- Webhook replay (replay from stored payloads)
+- Auto-merge on success (merge when checks pass)
 
 ## Building an Uberjar
 

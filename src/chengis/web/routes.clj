@@ -223,7 +223,11 @@
         ["/traces"
          ["" {:get {:handler (auth/wrap-require-role :admin (h/traces-page system))}}]
          ["/:trace-id" {:get {:handler (auth/wrap-require-role :admin (h/trace-detail-page system))}}]]
-        ["/costs" {:get {:handler (auth/wrap-require-role :admin (h/cost-page system))}}]]
+        ["/costs" {:get {:handler (auth/wrap-require-role :admin (h/cost-page system))}}]
+        ;; Phase 6: Cron schedules
+        ["/cron" {:get {:handler (auth/wrap-require-role :admin (h/cron-schedules-page system))}}]
+        ;; Phase 6: Webhook replay
+        ["/webhook-replay" {:get {:handler (auth/wrap-require-role :admin (h/webhook-replay-page system))}}]]
        ;; Analytics (viewer+)
        ["/analytics" {:get {:handler (auth/wrap-require-role :viewer (h/analytics-page system))}}]
        ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/flaky-tests-page system))}}]
@@ -249,7 +253,20 @@
         ["/analytics/stages" {:get {:handler (auth/wrap-require-role :viewer (h/api-analytics-stages system))}}]
         ["/events/global" {:get {:handler (h/global-events-sse system)}}]
         ["/costs/summary" {:get {:handler (auth/wrap-require-role :viewer (h/api-cost-summary system))}}]
-        ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/api-flaky-tests system))}}]]]))
+        ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/api-flaky-tests system))}}]
+        ;; Phase 6: Cron scheduling API
+        ["/cron"
+         ["" {:post {:handler (auth/wrap-require-role :admin (h/api-create-cron-schedule system))}}]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/api-delete-cron-schedule system))}}]]
+        ;; Phase 6: Build dependencies API
+        ["/jobs/:job-id/dependencies" {:post {:handler (auth/wrap-require-role :developer (h/api-create-dependency system))}}]
+        ["/jobs/:job-id/checks"
+         ["" {:post {:handler (auth/wrap-require-role :developer (h/api-create-pr-check system))}}]
+         ["/:check-id/delete" {:post {:handler (auth/wrap-require-role :developer (h/api-delete-pr-check system))}}]]
+        ;; Phase 6: Webhook replay API
+        ["/webhooks/:id/replay" {:post {:handler (auth/wrap-require-role :admin (h/api-replay-webhook system))}}]
+        ;; Phase 6: Dependencies delete API
+        ["/dependencies/:id/delete" {:post {:handler (auth/wrap-require-role :developer (h/api-delete-dependency system))}}]]]))
     (ring/create-default-handler
       {:not-found (constantly {:status 404
                                :headers {"Content-Type" "text/html"}

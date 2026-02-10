@@ -9,7 +9,10 @@
     (-> row
         (update :pipeline util/deserialize-edn)
         (update :triggers util/deserialize-edn)
-        (update :parameters util/deserialize-edn))))
+        (update :parameters util/deserialize-edn)
+        (update :branch-overrides util/deserialize-edn)
+        (update :path-filters util/deserialize-edn)
+        (update :auto-merge-enabled #(if (number? %) (pos? %) (boolean %))))))
 
 (defn create-job!
   "Create a new job from a pipeline definition. Returns the created job.
@@ -88,3 +91,24 @@
                  :where (if org-id
                           [:and [:= :name job-name] [:= :org-id org-id]]
                           [:= :name job-name])})))
+
+(defn update-job-scm-config!
+  "Update a job's SCM configuration (branch overrides, path filters, auto-merge, default branch).
+   When org-id is provided, scopes to that org."
+  [ds job-id {:keys [branch-overrides path-filters auto-merge-enabled default-branch]}
+   & {:keys [org-id]}]
+  (let [updates (cond-> {:updated-at [:raw "CURRENT_TIMESTAMP"]}
+                  (some? branch-overrides)
+                  (assoc :branch-overrides (util/serialize-edn branch-overrides))
+                  (some? path-filters)
+                  (assoc :path-filters (util/serialize-edn path-filters))
+                  (some? auto-merge-enabled)
+                  (assoc :auto-merge-enabled (if auto-merge-enabled 1 0))
+                  (some? default-branch)
+                  (assoc :default-branch default-branch))]
+    (jdbc/execute-one! ds
+      (sql/format {:update :jobs
+                   :set updates
+                   :where (if org-id
+                            [:and [:= :id job-id] [:= :org-id org-id]]
+                            [:= :id job-id])}))))

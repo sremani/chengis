@@ -179,20 +179,24 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 
 ---
 
-## Phase 6: Advanced SCM & Workflow (next)
+### Phase 6: Advanced SCM & Workflow
 
-**Theme:** Deeper integration with source control and more expressive pipeline definitions.
-
-| Feature | Description | Priority |
-|---------|-------------|----------|
-| PR/MR status checks | Automatic PR status updates with required check enforcement | High |
-| Branch-based pipeline overrides | Different pipeline behavior per branch pattern (e.g., `release/*` triggers deploy) | High |
-| Monorepo support | Path-based trigger filtering — only build when files in specified directories change | High |
-| Build dependencies | Explicit job dependency graphs (Job A triggers Job B on success) | Medium |
-| Cron scheduling (database-backed) | Persistent cron schedules with missed-run detection and catch-up | Medium |
-| Additional SCM providers | Gitea, Bitbucket, Azure DevOps via `ScmProvider` protocol | Medium |
-| Webhook replay | Re-deliver failed webhooks from the admin webhook viewer | Low |
-| Auto-merge on success | Automatically merge PR when all required checks pass | Low |
+- PR/MR status checks with required check enforcement (`pr_check_store.clj`, `pr_checks.clj`, PR check views)
+- Branch-based pipeline overrides with pattern matching (exact, glob, regex) (`branch_overrides.clj`)
+- Monorepo support with path-based trigger filtering for changed files (`monorepo.clj`)
+- Build dependencies with explicit job dependency graphs and downstream triggering (`dependency_store.clj`, `build_deps.clj`)
+- Database-backed cron scheduling with missed-run detection (`cron_store.clj`, `cron.clj`)
+- Additional SCM providers: Gitea and Bitbucket status reporters via `ScmStatusReporter` protocol (`gitea_status.clj`, `bitbucket_status.clj`)
+- Webhook replay for re-delivering failed webhooks from stored payloads (`webhook_replay.clj`)
+- Auto-merge on success: automatically merge PRs when all required checks pass (`auto_merge.clj`)
+- 7 new feature flags (pr-status-checks, branch-overrides, monorepo-filtering, build-dependencies, cron-scheduling, webhook-replay, auto-merge)
+- 16 new environment variables (`CHENGIS_FEATURE_*`, `CHENGIS_CRON_*`, `CHENGIS_AUTO_MERGE_*`, `CHENGIS_SCM_GITEA_*`, `CHENGIS_SCM_BITBUCKET_*`)
+- New admin routes: `/admin/cron`, `/admin/webhook-replay`
+- New API routes: `/api/cron`, `/api/webhooks/:id/replay`, `/api/jobs/:job-id/dependencies`, `/api/jobs/:job-id/checks`
+- 14 new source files, 13 new test files
+- 14 builtin plugins (was 12), supporting GitHub, GitLab, Gitea, Bitbucket status reporting
+- Migrations 044-047
+- **838 tests, 2,849 assertions — all passing**
 
 ---
 
@@ -296,3 +300,4 @@ These items are under consideration but not yet scheduled:
 | Security II | Review | Auth bypass, Org scoping, Hash-chain integrity | 525 | 36 |
 | Phase 4 | Performance | DAG execution, Caching, Delta artifacts, Resource scheduling, Dedup | **587** | 37-39 |
 | Phase 5 | Observability | Tracing, Analytics, Notifications, Cost, Flaky tests, Grafana, Logs | **678** | 40-43 |
+| Phase 6 | Advanced SCM | PR checks, Branch overrides, Monorepo, Dependencies, Cron, Gitea/Bitbucket, Webhook replay, Auto-merge | **838** | 44-47 |

@@ -10,7 +10,10 @@ pom.xml.asc
 
 # Project runtime data
 chengis.db
+jdbc:sqlite:chengis.db
 workspaces/
+artifacts/
+/tmp/
 
 # Leiningen
 .lein-*

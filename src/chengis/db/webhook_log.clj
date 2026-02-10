@@ -10,7 +10,7 @@
    When :org-id is provided, associates the event with that organization."
   [ds {:keys [provider event-type repo-url repo-name branch commit-sha
               signature-valid status matched-jobs triggered-builds
-              error payload-size processing-ms org-id]}]
+              error payload-size processing-ms org-id payload-body]}]
   (let [id (util/generate-id)
         row (cond-> {:id id
                      :provider (if provider (name provider) "unknown")
@@ -26,7 +26,8 @@
                      :error error
                      :payload-size payload-size
                      :processing-ms processing-ms}
-              org-id (assoc :org-id org-id))]
+              org-id (assoc :org-id org-id)
+              payload-body (assoc :payload-body payload-body))]
     (try
       (jdbc/execute-one! ds
         (sql/format {:insert-into :webhook-events
@@ -80,6 +81,38 @@
       (jdbc/execute-one! ds
         (sql/format query)
         {:builder-fn rs/as-unqualified-kebab-maps}))))
+
+(defn mark-replayed!
+  "Update a webhook event to track replay. Increments replay_count."
+  [ds event-id]
+  (try
+    (jdbc/execute-one! ds
+      [(str "UPDATE webhook_events "
+            "SET replay_count = COALESCE(replay_count, 0) + 1, "
+            "last_replayed_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?")
+       event-id])
+    (catch Exception _ nil)))
+
+(defn list-replayable-events
+  "List webhook events that have a stored payload (can be replayed).
+   Options: :provider, :org-id, :limit, :offset"
+  [ds & {:keys [provider org-id limit offset]
+         :or {limit 50 offset 0}}]
+  (let [conditions (cond-> [:and [:not= :payload-body nil]]
+                     provider (conj [:= :provider provider])
+                     org-id   (conj [:= :org-id org-id]))
+        query {:select [:id :provider :event-type :repo-url :repo-name :branch
+                        :commit-sha :status :matched-jobs :triggered-builds
+                        :replay-count :last-replayed-at :created-at]
+               :from :webhook-events
+               :where conditions
+               :order-by [[:created-at :desc]]
+               :limit limit
+               :offset offset}]
+    (jdbc/execute! ds
+      (sql/format query)
+      {:builder-fn rs/as-unqualified-kebab-maps})))
 
 (defn cleanup-old-events!
   "Delete webhook events older than retention-days. Returns number of rows deleted."

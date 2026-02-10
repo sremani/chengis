@@ -21,8 +21,11 @@
     (is (= :gitlab (scm-status/detect-provider "git@gitlab.com:group/project.git")))
     (is (= :gitlab (scm-status/detect-provider "https://gitlab.com/org/sub/project"))))
 
+  (testing "Bitbucket URLs"
+    (is (= :bitbucket (scm-status/detect-provider "https://bitbucket.org/owner/repo.git"))))
+
   (testing "Unknown URLs"
-    (is (nil? (scm-status/detect-provider "https://bitbucket.org/owner/repo.git")))
+    (is (nil? (scm-status/detect-provider "https://unknown.example.com/owner/repo.git")))
     (is (nil? (scm-status/detect-provider "")))
     (is (nil? (scm-status/detect-provider nil)))))
 

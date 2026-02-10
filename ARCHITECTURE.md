@@ -66,7 +66,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |            approvals, templates, webhooks, compliance,         |
 |            policies, plugin_policies, docker_policies,         |
 |            traces, analytics, notifications, cost,             |
-|            flaky_tests)                                        |
+|            flaky_tests, pr_checks, cron, webhook_replay)      |
 |   distributed/master_api.clj                                  |
 +---------------------------------------------------------------+
 |                    Auth & Security Layer                       |
@@ -81,7 +81,9 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   scm_status.clj   compliance.clj   policy.clj               |
 |   dag.clj   cache.clj   stage_cache.clj   artifact_delta.clj |
 |   tracing.clj   analytics.clj   log_context.clj              |
-|   cost.clj   test_parser.clj                                 |
+|   cost.clj   test_parser.clj   pr_checks.clj                 |
+|   branch_overrides.clj   monorepo.clj   build_deps.clj       |
+|   cron.clj   webhook_replay.clj   auto_merge.clj             |
 +---------------------------------------------------------------+
 |                    Metrics & Observability Layer               |
 |   metrics.clj   logging.clj   tracing.clj   analytics.clj   |
@@ -92,7 +94,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   builtin/  (shell, docker, docker-compose, console, slack,   |
 |              email, git, local-artifacts, local-secrets,       |
 |              vault-secrets, yaml-format, github-status,        |
-|              gitlab-status)                                     |
+|              gitlab-status, gitea-status, bitbucket-status)    |
 +---------------------------------------------------------------+
 |                        DSL Layer                              |
 |   dsl/core.clj (defpipeline macro)                            |
@@ -133,6 +135,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/agent_store.clj   db/cache_store.clj                     |
 |   db/analytics_store.clj  db/trace_store.clj                  |
 |   db/cost_store.clj  db/test_result_store.clj                 |
+|   db/pr_check_store.clj  db/dependency_store.clj              |
+|   db/cron_store.clj                                           |
 |   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |
@@ -267,7 +271,7 @@ Executor: Notifications
   v
 Executor: SCM Status Reporting
   |-- Look up ScmStatusReporter plugin by provider
-  |-- Report build status back to GitHub/GitLab (commit status API)
+  |-- Report build status back to GitHub/GitLab/Gitea/Bitbucket (commit status API)
   |
   v
 Build Runner: Finalization
@@ -294,6 +298,8 @@ Build Runner: Finalization
 |  :scm-providers    :git → GitSCM         |
 |  :scm-status       :github → GHStatus    |
 |                    :gitlab → GLStatus     |
+|                    :gitea → GiteaStatus   |
+|                    :bitbucket → BBStatus  |
 +-------------------------------------------+
            ^                    |
            |  register!         |  lookup
@@ -403,6 +409,8 @@ Glob patterns use `Pattern/quote` for safe regex conversion, preventing injectio
 | YAML Format | PipelineFormat | `"yaml"`, `"yml"` |
 | GitHub Status | ScmStatusReporter | `:github` |
 | GitLab Status | ScmStatusReporter | `:gitlab` |
+| Gitea Status | ScmStatusReporter | `:gitea` |
+| Bitbucket Status | ScmStatusReporter | `:bitbucket` |
 
 ## Authentication & Security
 
@@ -772,7 +780,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 43 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 47 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -897,6 +905,15 @@ build_logs        -- Structured log entries
 -- 043: Flaky test detection (test_results table — build_id, test_name, status,
 --       duration_ms, error_msg; flaky_tests table — total_runs, pass/fail counts,
 --       flakiness_score, UNIQUE(org_id, job_id, test_name))
+```
+
+### Advanced SCM & Workflow Tables (Migrations 044-047)
+
+```sql
+-- 044-047: PR status checks (pr_checks table), build dependencies
+--          (job_dependencies table), cron schedules (cron_schedules table),
+--          and related indexes for PR check enforcement, dependency graphs,
+--          and persistent cron scheduling
 ```
 
 ## Build Performance & Caching
@@ -1153,13 +1170,13 @@ Web UI:
 |-----------|---------------|---------------|-------|
 | `agent/` | Agent node lifecycle | Separate process entry point | 5 |
 | `cli/` | User-facing CLI commands | Thin layer over engine | 3 |
-| `db/` | Data access (stores) | One file per table/concern | 27 |
+| `db/` | Data access (stores) | One file per table/concern | 30 |
 | `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability, HA | 9 |
 | `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
-| `engine/` | Build orchestration | Core business logic | 27 |
+| `engine/` | Build orchestration | Core business logic | 34 |
 | `model/` | Data validation (specs) | Schema definitions | 1 |
-| `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 15 |
+| `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 17 |
 | `web/` | HTTP handling | Handlers + middleware | 12 |
-| `web/views/` | Hiccup templates | One file per page/component | 24 |
+| `web/views/` | Hiccup templates | One file per page/component | 27 |
 
 Dependencies flow downward: `web` -> `engine` -> `db` -> `util`. The engine layer never imports web concerns, and the database layer never imports engine concerns. The plugin layer is cross-cutting but only depends on foundation. The auth/security layer wraps web handlers and is applied via middleware composition in `routes.clj`.
