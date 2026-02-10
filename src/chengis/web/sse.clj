@@ -5,6 +5,7 @@
             [chengis.engine.events :as events]
             [chengis.web.views.components :as c]
             [clojure.core.async :as async]
+            [clojure.data.json :as json]
             [hiccup2.core :as h]
             [hiccup.util :refer [escape-html]]
             [taoensso.timbre :as log]))
@@ -101,4 +102,52 @@
            (when-let [ch @event-ch-atom]
              (log/debug "SSE: cleaning up orphaned event channel for" build-id)
              (events/unsubscribe build-id ch)
+             (reset! event-ch-atom nil)))}))))
+
+;; ---------------------------------------------------------------------------
+;; Global event SSE endpoint (for browser notifications)
+;; ---------------------------------------------------------------------------
+
+(defn global-sse-handler
+  "Returns a Ring handler that opens a global SSE stream.
+   Subscribes to the :global topic for org-wide build-completed events.
+   Used by browser notifications to show OS-level alerts."
+  [_system]
+  (fn [req]
+    (let [event-ch-atom (atom nil)]
+      (http/as-channel req
+        {:on-open
+         (fn [channel]
+           (log/info "Global SSE client connected")
+           (http/send! channel
+             {:status 200
+              :headers {"Content-Type" "text/event-stream"
+                        "Cache-Control" "no-cache"
+                        "Connection" "keep-alive"
+                        "X-Accel-Buffering" "no"}}
+             false)
+           (let [event-ch (events/subscribe :global)]
+             (reset! event-ch-atom event-ch)
+             (http/send! channel (format-sse "connected" "{}") false)
+             (async/go-loop []
+               (if-let [event (async/<! event-ch)]
+                 (do
+                   (when (= :build-completed (:event-type event))
+                     (let [data {:buildId (:build-id event)
+                                 :operation (get-in event [:data :operation] "Build")
+                                 :status (name (or (get-in event [:data :build-status]) :unknown))}]
+                       (try
+                         (http/send! channel
+                           (format-sse "build-completed" (json/write-str data))
+                           false)
+                         (catch Exception e
+                           (log/debug "Global SSE send failed:" (.getMessage e))))))
+                   (recur))
+                 (http/close channel)))))
+
+         :on-close
+         (fn [channel status]
+           (log/info "Global SSE client disconnected, status:" status)
+           (when-let [ch @event-ch-atom]
+             (events/unsubscribe :global ch)
              (reset! event-ch-atom nil)))}))))

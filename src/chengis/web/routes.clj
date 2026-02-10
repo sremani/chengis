@@ -219,7 +219,14 @@
         ["/docker/policies"
          ["" {:get {:handler (auth/wrap-require-role :admin (h/docker-policies-page system))}
               :post {:handler (auth/wrap-require-role :admin (h/create-docker-policy-handler system))}}]
-         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-docker-policy-handler system))}}]]]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-docker-policy-handler system))}}]]
+        ["/traces"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/traces-page system))}}]
+         ["/:trace-id" {:get {:handler (auth/wrap-require-role :admin (h/trace-detail-page system))}}]]
+        ["/costs" {:get {:handler (auth/wrap-require-role :admin (h/cost-page system))}}]]
+       ;; Analytics (viewer+)
+       ["/analytics" {:get {:handler (auth/wrap-require-role :viewer (h/analytics-page system))}}]
+       ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/flaky-tests-page system))}}]
        ["/api"
         ["/alerts" {:get {:handler (alerts/alerts-handler system)}}]
         ["/alerts/fragment" {:get {:handler (alerts/alerts-fragment-handler system)}}]
@@ -236,7 +243,13 @@
          ["/:id/heartbeat" {:post {:handler (master-api/heartbeat-handler system)}}]]
         ["/webhook" {:post {:handler (webhook/webhook-handler system build-runner/build-executor)}}]
         ["/approvals/pending" {:get {:handler (auth/wrap-require-role :developer (h/api-pending-approvals system))}}]
-        ["/policies/evaluate" {:post {:handler (auth/wrap-require-role :admin (h/api-evaluate-policies system))}}]]]))
+        ["/policies/evaluate" {:post {:handler (auth/wrap-require-role :admin (h/api-evaluate-policies system))}}]
+        ["/traces/:trace-id/otlp" {:get {:handler (auth/wrap-require-role :viewer (h/trace-otlp-export system))}}]
+        ["/analytics/trends" {:get {:handler (auth/wrap-require-role :viewer (h/api-analytics-trends system))}}]
+        ["/analytics/stages" {:get {:handler (auth/wrap-require-role :viewer (h/api-analytics-stages system))}}]
+        ["/events/global" {:get {:handler (h/global-events-sse system)}}]
+        ["/costs/summary" {:get {:handler (auth/wrap-require-role :viewer (h/api-cost-summary system))}}]
+        ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/api-flaky-tests system))}}]]]))
     (ring/create-default-handler
       {:not-found (constantly {:status 404
                                :headers {"Content-Type" "text/html"}

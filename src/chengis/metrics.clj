@@ -184,7 +184,25 @@
       (prometheus/register
         (prometheus/histogram :policies/evaluation-duration-seconds
                               {:description "Policy evaluation duration"
-                               :buckets [0.001 0.005 0.01 0.025 0.05 0.1 0.25]}))))
+                               :buckets [0.001 0.005 0.01 0.025 0.05 0.1 0.25]}))
+
+      ;; Phase 5 (Observability): Tracing metrics
+      (prometheus/register
+        (prometheus/counter :tracing/spans-created-total
+                            {:description "Total trace spans created"}))
+      (prometheus/register
+        (prometheus/histogram :tracing/span-duration-seconds
+                              {:description "Trace span duration in seconds"
+                               :buckets [0.001 0.005 0.01 0.05 0.1 0.5 1.0 5.0 30.0 60.0 300.0]}))
+
+      ;; Phase 5 (Observability): Analytics metrics
+      (prometheus/register
+        (prometheus/counter :analytics/aggregation-runs-total
+                            {:description "Analytics aggregation runs completed"}))
+      (prometheus/register
+        (prometheus/histogram :analytics/aggregation-duration-seconds
+                              {:description "Analytics aggregation duration in seconds"
+                               :buckets [0.1 0.5 1.0 5.0 10.0 30.0 60.0]}))))
 
 (defn- as-label
   "Coerce a keyword, symbol, or string to a Prometheus label string.
@@ -433,6 +451,34 @@
   [registry duration-s]
   (when registry
     (prometheus/observe (registry :policies/evaluation-duration-seconds) duration-s)))
+
+;; ---------------------------------------------------------------------------
+;; Phase 5: Tracing and analytics metrics — all no-op when registry is nil
+;; ---------------------------------------------------------------------------
+
+(defn record-tracing-span-created!
+  "Record a trace span creation."
+  [registry]
+  (when registry
+    (prometheus/inc (registry :tracing/spans-created-total))))
+
+(defn record-tracing-span-duration!
+  "Record a trace span duration in seconds."
+  [registry duration-s]
+  (when registry
+    (prometheus/observe (registry :tracing/span-duration-seconds) duration-s)))
+
+(defn record-analytics-aggregation-run!
+  "Record an analytics aggregation run."
+  [registry]
+  (when registry
+    (prometheus/inc (registry :analytics/aggregation-runs-total))))
+
+(defn record-analytics-aggregation-duration!
+  "Record an analytics aggregation duration in seconds."
+  [registry duration-s]
+  (when registry
+    (prometheus/observe (registry :analytics/aggregation-duration-seconds) duration-s)))
 
 ;; ---------------------------------------------------------------------------
 ;; Metrics endpoint handler

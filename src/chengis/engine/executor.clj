@@ -11,6 +11,8 @@
             [chengis.engine.approval :as approval]
             [chengis.engine.cache :as cache]
             [chengis.engine.dag :as dag]
+            [chengis.engine.log-context :as log-ctx]
+            [chengis.engine.tracing :as tracing]
             [chengis.engine.policy :as policy]
             [chengis.engine.stage-cache :as stage-cache]
             [chengis.engine.matrix :as matrix]
@@ -63,6 +65,7 @@
   (let [step-name (:step-name step-def)
         stage-name (:current-stage build-ctx)
         started-at (now)]
+    (log-ctx/with-step-context step-name
     ;; Check cancellation before running
     (if (cancelled? build-ctx)
       (do
@@ -126,7 +129,7 @@
                     (:metrics-registry build-ctx) step-name status (/ (double ms) 1000.0))
                   (catch Exception e
                     (log/debug "Failed to record step metric:" (.getMessage e)))))
-              step-result)))))))
+              step-result))))))))
 
 (defn- run-steps-sequential
   "Run steps one by one. Stops on first failure or cancellation."
@@ -186,6 +189,7 @@
         start-ns (System/nanoTime)
         ;; Add current stage name to context so steps can reference it
         build-ctx (assoc build-ctx :current-stage stage-name)]
+    (log-ctx/with-stage-context stage-name
     ;; Check cancellation before running stage
     (if (cancelled? build-ctx)
       (do
@@ -235,7 +239,7 @@
              :stage-status stage-status
              :step-results step-results
              :started-at started-at
-             :completed-at (now)}))))))
+             :completed-at (now)})))))))
 
 (defn- run-post-action-group
   "Run a group of post-action steps as an implicit stage.
@@ -485,6 +489,7 @@
         early-ctx {:build-id build-id
                    :event-fn (:event-fn params)
                    :cancelled? (:cancelled? params)}]
+    (log-ctx/with-build-context build-id job-id (or org-id "default-org")
     (log/info "========================================")
     (log/info "Starting build" build-id "for" (:pipeline-name pipeline))
     (log/info "Workspace:" ws)
@@ -703,4 +708,4 @@
               (log/info "Build" build-id "completed with status:" build-status)
               (log/info "========================================")
               (emit build-ctx :build-completed {:build-status build-status})
-              build-result)))))))
+              build-result))))))))

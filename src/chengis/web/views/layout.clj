@@ -1,6 +1,7 @@
 (ns chengis.web.views.layout
   (:require [hiccup2.core :as h]
-            [hiccup.util :refer [raw-string escape-html]]))
+            [hiccup.util :refer [raw-string escape-html]]
+            [chengis.web.views.notifications :as notifications]))
 
 (defn- role-badge
   "Render a small role badge."
@@ -16,7 +17,7 @@
 (defn base-layout
   "Wrap page content in a full HTML document with Tailwind CSS and htmx.
    Options: :title, :csrf-token, :user (from auth middleware), :auth-enabled."
-  [{:keys [title csrf-token user auth-enabled]} & body]
+  [{:keys [title csrf-token user auth-enabled notifications-enabled]} & body]
   (str
     (h/html
       (raw-string "<!DOCTYPE html>")
@@ -59,11 +60,15 @@
            [:a {:href "/" :class "hover:text-blue-300 transition"} "Dashboard"]
            [:a {:href "/jobs" :class "hover:text-blue-300 transition"} "Jobs"]
            [:a {:href "/agents" :class "hover:text-blue-300 transition"} "Agents"]
+           [:a {:href "/analytics" :class "hover:text-blue-300 transition"} "Analytics"]
            (when (and auth-enabled user)
              [:a {:href "/settings/tokens" :class "hover:text-blue-300 transition"} "Settings"])
            (when (or (not auth-enabled)
                      (and user (= (keyword (:role user)) :admin)))
              [:a {:href "/admin" :class "hover:text-blue-300 transition"} "Admin"])
+           ;; Notification toggle
+           (when notifications-enabled
+             (notifications/notification-toggle))
            ;; User info / login-logout
            (if (and auth-enabled user)
              [:div {:class "flex items-center gap-2 ml-4 pl-4 border-l border-gray-600"}
@@ -84,4 +89,7 @@
         ;; Footer
         [:footer {:class "border-t mt-auto"}
          [:div {:class "max-w-7xl mx-auto px-4 py-4 text-center text-gray-400 text-xs"}
-          "Chengis CI v0.2.0"]]]])))
+          "Chengis CI v0.2.0"]]
+        ;; Browser notification script (when enabled)
+        (when notifications-enabled
+          (notifications/notification-script))]])))

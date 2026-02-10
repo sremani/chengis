@@ -2,6 +2,117 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [Unreleased] — Phase 5: Observability & Analytics
+
+### Feature 5a: Grafana Dashboards
+
+- **Pre-built dashboards** — Grafana JSON provisioning files for Prometheus metrics
+- **Three dashboards** — Overview (build success rate, duration, queue depth), Agents (utilization, circuit breaker), Security (login attempts, rate limits, lockouts)
+- **Provisioning configs** — Datasource and dashboard YAML for auto-import
+- **Setup guide** — `docs/grafana-setup.md` with step-by-step instructions
+
+### Feature 5b: Build Tracing
+
+- **Custom span-based tracing** — Lightweight distributed tracing stored in DB, avoiding heavyweight OpenTelemetry Java SDK
+- **Span lifecycle** — `start-span!` / `end-span!` / `with-span` macro for wrapping build stages and steps
+- **Waterfall visualization** — CSS-based span waterfall chart on trace detail page
+- **OTLP export** — Export traces as OTLP-compatible JSON for Jaeger/Tempo import
+- **Probabilistic sampling** — Configurable sample rate (default 1.0)
+- **Feature flag** — `:tracing` (default false) for safe rollout
+- **New source**: `src/chengis/engine/tracing.clj`, `src/chengis/db/trace_store.clj`, `src/chengis/web/views/traces.clj`
+- **Migration 040** — `trace_spans` table with indexes on trace_id, build_id, created_at, org_id
+
+### Feature 5c: Build Analytics Dashboard
+
+- **Precomputed analytics** — Daily/weekly build and stage statistics with chime-based scheduler
+- **Trend charts** — CSS bar chart for build duration trends
+- **Percentile computation** — p50, p90, p99 build/stage duration statistics
+- **Flakiness scoring** — Formula: `1 - |2*success_rate - 1|` (0=stable, 1=max flaky) for stages
+- **Slowest stages** — Ranked by p90 duration for performance optimization
+- **HA singleton** — Analytics scheduler runs on one master via leader election (lock 100004)
+- **Feature flag** — `:build-analytics` (default false)
+- **New source**: `src/chengis/engine/analytics.clj`, `src/chengis/db/analytics_store.clj`, `src/chengis/web/views/analytics.clj`
+- **Migration 041** — `build_analytics` and `stage_analytics` tables
+
+### Feature 5d: Log Correlation Context
+
+- **MDC-like context** — `with-build-context`, `with-stage-context`, `with-step-context` macros
+- **Correlation IDs** — build-id, job-id, org-id, stage-name, step-name in all structured logs
+- **JSON output** — Context keys included in JSON log format for ELK/Loki/Datadog
+- **Setup guide** — `docs/log-aggregation.md` with sample configs
+- **New source**: `src/chengis/engine/log_context.clj`
+
+### Feature 5e: Browser Notifications
+
+- **HTML5 Notification API** — Browser push notifications for build completion via SSE
+- **Permission toggle** — Nav bar toggle button with localStorage persistence
+- **Global SSE** — Org-scoped build completion events via `/api/events/global`
+- **Feature flag** — `:browser-notifications` (default false)
+- **Minimal JS exception** — Inline `<script>` for browser-native API (no HTML fallback exists)
+- **New source**: `src/chengis/web/views/notifications.clj`
+
+### Feature 5f: Build Cost Attribution
+
+- **Agent-hours tracking** — Duration and cost computed per build for chargeback
+- **Configurable cost rate** — `:default-cost-per-hour` setting (default 1.0)
+- **Org/job summaries** — Aggregate cost views grouped by organization and job
+- **Feature flag** — `:cost-attribution` (default false)
+- **New source**: `src/chengis/engine/cost.clj`, `src/chengis/db/cost_store.clj`, `src/chengis/web/views/cost.clj`
+- **Migration 042** — `build_cost_entries` table
+
+### Feature 5g: Flaky Test Detection
+
+- **Multi-format test parser** — JUnit XML, TAP, and generic "X passed, Y failed" pattern detection
+- **Statistical analysis** — Track test results across builds, compute flakiness scores
+- **Flakiness formula** — Tests with mixed pass/fail flagged when score exceeds configurable threshold
+- **Configurable thresholds** — `:flakiness-threshold 0.15`, `:min-runs 5`, `:lookback-builds 30`
+- **Feature flag** — `:flaky-test-detection` (default false)
+- **New source**: `src/chengis/engine/test_parser.clj`, `src/chengis/db/test_result_store.clj`, `src/chengis/web/views/flaky_tests.clj`
+- **Migration 043** — `test_results` and `flaky_tests` tables
+
+### New Feature Flags (5)
+
+| Flag | Default | Feature |
+|------|---------|---------|
+| `:tracing` | `false` | Distributed build tracing |
+| `:build-analytics` | `false` | Precomputed analytics dashboard |
+| `:browser-notifications` | `false` | HTML5 browser push notifications |
+| `:cost-attribution` | `false` | Build cost tracking |
+| `:flaky-test-detection` | `false` | Flaky test detection |
+
+### New Environment Variables (13)
+
+| Variable | Config Path | Default |
+|----------|-------------|---------|
+| `CHENGIS_FEATURE_TRACING` | `[:feature-flags :tracing]` | `false` |
+| `CHENGIS_TRACING_SAMPLE_RATE` | `[:tracing :sample-rate]` | `1.0` |
+| `CHENGIS_TRACING_RETENTION_DAYS` | `[:tracing :retention-days]` | `7` |
+| `CHENGIS_FEATURE_BUILD_ANALYTICS` | `[:feature-flags :build-analytics]` | `false` |
+| `CHENGIS_ANALYTICS_INTERVAL_HOURS` | `[:analytics :aggregation-interval-hours]` | `6` |
+| `CHENGIS_ANALYTICS_RETENTION_DAYS` | `[:analytics :retention-days]` | `365` |
+| `CHENGIS_FEATURE_BROWSER_NOTIFICATIONS` | `[:feature-flags :browser-notifications]` | `false` |
+| `CHENGIS_FEATURE_COST_ATTRIBUTION` | `[:feature-flags :cost-attribution]` | `false` |
+| `CHENGIS_COST_PER_HOUR` | `[:cost-attribution :default-cost-per-hour]` | `1.0` |
+| `CHENGIS_FEATURE_FLAKY_TESTS` | `[:feature-flags :flaky-test-detection]` | `false` |
+| `CHENGIS_FLAKY_THRESHOLD` | `[:flaky-detection :flakiness-threshold]` | `0.15` |
+| `CHENGIS_FLAKY_MIN_RUNS` | `[:flaky-detection :min-runs]` | `5` |
+| `CHENGIS_FLAKY_LOOKBACK` | `[:flaky-detection :lookback-builds]` | `30` |
+
+### Migrations 040-043
+
+- 040: `trace_spans` table for distributed build tracing
+- 041: `build_analytics` and `stage_analytics` tables for precomputed analytics
+- 042: `build_cost_entries` table for cost attribution
+- 043: `test_results` and `flaky_tests` tables for flaky test detection
+
+### Test Suite
+- **678 tests, 2,529 assertions — all passing**
+- 102 test files across 7 test subdirectories
+- 91 new tests added in Phase 5
+- New test files: tracing_test, trace_store_test, analytics_test, analytics_store_test, log_context_test, notifications_test, events_global_test, cost_test, cost_store_test, test_parser_test, test_result_store_test
+
+---
+
 ## [Unreleased] — Phase 4: Build Performance & Caching
 
 ### Feature 4a: Parallel Stage Execution (DAG Mode)
@@ -843,4 +954,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 587 passed, 2,275 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 678 passed, 2,529 assertions | varies | SUCCESS |

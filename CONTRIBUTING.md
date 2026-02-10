@@ -68,7 +68,7 @@ src/chengis/
     commands.clj        # Job, build, secret, pipeline, backup commands
     output.clj          # Formatted output helpers
 
-  db/                   # Database layer (23 files)
+  db/                   # Database layer (27 files)
     connection.clj      # SQLite + PostgreSQL connection pool (HikariCP)
     migrate.clj         # Migratus migration runner
     job_store.clj       # Job CRUD
@@ -92,6 +92,10 @@ src/chengis/
     docker_policy_store.clj # Docker image policies
     agent_store.clj     # Persistent agent registry (DB layer)
     backup.clj          # Database backup (VACUUM INTO) + restore
+    analytics_store.clj # Build analytics aggregation data
+    trace_store.clj     # Distributed trace span persistence
+    cost_store.clj      # Build cost attribution records
+    test_result_store.clj # Test results and flaky test tracking
 
   dsl/                  # Pipeline definition (6 files)
     core.clj            # defpipeline macro + DSL functions (matrix, post, etc.)
@@ -101,7 +105,7 @@ src/chengis/
     expressions.clj     # ${{ }} expression resolver
     templates.clj       # Pipeline template DSL
 
-  engine/               # Build execution (22 files)
+  engine/               # Build execution (27 files)
     executor.clj        # Core pipeline runner (sequential + DAG modes)
     build_runner.clj    # Build lifecycle + thread pool + deduplication
     dag.clj             # DAG utilities (topological sort, ready-stages)
@@ -124,6 +128,11 @@ src/chengis/
     scm_status.clj      # SCM commit status reporting
     compliance.clj      # Build compliance evaluation
     policy.clj          # Policy engine integration
+    tracing.clj         # Distributed build tracing (span lifecycle)
+    analytics.clj       # Build analytics aggregation engine
+    log_context.clj     # MDC-like log correlation context
+    cost.clj            # Build cost computation
+    test_parser.clj     # Test output parser (JUnit XML, TAP, generic)
 
   model/
     spec.clj            # Clojure specs for validation
@@ -180,7 +189,7 @@ src/chengis/
     rate_limit.clj      # Request rate limiting
     account_lockout.clj # Account lockout logic
     metrics_middleware.clj # HTTP request metrics
-    views/              # Hiccup view templates (19 files)
+    views/              # Hiccup view templates (24 files)
       layout.clj        # Base HTML layout
       dashboard.clj     # Home page
       jobs.clj          # Job list + detail
@@ -200,9 +209,14 @@ src/chengis/
       policies.clj      # Policy management
       plugin_policies.clj # Plugin trust allowlist management
       docker_policies.clj # Docker image policy management
+      traces.clj          # Trace listing and waterfall visualization
+      analytics.clj       # Build analytics dashboard
+      notifications.clj   # Browser notification toggle and script
+      cost.clj            # Cost attribution dashboard
+      flaky_tests.clj     # Flaky test detection dashboard
 
-test/chengis/           # Test suite (88 files, mirrors src/ structure)
-resources/migrations/   # SQL migration files (39 versions × 2 drivers)
+test/chengis/           # Test suite (102 files, mirrors src/ structure)
+resources/migrations/   # SQL migration files (43 versions × 2 drivers)
 pipelines/              # Example pipeline definitions (5 files)
 benchmarks/             # Performance benchmark suite
 k8s/base/               # Raw Kubernetes manifests
@@ -222,7 +236,7 @@ lein test chengis.engine.executor-test
 lein test chengis.dsl.chengisfile-test
 ```
 
-The test suite currently has **587 tests with 2,275 assertions**. All tests must pass before submitting a PR.
+The test suite currently has **678 tests with 2,529 assertions**. All tests must pass before submitting a PR.
 
 ### Test Organization
 
@@ -275,6 +289,17 @@ Tests mirror the source layout:
 | `distributed/agent_registry.clj` (resources) | `distributed/resource_scheduling_test.clj` |
 | `engine/artifact_delta.clj` | `engine/artifact_delta_test.clj` |
 | `engine/build_runner.clj` (dedup) | `engine/build_dedup_test.clj` |
+| `engine/tracing.clj` | `engine/tracing_test.clj` |
+| `db/trace_store.clj` | `db/trace_store_test.clj` |
+| `engine/analytics.clj` | `engine/analytics_test.clj` |
+| `db/analytics_store.clj` | `db/analytics_store_test.clj` |
+| `engine/log_context.clj` | `engine/log_context_test.clj` |
+| `web/views/notifications.clj` | `web/notifications_test.clj` |
+| `engine/events.clj` (global) | `engine/events_global_test.clj` |
+| `engine/cost.clj` | `engine/cost_test.clj` |
+| `db/cost_store.clj` | `db/cost_store_test.clj` |
+| `engine/test_parser.clj` | `engine/test_parser_test.clj` |
+| `db/test_result_store.clj` | `db/test_result_store_test.clj` |
 
 ### Writing Tests
 
@@ -300,24 +325,24 @@ Chengis uses [Migratus](https://github.com/yogthos/migratus) for schema evolutio
 
 ```
 resources/migrations/sqlite/
-  040-my-feature.up.sql
-  040-my-feature.down.sql
+  044-my-feature.up.sql
+  044-my-feature.down.sql
 resources/migrations/postgresql/
-  040-my-feature.up.sql
-  040-my-feature.down.sql
+  044-my-feature.up.sql
+  044-my-feature.down.sql
 ```
 
 2. Write the SQL (SQLite example):
 
 ```sql
--- 040-my-feature.up.sql
+-- 044-my-feature.up.sql
 CREATE TABLE IF NOT EXISTS my_table (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- 040-my-feature.down.sql
+-- 044-my-feature.down.sql
 DROP TABLE IF EXISTS my_table;
 ```
 

@@ -1,0 +1,15 @@
+# Grafana dashboard provisioning for Chengis CI/CD
+# Place this file in /etc/grafana/provisioning/dashboards/
+apiVersion: 1
+
+providers:
+  - name: Chengis
+    orgId: 1
+    folder: Chengis CI/CD
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/chengis
+      foldersFromFilesStructure: false

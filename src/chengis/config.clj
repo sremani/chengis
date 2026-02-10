@@ -129,6 +129,14 @@
    :cache {:root "cache"
            :max-size-gb 10
            :retention-days 30}
+   :tracing {:sample-rate 1.0
+             :retention-days 7}
+   :analytics {:aggregation-interval-hours 6
+               :retention-days 365}
+   :cost-attribution {:default-cost-per-hour 1.0}
+   :flaky-detection {:flakiness-threshold 0.15
+                     :min-runs 5
+                     :lookback-builds 30}
    :deduplication {:window-minutes 10}
    :ha {:enabled false
         :leader-poll-ms 15000
@@ -144,7 +152,13 @@
                    :build-result-cache false
                    :resource-aware-scheduling false
                    :incremental-artifacts false
-                   :build-deduplication false}
+                   :build-deduplication false
+                   ;; Phase 5: Observability & Analytics
+                   :tracing false
+                   :build-analytics false
+                   :browser-notifications false
+                   :cost-attribution false
+                   :flaky-test-detection false}
    :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
@@ -229,7 +243,21 @@
    "CHENGIS_FEATURE_RESOURCE_SCHEDULING"        [:feature-flags :resource-aware-scheduling]
    "CHENGIS_FEATURE_INCREMENTAL_ARTIFACTS"      [:feature-flags :incremental-artifacts]
    "CHENGIS_FEATURE_BUILD_DEDUP"                [:feature-flags :build-deduplication]
-   "CHENGIS_DEDUP_WINDOW_MINUTES"               [:deduplication :window-minutes]})
+   "CHENGIS_DEDUP_WINDOW_MINUTES"               [:deduplication :window-minutes]
+   ;; Phase 5: Observability & Analytics
+   "CHENGIS_FEATURE_TRACING"                    [:feature-flags :tracing]
+   "CHENGIS_TRACING_SAMPLE_RATE"                [:tracing :sample-rate]
+   "CHENGIS_TRACING_RETENTION_DAYS"             [:tracing :retention-days]
+   "CHENGIS_FEATURE_BUILD_ANALYTICS"            [:feature-flags :build-analytics]
+   "CHENGIS_ANALYTICS_INTERVAL_HOURS"           [:analytics :aggregation-interval-hours]
+   "CHENGIS_ANALYTICS_RETENTION_DAYS"           [:analytics :retention-days]
+   "CHENGIS_FEATURE_BROWSER_NOTIFICATIONS"      [:feature-flags :browser-notifications]
+   "CHENGIS_FEATURE_COST_ATTRIBUTION"           [:feature-flags :cost-attribution]
+   "CHENGIS_COST_PER_HOUR"                      [:cost-attribution :default-cost-per-hour]
+   "CHENGIS_FEATURE_FLAKY_TEST_DETECTION"       [:feature-flags :flaky-test-detection]
+   "CHENGIS_FLAKY_THRESHOLD"                    [:flaky-detection :flakiness-threshold]
+   "CHENGIS_FLAKY_MIN_RUNS"                     [:flaky-detection :min-runs]
+   "CHENGIS_FLAKY_LOOKBACK_BUILDS"              [:flaky-detection :lookback-builds]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.

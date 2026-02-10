@@ -1,0 +1,205 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Chengis CI/CD agent health — utilization, circuit breakers, dispatch, artifact transfers",
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Agent Utilization",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "agents_utilization_ratio * 100",
+          "legendFormat": "Utilization"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Circuit Breakers Open",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "agents_circuit_breaker_open",
+          "legendFormat": "Open"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Orphaned Builds Recovered",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "increase(dispatch_orphans_recovered_total[1h])",
+          "legendFormat": "Recovered (1h)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Dispatch Attempts",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(increase(dispatch_total[1h])) by (result)",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "title": "Agent Utilization Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "agents_utilization_ratio * 100",
+          "legendFormat": "Utilization %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20 }
+        }
+      }
+    },
+    {
+      "title": "Dispatch Results Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "rate(dispatch_total{result=\"success\"}[5m])",
+          "legendFormat": "Success"
+        },
+        {
+          "expr": "rate(dispatch_total{result=\"failure\"}[5m])",
+          "legendFormat": "Failure"
+        },
+        {
+          "expr": "rate(dispatch_total{result=\"no-agent\"}[5m])",
+          "legendFormat": "No Agent"
+        },
+        {
+          "expr": "rate(dispatch_total{result=\"retry\"}[5m])",
+          "legendFormat": "Retry"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 15 }
+        }
+      }
+    },
+    {
+      "title": "Artifact Transfers",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        {
+          "expr": "rate(artifacts_transferred_total{result=\"success\"}[5m])",
+          "legendFormat": "Success"
+        },
+        {
+          "expr": "rate(artifacts_transferred_total{result=\"failure\"}[5m])",
+          "legendFormat": "Failure"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Success" }, "properties": [{ "id": "color", "value": { "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "Failure" }, "properties": [{ "id": "color", "value": { "fixedColor": "red" } }] }
+        ]
+      }
+    },
+    {
+      "title": "Circuit Breaker State Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        {
+          "expr": "agents_circuit_breaker_open",
+          "legendFormat": "Open Breakers"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+        }
+      }
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["chengis", "ci-cd", "agents"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Chengis — Agent Health",
+  "uid": "chengis-agents",
+  "version": 1
+}

@@ -45,8 +45,13 @@
                   (.getMessage e)))))
   ;; 2. Broadcast via channel (ephemeral SSE)
   (if (async/offer! event-chan event)
-    (try (metrics/record-event-published! @metrics-registry)
-         (catch Exception _))
+    (do
+      (try (metrics/record-event-published! @metrics-registry)
+           (catch Exception _))
+      ;; 3. Also broadcast build-completed events to the :global topic
+      ;;    for org-wide browser notifications
+      (when (= :build-completed (:event-type event))
+        (async/offer! event-chan (assoc event :build-id :global))))
     (do
       (try (metrics/record-event-overflow! @metrics-registry)
            (catch Exception _))

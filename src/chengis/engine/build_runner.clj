@@ -6,6 +6,7 @@
   (:require [chengis.db.build-store :as build-store]
             [chengis.engine.executor :as executor]
             [chengis.engine.events :as events]
+            [chengis.engine.log-context :as log-ctx]
             [chengis.engine.scm-status :as scm-status]
             [chengis.feature-flags :as ff]
             [chengis.metrics :as metrics]
@@ -127,30 +128,31 @@
           build-number (:build-number build-record)
           cancelled-atom (atom false)
           start-ns (System/nanoTime)]
-      (log/info "Build #" build-number "triggered for" (:name job)
-                "(id:" build-id "trigger:" (name trigger-type) ")")
-      (try (metrics/record-build-start! registry)
-           (catch Exception e (log/debug "Failed to record build-start metric:" (.getMessage e))))
-      (register-build! build-id cancelled-atom)
-      (try
-        (let [result (executor/run-build system pipeline
-                       (cond-> {:job-id (:id job)
-                                :build-number build-number
-                                :cancelled? cancelled-atom}
-                         (:org-id job) (assoc :org-id (:org-id job))
-                         event-fn   (assoc :event-fn event-fn)
-                         parameters (assoc :parameters parameters)))]
-          (persist-result! ds build-id result)
-          (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
-            (try (metrics/record-build-end! registry (:build-status result) duration-s)
-                 (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
-          (log/info "Build #" build-number "for" (:name job)
-                    "completed:" (name (:build-status result)))
-          (report-scm-status! system build-id (:id job) result
-            (:build-status result) (str "Build #" build-number " " (name (:build-status result))))
-          (assoc result :build-id build-id :build-number build-number))
-        (finally
-          (deregister-build! build-id))))))
+      (log-ctx/with-build-context build-id (:id job) (or (:org-id job) "default-org")
+        (log/info "Build #" build-number "triggered for" (:name job)
+                  "(id:" build-id "trigger:" (name trigger-type) ")")
+        (try (metrics/record-build-start! registry)
+             (catch Exception e (log/debug "Failed to record build-start metric:" (.getMessage e))))
+        (register-build! build-id cancelled-atom)
+        (try
+          (let [result (executor/run-build system pipeline
+                         (cond-> {:job-id (:id job)
+                                  :build-number build-number
+                                  :cancelled? cancelled-atom}
+                           (:org-id job) (assoc :org-id (:org-id job))
+                           event-fn   (assoc :event-fn event-fn)
+                           parameters (assoc :parameters parameters)))]
+            (persist-result! ds build-id result)
+            (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
+              (try (metrics/record-build-end! registry (:build-status result) duration-s)
+                   (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
+            (log/info "Build #" build-number "for" (:name job)
+                      "completed:" (name (:build-status result)))
+            (report-scm-status! system build-id (:id job) result
+              (:build-status result) (str "Build #" build-number " " (name (:build-status result))))
+            (assoc result :build-id build-id :build-number build-number))
+          (finally
+            (deregister-build! build-id)))))))
 
 (defn execute-build-for-record!
   "Execute a build for a pre-created build record.
@@ -174,23 +176,24 @@
         build-number (:build-number build-record)
         cancelled-atom (atom false)
         start-ns (System/nanoTime)]
-    (try (metrics/record-build-start! registry)
-         (catch Exception e (log/debug "Failed to record build-start metric:" (.getMessage e))))
-    (register-build! build-id cancelled-atom)
-    (try
-      (let [result (executor/run-build system pipeline
-                     (cond-> {:job-id (:id job)
-                              :build-number build-number
-                              :cancelled? cancelled-atom}
-                       (:org-id job) (assoc :org-id (:org-id job))
-                       event-fn   (assoc :event-fn event-fn)
-                       parameters (assoc :parameters parameters)))]
-        (persist-result! ds build-id result)
-        (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
-          (try (metrics/record-build-end! registry (:build-status result) duration-s)
-               (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
-        (report-scm-status! system build-id (:id job) result
-          (:build-status result) (str "Build #" build-number " " (name (:build-status result))))
-        (assoc result :build-id build-id :build-number build-number))
-      (finally
-        (deregister-build! build-id)))))
+    (log-ctx/with-build-context build-id (:id job) (or (:org-id job) "default-org")
+      (try (metrics/record-build-start! registry)
+           (catch Exception e (log/debug "Failed to record build-start metric:" (.getMessage e))))
+      (register-build! build-id cancelled-atom)
+      (try
+        (let [result (executor/run-build system pipeline
+                       (cond-> {:job-id (:id job)
+                                :build-number build-number
+                                :cancelled? cancelled-atom}
+                         (:org-id job) (assoc :org-id (:org-id job))
+                         event-fn   (assoc :event-fn event-fn)
+                         parameters (assoc :parameters parameters)))]
+          (persist-result! ds build-id result)
+          (let [duration-s (/ (double (- (System/nanoTime) start-ns)) 1e9)]
+            (try (metrics/record-build-end! registry (:build-status result) duration-s)
+                 (catch Exception e (log/debug "Failed to record build-end metric:" (.getMessage e)))))
+          (report-scm-status! system build-id (:id job) result
+            (:build-status result) (str "Build #" build-number " " (name (:build-status result))))
+          (assoc result :build-id build-id :build-number build-number))
+        (finally
+          (deregister-build! build-id))))))

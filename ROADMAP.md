@@ -164,23 +164,22 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 
 ---
 
-## Phase 5: Observability & Analytics (current)
+### Phase 5: Observability & Analytics
 
-**Theme:** Deep visibility into build performance, trends, and system health.
-
-| Feature | Description | Priority |
-|---------|-------------|----------|
-| Grafana dashboards | Pre-built Grafana JSON for Prometheus metrics (build duration, queue depth, agent utilization) | High |
-| OpenTelemetry tracing | Distributed traces across master, dispatcher, and agents with span hierarchy | High |
-| Build analytics dashboard | Trend charts for duration, success rate, flakiness detection, slowest stages | High |
-| Log aggregation | Structured JSON logs compatible with ELK/Loki for centralized log management | Medium |
-| Real-time notifications | Browser push notifications and desktop alerts for build completion | Medium |
-| Build cost attribution | Track agent-hours per org/job for chargeback and capacity planning | Medium |
-| Flaky test detection | Statistical analysis of test results across builds to flag unreliable tests | Low |
+- Grafana dashboard provisioning files (overview, agents, security) for existing Prometheus metrics
+- Custom span-based build tracing stored in DB, waterfall visualization, OTLP JSON export (feature flag: `:tracing`)
+- Precomputed daily/weekly build analytics: duration trends, success rates, percentiles, slowest stages, flakiness scores (feature flag: `:build-analytics`)
+- MDC-like log correlation context: build-id, job-id, org-id, stage-name, step-name in all structured logs
+- Browser push notifications for build completion via SSE + HTML5 Notification API (feature flag: `:browser-notifications`)
+- Build cost attribution: agent-hours per build for chargeback and capacity planning (feature flag: `:cost-attribution`)
+- Flaky test detection: JUnit XML, TAP, and generic parsers; statistical flakiness scoring (feature flag: `:flaky-test-detection`)
+- 5 new feature flags, 13 new environment variables
+- Migrations 040-043
+- **678 tests, 2,529 assertions — all passing**
 
 ---
 
-## Phase 6: Advanced SCM & Workflow
+## Phase 6: Advanced SCM & Workflow (next)
 
 **Theme:** Deeper integration with source control and more expressive pipeline definitions.
 
@@ -296,3 +295,4 @@ These items are under consideration but not yet scheduled:
 | Phase 3 | K8s & HA | Persistent agents, Leader election, K8s manifests, Helm | 516 | 35 |
 | Security II | Review | Auth bypass, Org scoping, Hash-chain integrity | 525 | 36 |
 | Phase 4 | Performance | DAG execution, Caching, Delta artifacts, Resource scheduling, Dedup | **587** | 37-39 |
+| Phase 5 | Observability | Tracing, Analytics, Notifications, Cost, Flaky tests, Grafana, Logs | **678** | 40-43 |

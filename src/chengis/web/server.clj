@@ -11,6 +11,7 @@
             [chengis.distributed.queue-processor :as queue-processor]
             [chengis.distributed.orphan-monitor :as orphan-monitor]
             [chengis.distributed.leader-election :as leader]
+            [chengis.engine.analytics :as analytics]
             [chengis.engine.retention :as retention]
             [chengis.plugin.loader :as plugin-loader]
             [chengis.web.audit :as audit]
@@ -130,6 +131,17 @@
                       poll-ms)))
               (do (log/info "Starting data retention scheduler")
                   (retention/start-retention! system))))
+        ;; Analytics scheduler (lock-id 100004)
+        _ (when (get-in cfg [:feature-flags :build-analytics])
+            (if ha-enabled?
+              (do (log/info "Starting analytics scheduler with leader election")
+                  (swap! leader-loops conj
+                    (leader/start-leader-loop! ds 100004 "analytics-scheduler"
+                      #(analytics/start-analytics! system)
+                      #(analytics/stop-analytics!)
+                      poll-ms)))
+              (do (log/info "Starting build analytics scheduler")
+                  (analytics/start-analytics! system))))
         ;; Seed admin user when auth is enabled
         _ (when (get-in cfg [:auth :enabled])
             (user-store/seed-admin! ds (get-in cfg [:auth :seed-admin-password] "admin")))
@@ -225,6 +237,9 @@
   (when (queue-processor/running?*)
     (log/info "Stopping queue processor...")
     (queue-processor/stop-processor!))
+  (when (analytics/running?*)
+    (log/info "Stopping analytics scheduler...")
+    (analytics/stop-analytics!))
 
   ;; 2. Stop HTTP/HTTPS servers — allow 15s for in-flight requests to complete
   (when-let [stop-fn @server-instance]

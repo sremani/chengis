@@ -1,0 +1,240 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Chengis CI/CD security metrics — authentication, rate limiting, account lockouts, policy enforcement",
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Login Attempts (1h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(increase(auth_login_total[1h])) by (result)",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "title": "Account Lockouts (1h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "increase(auth_account_lockouts_total[1h])",
+          "legendFormat": "Lockouts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Rate-Limited Requests (1h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(increase(rate_limit_rejected_total[1h])) by (endpoint_type)",
+          "legendFormat": "{{endpoint_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 100 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Policy Denials (1h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(increase(policies_denied_total[1h])) by (policy_type)",
+          "legendFormat": "{{policy_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Authentication Events",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "rate(auth_login_total{result=\"success\"}[5m])",
+          "legendFormat": "Login Success"
+        },
+        {
+          "expr": "rate(auth_login_total{result=\"failure\"}[5m])",
+          "legendFormat": "Login Failure"
+        },
+        {
+          "expr": "rate(auth_token_auth_total{result=\"success\"}[5m])",
+          "legendFormat": "Token Success"
+        },
+        {
+          "expr": "rate(auth_token_auth_total{result=\"failure\"}[5m])",
+          "legendFormat": "Token Failure"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 15 }
+        }
+      }
+    },
+    {
+      "title": "Rate Limiting Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "sum(rate(rate_limit_rejected_total[5m])) by (endpoint_type)",
+          "legendFormat": "{{endpoint_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 20 }
+        }
+      }
+    },
+    {
+      "title": "Policy Evaluations",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum(rate(policies_evaluated_total{result=\"allow\"}[5m]))",
+          "legendFormat": "Allowed"
+        },
+        {
+          "expr": "sum(rate(policies_evaluated_total{result=\"deny\"}[5m]))",
+          "legendFormat": "Denied"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Allowed" }, "properties": [{ "id": "color", "value": { "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "Denied" }, "properties": [{ "id": "color", "value": { "fixedColor": "red" } }] }
+        ]
+      }
+    },
+    {
+      "title": "Secret Access Events",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum(rate(secrets_access_total[5m])) by (action)",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 }
+        }
+      }
+    },
+    {
+      "title": "SCM Status Reports",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum(rate(scm_status_reports_total[5m])) by (provider, result)",
+          "legendFormat": "{{provider}} — {{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10 }
+        }
+      }
+    },
+    {
+      "title": "Hash Chain Verifications",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum(rate(compliance_hash_chain_verifications_total[5m])) by (result)",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "valid" }, "properties": [{ "id": "color", "value": { "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "invalid" }, "properties": [{ "id": "color", "value": { "fixedColor": "red" } }] }
+        ]
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["chengis", "ci-cd", "security"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Chengis — Security & Compliance",
+  "uid": "chengis-security",
+  "version": 1
+}

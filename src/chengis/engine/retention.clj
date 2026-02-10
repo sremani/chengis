@@ -3,10 +3,15 @@
    Periodically runs cleanup functions to remove expired data:
    audit logs, webhook events, secret access logs, JWT blacklist entries,
    and old workspaces. Config-gated via :retention :enabled."
-  (:require [chengis.db.audit-store :as audit-store]
+  (:require [chengis.db.analytics-store :as analytics-store]
+            [chengis.db.audit-store :as audit-store]
+            [chengis.db.cost-store :as cost-store]
+            [chengis.db.test-result-store :as test-result-store]
+            [chengis.db.trace-store :as trace-store]
             [chengis.db.webhook-log :as webhook-log]
             [chengis.db.secret-audit :as secret-audit]
             [chengis.engine.cleanup :as cleanup]
+            [chengis.feature-flags :as ff]
             [chengis.metrics :as metrics]
             [chengis.web.auth :as auth]
             [chime.core :as chime]
@@ -90,7 +95,63 @@
                (:cleaned result))
              (catch Exception e
                (log/warn "Workspace cleanup failed:" (.getMessage e))
-               0))}
+               0))
+
+           :trace-spans
+           (if (ff/enabled? config :tracing)
+             (try
+               (let [trace-days (get-in config [:tracing :retention-days] 7)
+                     n (trace-store/cleanup-old-traces! ds trace-days)]
+                 (when (pos? n)
+                   (try (metrics/record-retention-cleaned! registry :trace-spans n)
+                        (catch Exception _)))
+                 n)
+               (catch Exception e
+                 (log/warn "Trace span cleanup failed:" (.getMessage e))
+                 0))
+             0)
+
+           :analytics
+           (if (ff/enabled? config :build-analytics)
+             (try
+               (let [analytics-days (get-in config [:analytics :retention-days] 365)
+                     n (analytics-store/cleanup-old-analytics! ds analytics-days)]
+                 (when (pos? n)
+                   (try (metrics/record-retention-cleaned! registry :analytics n)
+                        (catch Exception _)))
+                 n)
+               (catch Exception e
+                 (log/warn "Analytics cleanup failed:" (.getMessage e))
+                 0))
+             0)
+
+           :cost-entries
+           (if (ff/enabled? config :cost-attribution)
+             (try
+               (let [cost-days (get-in config [:cost-attribution :retention-days] 365)
+                     n (cost-store/cleanup-old-costs! ds cost-days)]
+                 (when (pos? n)
+                   (try (metrics/record-retention-cleaned! registry :cost-entries n)
+                        (catch Exception _)))
+                 n)
+               (catch Exception e
+                 (log/warn "Cost entries cleanup failed:" (.getMessage e))
+                 0))
+             0)
+
+           :test-results
+           (if (ff/enabled? config :flaky-test-detection)
+             (try
+               (let [test-days (get-in config [:flaky-detection :retention-days] 90)
+                     n (test-result-store/cleanup-old-test-results! ds test-days)]
+                 (when (pos? n)
+                   (try (metrics/record-retention-cleaned! registry :test-results n)
+                        (catch Exception _)))
+                 n)
+               (catch Exception e
+                 (log/warn "Test results cleanup failed:" (.getMessage e))
+                 0))
+             0)}
 
           total (reduce + (vals results))]
       (log/info "Retention cleanup complete:" results)

@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**587 tests | 2,275 assertions | 0 failures**
+**678 tests | 2,529 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -169,7 +169,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Policy engine** &mdash; Org-scoped build policies with priority ordering and short-circuit evaluation
 - **Artifact checksums** &mdash; SHA-256 integrity verification on collected artifacts
 - **Compliance reports** &mdash; Policy evaluation results tracked per build with admin dashboard
-- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (9 flags for safe rollout)
+- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (14 flags for safe rollout)
 - **Plugin trust** &mdash; External plugin allowlist with admin management UI
 - **Docker image policies** &mdash; Allow/deny rules for Docker registries and images per organization
 
@@ -208,18 +208,25 @@ Build #1 — SUCCESS (8.3 sec)
 
 - **Live streaming** &mdash; SSE-powered real-time build output (no polling, no WebSocket)
 - **Prometheus metrics** &mdash; `/metrics` endpoint with build, auth, webhook, and system metrics
+- **Grafana dashboards** &mdash; Pre-built JSON provisioning files for Prometheus (build overview, agent utilization, security)
+- **Build tracing** &mdash; Distributed span-based tracing stored in DB, waterfall visualization, OTLP JSON export
+- **Build analytics dashboard** &mdash; Precomputed daily/weekly trends: duration, success rate, slowest stages, flakiness scores
+- **Browser notifications** &mdash; HTML5 Notification API for build completion via SSE (feature-flagged)
+- **Build cost attribution** &mdash; Agent-hours per build for chargeback and capacity planning
+- **Flaky test detection** &mdash; Statistical analysis of test results; JUnit XML, TAP, and generic parsers
+- **Log correlation context** &mdash; MDC-like correlation IDs (build-id, job-id, org-id) in structured logs
 - **Build notifications** &mdash; Console, Slack, and email notifications
 - **Admin dashboard** &mdash; JVM stats, memory usage, executor pool status, disk usage breakdown
 - **Build history** &mdash; Full log retention with stage/step breakdown, timing, and attempt tracking
 - **Alert system** &mdash; System health alerts with auto-resolve
-- **Data retention** &mdash; Automated cleanup scheduler for audit logs, webhook events, and old data
+- **Data retention** &mdash; Automated cleanup scheduler for audit logs, webhook events, traces, analytics, costs, test results
 - **Database backup** &mdash; Hot backup via SQLite `VACUUM INTO` or `pg_dump` for PostgreSQL, CLI commands, and admin UI download
 - **Audit export** &mdash; Export audit logs as CSV or JSON for SIEM integration
 
 ### Persistence
 
 - **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
-- **39 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
+- **43 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -672,7 +679,12 @@ Chengis uses sensible defaults. Override via `resources/config.edn` or environme
                  :build-result-cache false
                  :resource-aware-scheduling false
                  :incremental-artifacts false
-                 :build-deduplication false}
+                 :build-deduplication false
+                 :tracing false
+                 :build-analytics false
+                 :browser-notifications false
+                 :cost-attribution false
+                 :flaky-test-detection false}
 
  ;; Parallel stage execution (DAG mode)
  :parallel-stages {:max-concurrent 4}
@@ -684,6 +696,22 @@ Chengis uses sensible defaults. Override via `resources/config.edn` or environme
 
  ;; Build deduplication
  :deduplication {:window-minutes 10}
+
+ ;; Build tracing
+ :tracing    {:sample-rate 1.0
+              :retention-days 7}
+
+ ;; Build analytics
+ :analytics  {:aggregation-interval-hours 6
+              :retention-days 365}
+
+ ;; Build cost attribution
+ :cost-attribution {:default-cost-per-hour 1.0}
+
+ ;; Flaky test detection
+ :flaky-detection {:flakiness-threshold 0.15
+                   :min-runs 5
+                   :lookback-builds 30}
 
  ;; Prometheus metrics
  :metrics    {:enabled false
@@ -743,6 +771,19 @@ All configuration can be overridden with `CHENGIS_*` environment variables. Nest
 | `CHENGIS_FEATURE_INCREMENTAL_ARTIFACTS` | `[:feature-flags :incremental-artifacts]` | `false` |
 | `CHENGIS_FEATURE_BUILD_DEDUP` | `[:feature-flags :build-deduplication]` | `false` |
 | `CHENGIS_DEDUP_WINDOW_MINUTES` | `[:deduplication :window-minutes]` | `10` |
+| `CHENGIS_FEATURE_TRACING` | `[:feature-flags :tracing]` | `false` |
+| `CHENGIS_TRACING_SAMPLE_RATE` | `[:tracing :sample-rate]` | `1.0` |
+| `CHENGIS_TRACING_RETENTION_DAYS` | `[:tracing :retention-days]` | `7` |
+| `CHENGIS_FEATURE_BUILD_ANALYTICS` | `[:feature-flags :build-analytics]` | `false` |
+| `CHENGIS_ANALYTICS_INTERVAL_HOURS` | `[:analytics :aggregation-interval-hours]` | `6` |
+| `CHENGIS_ANALYTICS_RETENTION_DAYS` | `[:analytics :retention-days]` | `365` |
+| `CHENGIS_FEATURE_BROWSER_NOTIFICATIONS` | `[:feature-flags :browser-notifications]` | `false` |
+| `CHENGIS_FEATURE_COST_ATTRIBUTION` | `[:feature-flags :cost-attribution]` | `false` |
+| `CHENGIS_COST_PER_HOUR` | `[:cost-attribution :default-cost-per-hour]` | `1.0` |
+| `CHENGIS_FEATURE_FLAKY_TESTS` | `[:feature-flags :flaky-test-detection]` | `false` |
+| `CHENGIS_FLAKY_THRESHOLD` | `[:flaky-detection :flakiness-threshold]` | `0.15` |
+| `CHENGIS_FLAKY_MIN_RUNS` | `[:flaky-detection :min-runs]` | `5` |
+| `CHENGIS_FLAKY_LOOKBACK` | `[:flaky-detection :lookback-builds]` | `30` |
 | `CHENGIS_HA_ENABLED` | `[:ha :enabled]` | `true` |
 | `CHENGIS_HA_LEADER_POLL_MS` | `[:ha :leader-poll-ms]` | `15000` |
 | `CHENGIS_HA_INSTANCE_ID` | `[:ha :instance-id]` | `pod-name` |
@@ -796,6 +837,17 @@ Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings 
 | `POST /api/webhook` | SCM webhook endpoint (GitHub/GitLab) |
 | `POST /api/agents/register` | Agent registration (machine-to-machine) |
 | `POST /api/agents/:id/heartbeat` | Agent heartbeat |
+| `GET /analytics` | Build analytics dashboard (trends, stages, flakiness) |
+| `GET /analytics/flaky-tests` | Flaky test detection dashboard |
+| `GET /admin/traces` | Trace listing page |
+| `GET /admin/traces/:trace-id` | Trace detail with waterfall visualization |
+| `GET /admin/costs` | Build cost attribution dashboard |
+| `GET /api/analytics/trends` | Analytics trend data (JSON) |
+| `GET /api/analytics/stages` | Stage analytics data (JSON) |
+| `GET /api/analytics/flaky-tests` | Flaky test data (JSON) |
+| `GET /api/traces/:trace-id/otlp` | OTLP JSON export for Jaeger/Tempo |
+| `GET /api/events/global` | Global SSE stream for org-scoped build completion events |
+| `GET /api/costs/summary` | Cost summary data (JSON) |
 
 ## Project Structure
 
@@ -812,7 +864,7 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # Database persistence layer (23 files)
+    db/                     # Database persistence layer (27 files)
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
@@ -835,6 +887,10 @@ chengis/
       plugin_policy_store.clj # Plugin trust allowlist
       docker_policy_store.clj # Docker image policies
       agent_store.clj       # Persistent agent registry (DB layer)
+      analytics_store.clj   # Build analytics aggregation data
+      trace_store.clj       # Distributed trace span persistence
+      cost_store.clj        # Build cost attribution records
+      test_result_store.clj # Test results and flaky test tracking
       backup.clj            # Database backup/restore
     distributed/            # Distributed build coordination (9 files)
       agent_registry.clj    # Write-through agent registry (atom + DB)
@@ -853,7 +909,7 @@ chengis/
       yaml.clj              # YAML workflow parser
       expressions.clj       # ${{ }} expression resolver
       templates.clj         # Pipeline template DSL
-    engine/                 # Build execution engine (22 files)
+    engine/                 # Build execution engine (27 files)
       executor.clj          # Core pipeline runner (sequential + DAG modes)
       build_runner.clj      # Build lifecycle + thread pool + deduplication
       dag.clj               # DAG utilities (topological sort, ready-stages)
@@ -876,6 +932,11 @@ chengis/
       scm_status.clj        # SCM commit status reporting
       compliance.clj        # Build compliance evaluation
       policy.clj            # Policy engine integration
+      tracing.clj           # Distributed build tracing (span lifecycle)
+      analytics.clj         # Build analytics aggregation engine
+      log_context.clj       # MDC-like log correlation context
+      cost.clj              # Build cost computation
+      test_parser.clj       # Test output parser (JUnit XML, TAP, generic)
     model/                  # Data specs (1 file)
       spec.clj              # Clojure specs for validation
     plugin/                 # Plugin system (15 files)
@@ -896,7 +957,7 @@ chengis/
         yaml_format.clj     # YAML pipeline format
         github_status.clj   # GitHub commit status reporter
         gitlab_status.clj   # GitLab commit status reporter
-    web/                    # HTTP server and UI (31 files)
+    web/                    # HTTP server and UI (36 files)
       server.clj            # http-kit server startup + HA wiring
       routes.clj            # Reitit routes + middleware
       handlers.clj          # Request handlers
@@ -909,7 +970,7 @@ chengis/
       rate_limit.clj        # Request rate limiting
       account_lockout.clj   # Account lockout logic
       metrics_middleware.clj # HTTP request metrics
-      views/                # Hiccup view templates (19 files)
+      views/                # Hiccup view templates (24 files)
         layout.clj          # Base HTML layout
         dashboard.clj       # Home page
         jobs.clj            # Job list + detail
@@ -929,13 +990,18 @@ chengis/
         policies.clj        # Policy management
         plugin_policies.clj # Plugin trust allowlist management
         docker_policies.clj # Docker image policy management
+        traces.clj          # Trace listing and waterfall visualization
+        analytics.clj       # Build analytics dashboard
+        notifications.clj   # Browser notification toggle and script
+        cost.clj            # Cost attribution dashboard
+        flaky_tests.clj     # Flaky test detection dashboard
     config.clj              # Configuration loading + env var overrides
     logging.clj             # Structured logging setup
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (88 files)
-  resources/migrations/     # Database migrations (39 versions × 2 drivers)
+  test/chengis/             # Test suite (102 files)
+  resources/migrations/     # Database migrations (43 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
@@ -947,7 +1013,7 @@ chengis/
   docker-compose.ha.yml     # HA override: PostgreSQL + 2 masters for multi-master testing
 ```
 
-**Codebase:** ~22,000 lines source + ~14,000 lines tests across 214+ files
+**Codebase:** ~25,000 lines source + ~16,000 lines tests across 237+ files
 
 ## Technology Stack
 
@@ -958,7 +1024,7 @@ chengis/
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
 | Connection pool | HikariCP | PostgreSQL connection pooling |
-| Migrations | Migratus | Schema evolution (39 versions × 2 drivers) |
+| Migrations | Migratus | Schema evolution (43 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -1017,7 +1083,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **587 tests, 2,275 assertions, 0 failures**
+Current test suite: **678 tests, 2,529 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
@@ -1059,6 +1125,13 @@ Test coverage spans:
 - Policy engine and compliance reports
 - Persistent agent registry (write-through cache, DB hydration)
 - Leader election (advisory locks, singleton services)
+- Build tracing (span lifecycle, waterfall, OTLP export, sampling)
+- Build analytics (aggregation, percentiles, flakiness scores, trends)
+- Log correlation context (MDC-like context propagation)
+- Browser notifications (feature flag gating, SSE global events)
+- Build cost attribution (cost computation, org summary, feature flag gating)
+- Flaky test detection (JUnit XML, TAP, generic parsers, statistical analysis)
+- Test result storage and flaky test computation
 - Health, readiness, and startup probes
 - Security review regression tests (auth bypass, org scoping, hash chain integrity)
 

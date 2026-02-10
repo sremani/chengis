@@ -64,7 +64,9 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   views/  (layout, dashboard, jobs, builds, admin,            |
 |            trigger, agents, login, users, tokens, audit,      |
 |            approvals, templates, webhooks, compliance,         |
-|            policies, plugin_policies, docker_policies)         |
+|            policies, plugin_policies, docker_policies,         |
+|            traces, analytics, notifications, cost,             |
+|            flaky_tests)                                        |
 |   distributed/master_api.clj                                  |
 +---------------------------------------------------------------+
 |                    Auth & Security Layer                       |
@@ -78,9 +80,11 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   docker.clj   matrix.clj   retention.clj   approval.clj     |
 |   scm_status.clj   compliance.clj   policy.clj               |
 |   dag.clj   cache.clj   stage_cache.clj   artifact_delta.clj |
+|   tracing.clj   analytics.clj   log_context.clj              |
+|   cost.clj   test_parser.clj                                 |
 +---------------------------------------------------------------+
 |                    Metrics & Observability Layer               |
-|   metrics.clj   logging.clj                                  |
+|   metrics.clj   logging.clj   tracing.clj   analytics.clj   |
 +---------------------------------------------------------------+
 |                        Plugin Layer                           |
 |   plugin/protocol.clj   plugin/registry.clj                  |
@@ -127,6 +131,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/policy_store.clj  db/compliance_store.clj                |
 |   db/plugin_policy_store.clj  db/docker_policy_store.clj      |
 |   db/agent_store.clj   db/cache_store.clj                     |
+|   db/analytics_store.clj  db/trace_store.clj                  |
+|   db/cost_store.clj  db/test_result_store.clj                 |
 |   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |
@@ -766,7 +772,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 39 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 43 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -875,6 +881,22 @@ build_logs        -- Structured log entries
 --       stage_result, git_commit; UNIQUE(job_id, fingerprint))
 -- 039: Incremental artifact storage (delta_base_id, is_delta, original_size_bytes
 --       columns on build_artifacts)
+```
+
+### Observability & Analytics Tables (Migrations 040-043)
+
+```sql
+-- 040: Distributed tracing (trace_spans table — trace_id, span_id, parent_span_id,
+--       service_name, operation, kind, status, started_at, ended_at, duration_ms,
+--       attributes, build_id, org_id)
+-- 041: Build analytics (build_analytics table — period_type, period_start/end,
+--       total_builds, success/failure/aborted counts, success_rate, percentile durations;
+--       stage_analytics table — same with stage_name and flakiness_score)
+-- 042: Cost attribution (build_cost_entries table — build_id, job_id, org_id,
+--       agent_id, started_at, ended_at, duration_s, cost_per_hour, computed_cost)
+-- 043: Flaky test detection (test_results table — build_id, test_name, status,
+--       duration_ms, error_msg; flaky_tests table — total_runs, pass/fail counts,
+--       flakiness_score, UNIQUE(org_id, job_id, test_name))
 ```
 
 ## Build Performance & Caching
@@ -1069,6 +1091,61 @@ The retention scheduler runs periodically (default every 24 hours) and cleans up
 - Secret access logs older than N days
 - Expired JWT blacklist entries
 - Old workspaces
+- Trace spans older than retention period (default 7 days)
+- Build analytics older than retention period (default 365 days)
+- Cost entries older than retention period
+- Old test results
+
+### Build Tracing
+
+When the `:tracing` feature flag is enabled, Chengis creates lightweight span records for build execution:
+
+```
+Build Runner                    Tracing Engine              DB (trace_spans)
+  |                                |                              |
+  |-- start-span!(build) -------->|                              |
+  |                                |-- create-span! ------------>|
+  |                                |   (trace-id, span-id,       |
+  |                                |    operation, build-id)      |
+  |                                |                              |
+  |   For each stage/step:        |                              |
+  |-- start-span!(stage) -------->|                              |
+  |                                |-- create-span! ------------>|
+  |                                |   (parent-span-id linked)   |
+  |                                |                              |
+  |-- end-span!(stage) ---------->|                              |
+  |                                |-- update-span! ------------>|
+  |                                |   (ended-at, duration-ms)   |
+  |                                |                              |
+  |-- end-span!(build) ---------->|                              |
+  |                                |                              |
+  Web UI:                          |                              |
+  GET /admin/traces → list-traces  |                              |
+  GET /admin/traces/:id → waterfall visualization                |
+  GET /api/traces/:id/otlp → OTLP-compatible JSON export         |
+```
+
+Spans are sampled probabilistically based on `:sample-rate` and cleaned up by the retention scheduler.
+
+### Build Analytics
+
+When the `:build-analytics` feature flag is enabled, a chime-based scheduler aggregates build and stage statistics:
+
+```
+Analytics Scheduler (HA singleton, lock 100004)
+  |
+  v
+run-aggregation!
+  |-- Query builds for daily/weekly periods
+  |-- Compute: total, success/fail/abort counts, success rate
+  |-- Compute percentiles: p50, p90, p99 duration
+  |-- Compute stage flakiness: 1 - |2*success_rate - 1|
+  |-- Upsert into build_analytics / stage_analytics tables
+  |
+  v
+Web UI:
+  GET /analytics → trends, slowest stages, flaky stages
+```
 
 ## File Organization Rationale
 
@@ -1076,13 +1153,13 @@ The retention scheduler runs periodically (default every 24 hours) and cleans up
 |-----------|---------------|---------------|-------|
 | `agent/` | Agent node lifecycle | Separate process entry point | 5 |
 | `cli/` | User-facing CLI commands | Thin layer over engine | 3 |
-| `db/` | Data access (stores) | One file per table/concern | 23 |
+| `db/` | Data access (stores) | One file per table/concern | 27 |
 | `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability, HA | 9 |
 | `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
-| `engine/` | Build orchestration | Core business logic | 22 |
+| `engine/` | Build orchestration | Core business logic | 27 |
 | `model/` | Data validation (specs) | Schema definitions | 1 |
 | `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 15 |
 | `web/` | HTTP handling | Handlers + middleware | 12 |
-| `web/views/` | Hiccup templates | One file per page/component | 19 |
+| `web/views/` | Hiccup templates | One file per page/component | 24 |
 
 Dependencies flow downward: `web` -> `engine` -> `db` -> `util`. The engine layer never imports web concerns, and the database layer never imports engine concerns. The plugin layer is cross-cutting but only depends on foundation. The auth/security layer wraps web handlers and is applied via middleware composition in `routes.clj`.

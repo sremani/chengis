@@ -48,6 +48,14 @@
             [chengis.web.views.policies :as v-policies]
             [chengis.web.views.plugin-policies :as v-plugin-policies]
             [chengis.web.views.docker-policies :as v-docker-policies]
+            [chengis.web.views.traces :as v-traces]
+            [chengis.web.views.analytics :as v-analytics]
+            [chengis.web.views.cost :as v-cost]
+            [chengis.web.views.flaky-tests :as v-flaky]
+            [chengis.engine.tracing :as tracing]
+            [chengis.engine.analytics :as analytics]
+            [chengis.engine.cost :as cost]
+            [chengis.db.test-result-store :as test-result-store]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -1653,3 +1661,148 @@
       (docker-policy-store/delete-docker-policy! ds policy-id :org-id org-id)
       {:status 303
        :headers {"Location" "/admin/docker/policies"}})))
+
+;; ---------------------------------------------------------------------------
+;; Trace handlers (Phase 5: Observability)
+;; ---------------------------------------------------------------------------
+
+(defn traces-page [system]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          traces (or (tracing/list-traces system :org-id org-id :limit 100) [])]
+      (html-response
+        (str (h/html (v-traces/trace-list
+                       {:traces traces
+                        :csrf-token (csrf-token req)})))))))
+
+(defn trace-detail-page [system]
+  (fn [req]
+    (let [trace-id (get-in req [:path-params :trace-id])
+          spans (or (tracing/get-trace system trace-id) [])]
+      (if (empty? spans)
+        (not-found "Trace not found")
+        (html-response
+          (str (h/html (v-traces/trace-detail
+                         {:trace-id trace-id
+                          :spans spans
+                          :csrf-token (csrf-token req)}))))))))
+
+(defn trace-otlp-export [system]
+  (fn [req]
+    (let [trace-id (get-in req [:path-params :trace-id])
+          otlp (tracing/export-otlp system trace-id)]
+      (if otlp
+        {:status 200
+         :headers {"Content-Type" "application/json"
+                   "Content-Disposition" (str "attachment; filename=\"trace-" trace-id ".json\"")}
+         :body (json/write-str otlp)}
+        (not-found "Trace not found")))))
+
+;; ---------------------------------------------------------------------------
+;; Global SSE handler (Phase 5: Browser Notifications)
+;; ---------------------------------------------------------------------------
+
+(defn global-events-sse [system]
+  (fn [req]
+    ((sse/global-sse-handler system) req)))
+
+;; ---------------------------------------------------------------------------
+;; Analytics handlers (Phase 5: Observability)
+;; ---------------------------------------------------------------------------
+
+(defn analytics-page [system]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          params (or (:query-params req) (:params req) {})
+          period-type (get params "period" "daily")
+          trends (analytics/get-build-trends system
+                   :org-id org-id :period-type period-type :limit 30)
+          slowest (analytics/get-slowest-stages system
+                    :org-id org-id :period-type period-type :limit 10)
+          flaky (analytics/get-flaky-stages system
+                  :org-id org-id :period-type period-type)]
+      (html-response
+        (str (h/html (v-analytics/analytics-page
+                       {:trends trends
+                        :slowest-stages slowest
+                        :flaky-stages flaky
+                        :period-type period-type
+                        :csrf-token (csrf-token req)})))))))
+
+(defn api-analytics-trends [system]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          params (or (:query-params req) (:params req) {})
+          period-type (get params "period" "daily")
+          job-id (get params "job-id")
+          limit (try (some-> (get params "limit") Integer/parseInt)
+                     (catch Exception _ 30))
+          trends (analytics/get-build-trends system
+                   :org-id org-id :job-id job-id
+                   :period-type period-type :limit limit)]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:period-type period-type
+                              :count (count trends)
+                              :trends trends})})))
+
+(defn api-analytics-stages [system]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          params (or (:query-params req) (:params req) {})
+          period-type (get params "period" "daily")
+          slowest (analytics/get-slowest-stages system
+                    :org-id org-id :period-type period-type :limit 20)
+          flaky (analytics/get-flaky-stages system
+                  :org-id org-id :period-type period-type)]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:slowest-stages slowest
+                              :flaky-stages flaky})})))
+
+;; ---------------------------------------------------------------------------
+;; Cost attribution handlers (Phase 5)
+;; ---------------------------------------------------------------------------
+
+(defn cost-page [system]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          summary (cost/get-org-cost-summary system :org-id org-id)
+          total (cost/get-total-cost system :org-id org-id)]
+      (html-response
+        (str (h/html (v-cost/cost-page
+                       {:cost-summary summary
+                        :total-cost total
+                        :csrf-token (csrf-token req)})))))))
+
+(defn api-cost-summary [system]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          summary (cost/get-org-cost-summary system :org-id org-id)
+          total (cost/get-total-cost system :org-id org-id)]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:total-cost total
+                              :jobs summary})})))
+
+;; ---------------------------------------------------------------------------
+;; Flaky test detection handlers (Phase 5)
+;; ---------------------------------------------------------------------------
+
+(defn flaky-tests-page [system]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          flaky (test-result-store/list-flaky-tests (:db system) :org-id org-id)]
+      (html-response
+        (str (h/html (v-flaky/flaky-tests-page
+                       {:flaky-tests flaky
+                        :csrf-token (csrf-token req)})))))))
+
+(defn api-flaky-tests [system]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)
+          flaky (test-result-store/list-flaky-tests (:db system) :org-id org-id)]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:count (count flaky)
+                              :flaky-tests flaky})})))
