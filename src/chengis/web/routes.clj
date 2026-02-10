@@ -160,6 +160,7 @@
        ["/jobs"
         ["" {:get {:handler (h/jobs-list-page system)}}]
         ["/:name" {:get {:handler (h/job-detail-page system)}}]
+        ["/:name/pipeline" {:get {:handler (h/pipeline-detail-page system)}}]
         ;; Developer+ actions
         ["/:name/trigger" {:post {:handler (auth/wrap-require-role :developer (h/trigger-build system))}}]
         ["/:name/trigger-form" {:get {:handler (auth/wrap-require-role :developer (h/trigger-form system))}}]
@@ -173,6 +174,8 @@
         ["/:id/retry" {:post {:handler (auth/wrap-require-role :developer (h/retry-build system))}}]
         ["/:id/artifacts/:filename" {:get {:handler (h/download-artifact system)}}]
         ["/:id/artifacts/:filename/verify" {:get {:handler (h/verify-artifact-handler system)}}]]
+       ;; Build comparison (viewer+)
+       ["/compare" {:get {:handler (h/build-compare-page system)}}]
        ["/agents"
         ["" {:get {:handler (h/agents-page system)}}]]
        ;; Approval gates (developer+)
@@ -277,10 +280,16 @@
          ["" {:get {:handler (auth/wrap-require-role :admin (h/rotation-page system))}
               :post {:handler (auth/wrap-require-role :admin (h/create-rotation-policy-handler system))}}]
          ["/delete/:id" {:post {:handler (auth/wrap-require-role :admin (h/delete-rotation-policy-handler system))}}]
-         ["/toggle/:id" {:post {:handler (auth/wrap-require-role :admin (h/toggle-rotation-policy-handler system))}}]]]
+         ["/toggle/:id" {:post {:handler (auth/wrap-require-role :admin (h/toggle-rotation-policy-handler system))}}]]
+        ;; Phase 9: Pipeline Linter (developer+)
+        ["/linter" {:get {:handler (auth/wrap-require-role :developer (h/linter-page system))}}]
+        ["/linter/check" {:post {:handler (auth/wrap-require-role :developer (h/linter-check-handler system))}}]]
        ;; Analytics (viewer+)
        ["/analytics" {:get {:handler (auth/wrap-require-role :viewer (h/analytics-page system))}}]
        ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/flaky-tests-page system))}}]
+       ;; Log Search (viewer+)
+       ["/search/logs" {:get {:handler (h/log-search-page system)}
+                        :post {:handler (h/log-search-results-handler system)}}]
        ["/api"
         ["/alerts" {:get {:handler (alerts/alerts-handler system)}}]
         ["/alerts/fragment" {:get {:handler (alerts/alerts-fragment-handler system)}}]

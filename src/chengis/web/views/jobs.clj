@@ -1,6 +1,8 @@
 (ns chengis.web.views.jobs
   (:require [chengis.web.views.layout :as layout]
-            [chengis.web.views.components :as c])
+            [chengis.web.views.components :as c]
+            [chengis.web.views.pipeline-viz :as pipeline-viz]
+            [chengis.engine.dag :as dag])
   (:import [java.net URLEncoder]))
 
 (defn render-list
@@ -41,8 +43,14 @@
     (layout/base-layout
       {:title (:name job) :csrf-token csrf-token}
       (c/page-header (:name job)
-                     (c/trigger-button (:name job)
-                                       {:has-params? (seq (:parameters pipeline))}))
+                     [:div {:class "flex items-center gap-3"}
+                      [:a {:href (str "/jobs/" (URLEncoder/encode (str (:name job)) "UTF-8") "/pipeline")
+                           :class "bg-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium
+                                   hover:bg-indigo-700 active:bg-indigo-800 transition-colors
+                                   focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"}
+                       "View Pipeline"]
+                      (c/trigger-button (:name job)
+                                        {:has-params? (seq (:parameters pipeline))})])
 
       ;; Pipeline description + source badge
       (when (or (:description pipeline) (get-in pipeline [:source :url]))
@@ -55,7 +63,10 @@
             "Pipeline as Code"])])
 
       ;; Pipeline visualization graph (structural — no status colors)
-      (c/pipeline-graph (:stages pipeline))
+      ;; Use DAG viz when pipeline has dependencies, otherwise linear graph
+      (if (dag/has-dag? (:stages pipeline))
+        (pipeline-viz/render-dag-pipeline (:stages pipeline))
+        (c/pipeline-graph (:stages pipeline)))
 
       ;; Build stats + history chart
       (when (and stats (pos? (:total stats)))

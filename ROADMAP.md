@@ -244,20 +244,17 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 
 ---
 
-## Phase 9: Developer Experience
+### Phase 9: Developer Experience
 
-**Theme:** Quality-of-life improvements for pipeline authors and operators.
-
-| Feature | Description | Priority |
-|---------|-------------|----------|
-| Pipeline linter CLI | Offline validation of Chengisfile/YAML with detailed error messages before push | High |
-| Pipeline visualization | DAG-style graphical pipeline view showing stage/step relationships | High |
-| Build log search | Full-text search across build logs with highlighting | Medium |
-| Mobile-responsive UI | Responsive layout for monitoring builds on mobile devices | Medium |
-| Light theme option | User-selectable light/dark theme toggle | Medium |
-| Customizable dashboard | Drag-and-drop widget layout for the home page | Low |
-| Build comparison | Side-by-side diff of two build runs (timing, logs, artifacts) | Low |
-| IDE integration | VS Code extension for triggering builds and viewing results | Low |
+- Pipeline linter: Comprehensive validation (structural, semantic, expression) for all three formats (CLJ, EDN, YAML), CLI `pipeline lint <file>`, web UI at `/admin/linter`
+- Pipeline DAG visualization: Server-side DAG layout algorithm, SVG Bezier arrows, status-colored nodes, integrated in job/build detail pages
+- Build log search: Full-text search across build logs with line highlighting, job/status filters, pagination, htmx results at `/search/logs`
+- Mobile-responsive UI: CSS-only hamburger menu, responsive nav, viewport meta, responsive grid layouts
+- Dark/light theme toggle: Tailwind `darkMode: 'class'`, localStorage persistence, pre-render flash prevention, dark mode on all 9 component types
+- Build comparison: Side-by-side diff of stages/steps/timing/artifacts between two builds at `/compare`
+- 6 new source files, 4 new test files, 1 new CLI command
+- New routes: `/jobs/:name/pipeline`, `/search/logs`, `/compare`, `/admin/linter`, `/admin/linter/check`
+- **1,187 tests, 3,876 assertions — all passing**
 
 ---
 
@@ -315,3 +312,4 @@ These items are under consideration but not yet scheduled:
 | Phase 6 | Advanced SCM | PR checks, Branch overrides, Monorepo, Dependencies, Cron, Gitea/Bitbucket, Webhook replay, Auto-merge | **838** | 44-47 |
 | Phase 7 | Supply Chain | SLSA provenance, SBOM, Container scanning, OPA, License scanning, Artifact signing, Regulatory dashboards | **928** | 48-50 |
 | Phase 8 | Enterprise Identity | SAML 2.0, LDAP/AD, Fine-grained RBAC, MFA/TOTP, Cross-org sharing, Cloud secret backends, Secret rotation | **1,067** | 51-58 |
+| Phase 9 | Developer Experience | Pipeline linter, DAG visualization, Log search, Responsive UI, Theme toggle, Build comparison | **1,187** | — |

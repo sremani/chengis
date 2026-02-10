@@ -5,12 +5,12 @@
 
 (defn- stat-card-small
   "Compact stat card for the admin grid."
-  [label value & [{:keys [sublabel color] :or {color "text-gray-900"}}]]
-  [:div {:class "bg-white rounded-lg shadow-sm border p-4"}
-   [:div {:class "text-xs text-gray-500 mb-1"} label]
+  [label value & [{:keys [sublabel color] :or {color "text-gray-900 dark:text-gray-100"}}]]
+  [:div {:class "bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-700 p-4"}
+   [:div {:class "text-xs text-gray-500 dark:text-gray-400 mb-1"} label]
    [:div {:class (str "text-xl font-bold " color)} value]
    (when sublabel
-     [:div {:class "text-xs text-gray-400 mt-1"} sublabel])])
+     [:div {:class "text-xs text-gray-400 dark:text-gray-500 mt-1"} sublabel])])
 
 (defn- memory-bar
   "Visual memory usage bar."
@@ -61,8 +61,8 @@
                           (format "%.2f" (:load-average os))))]
 
       ;; Memory bar
-      [:div {:class "bg-white rounded-lg shadow-sm border p-5 mb-6"}
-       [:h2 {:class "text-sm font-semibold text-gray-900 mb-2"} "Heap Memory"]
+      [:div {:class "bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-700 p-5 mb-6"}
+       [:h2 {:class "text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2"} "Heap Memory"]
        [:div {:class "flex items-center gap-4"}
         [:div {:class "flex-1"}
          (memory-bar (:heap-pct jvm))]
@@ -70,8 +70,8 @@
          (str (:heap-pct jvm) "%")]]]
 
       ;; Build pool stats
-      [:div {:class "bg-white rounded-lg shadow-sm border p-5 mb-6"}
-       [:h2 {:class "text-lg font-semibold text-gray-900 mb-4"} "Build Executor"]
+      [:div {:class "bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-700 p-5 mb-6"}
+       [:h2 {:class "text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4"} "Build Executor"]
        [:div {:class "grid grid-cols-2 md:grid-cols-5 gap-4 text-sm"}
         [:div
          [:span {:class "text-gray-500 block"} "Active Builds"]
@@ -98,39 +98,42 @@
            [:span {:class "text-gray-400 text-xs"} "None"])]]]
 
       ;; Quick links
-      [:div {:class "bg-white rounded-lg shadow-sm border p-5 mb-6"}
-       [:h2 {:class "text-lg font-semibold text-gray-900 mb-3"} "Administration"]
+      [:div {:class "bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-700 p-5 mb-6"}
+       [:h2 {:class "text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3"} "Administration"]
        [:div {:class "flex flex-wrap gap-3"}
         [:a {:href "/admin/audit"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "Audit Log"]
         [:a {:href "/admin/webhooks"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "Webhook Events"]
         [:a {:href "/admin/users"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "User Management"]
         [:a {:href "/admin/compliance"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "Compliance Reports"]
         [:a {:href "/admin/policies"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "Policies"]
         [:a {:href "/admin/plugins/policies"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "Plugin Policies"]
         [:a {:href "/admin/docker/policies"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "Docker Policies"]
         [:a {:href "/admin/permissions"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "Permissions"]
         [:a {:href "/admin/shared-resources"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "Shared Resources"]
         [:a {:href "/admin/rotation"
-             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
          "Secret Rotation"]
+        [:a {:href "/admin/linter"
+             :class "px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition"}
+         "Pipeline Linter"]
         [:form {:method "POST" :action "/admin/retention" :class "inline"}
          [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
          [:button {:type "submit"
@@ -144,9 +147,9 @@
           "Download Backup"]]]]
 
       ;; Disk usage
-      [:div {:class "bg-white rounded-lg shadow-sm border p-5 mb-6"}
+      [:div {:class "bg-white dark:bg-gray-800 rounded-lg shadow-sm border dark:border-gray-700 p-5 mb-6"}
        [:div {:class "flex items-center justify-between mb-4"}
-        [:h2 {:class "text-lg font-semibold text-gray-900"} "Disk Usage"]
+        [:h2 {:class "text-lg font-semibold text-gray-900 dark:text-gray-100"} "Disk Usage"]
         [:form {:method "POST" :action "/admin/cleanup"}
          [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
          [:button {:type "submit"

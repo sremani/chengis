@@ -2,7 +2,111 @@
 
 All notable changes to Chengis are documented in this file.
 
-## [Unreleased] — Phase 8: Enterprise Identity & Access
+## [Unreleased] — Phase 9: Developer Experience
+
+### Feature 9a: Pipeline Linter
+
+- **Comprehensive validation** — Structural, semantic, and expression checks for all three pipeline formats (Clojure DSL, EDN, YAML)
+- **Structural checks** — Validates required fields, unique stage/step names, no empty stages, valid step types
+- **Semantic checks** — DAG dependency references, circular dependency detection, Docker image requirements, timeout validation, matrix/parameter/cache config validation
+- **Expression checks** — YAML `${{ }}` expression syntax validation with namespace checking
+- **Warning-level hints** — Single-step stages, long timeouts, duplicate env vars, missing descriptions
+- **CLI integration** — `chengis pipeline lint <file>` for offline validation before push
+- **Web UI** — Interactive linter page at `/admin/linter` with htmx-powered live results
+- **Content-based linting** — Lint raw content strings from the web UI (EDN and YAML formats)
+- **New source**: `src/chengis/engine/linter.clj`, `src/chengis/web/views/linter.clj`
+
+### Feature 9b: Pipeline Visualization (DAG)
+
+- **DAG layout algorithm** — Server-side column computation: depth = 1 + max(depth of dependencies)
+- **SVG arrow rendering** — Bezier curve arrows connecting dependent stages with status-colored nodes
+- **Status coloring** — Green (success), red (failure), blue (running), yellow (pending), gray (default)
+- **Stage node rendering** — 192×80px nodes with stage name, step count, and status badge
+- **Job detail integration** — "View Pipeline" button on job pages linking to `/jobs/:name/pipeline`
+- **Build detail integration** — DAG visualization shown on build detail when pipeline has dependencies
+- **New source**: `src/chengis/web/views/pipeline_viz.clj`
+- **New route**: `GET /jobs/:name/pipeline`
+
+### Feature 9c: Build Log Search
+
+- **Full-text search** — SQL LIKE-based search across build logs (database-agnostic)
+- **Filter support** — Filter by job name, build number range, and build status
+- **Line highlighting** — Clojure-side line highlighting with configurable context lines
+- **Pagination** — Paginated results with total count
+- **htmx integration** — Real-time search results via htmx POST
+- **Nav integration** — "Search" link added to main navigation
+- **New source**: `src/chengis/db/log_search_store.clj`, `src/chengis/web/views/log_search.clj`
+- **New route**: `GET/POST /search/logs`
+
+### Feature 9d: Mobile-Responsive UI
+
+- **CSS-only hamburger menu** — Hidden checkbox + `peer`/`peer-checked:flex` pattern (no JavaScript)
+- **Responsive nav** — `hidden peer-checked:flex md:flex flex-col md:flex-row` for mobile-first layout
+- **Responsive nav links** — Full-width on mobile (`w-full`), auto-width on desktop (`md:w-auto`)
+- **Hamburger hidden on desktop** — `md:hidden` class on hamburger label
+- **Viewport meta tag** — `width=device-width, initial-scale=1.0` for proper mobile scaling
+- **Responsive grid layouts** — Grid columns adapt to screen size across all pages
+
+### Feature 9e: Dark/Light Theme Toggle
+
+- **Tailwind dark mode** — `darkMode: 'class'` strategy with `dark:` prefix classes
+- **Theme persistence** — localStorage-based theme persistence across sessions
+- **Theme initialization** — Pre-render script prevents flash of wrong theme using `localStorage.getItem('theme')` and `prefers-color-scheme`
+- **Theme toggle button** — 🌓 button in nav with `document.documentElement.classList.toggle('dark')`
+- **Dark mode on all components** — status-badge, stat-card, build-table, card, page-header, pipeline-graph, build-history-chart, build-stats-row
+- **Dark mode on layout** — Body, nav, footer all have dark mode variants
+
+### Feature 9f: Build Comparison
+
+- **Side-by-side diff** — Compare two builds with stage, step, timing, and artifact differences
+- **Build selection form** — Select two builds from dropdown with optional job filter
+- **Summary section** — Status changed?, duration delta, stages added/removed
+- **Stage comparison table** — Per-stage status, duration, and delta with nested step rows
+- **Step-level comparison** — Exit codes, status, and duration deltas per step
+- **Artifact comparison** — Files only in A, only in B, in both, and size changes
+- **Duration formatting** — Human-readable duration formatting (seconds, minutes, hours)
+- **Delta badges** — Green for faster (negative delta), red for slower (positive delta)
+- **Timestamp parsing** — Handles both ISO-8601 and SQLite timestamp formats
+- **New source**: `src/chengis/engine/build_compare.clj`, `src/chengis/web/views/build_compare.clj`
+- **New route**: `GET /compare`
+
+### Modified Existing Files
+
+- **handlers.clj** — 6 new handler functions (pipeline-detail-page, log-search-page, log-search-results-handler, build-compare-page, linter-page, linter-check-handler)
+- **routes.clj** — New routes for pipeline viz, log search, build comparison, and linter
+- **layout.clj** — Complete rewrite for responsive layout, hamburger menu, dark mode, theme toggle, Search nav link
+- **components.clj** — Dark mode variants added to all 9 component functions
+- **builds.clj** — DAG visualization integration, compare button
+- **jobs.clj** — "View Pipeline" button
+- **admin.clj** — "Pipeline Linter" nav link
+- **cli/commands.clj** — `cmd-pipeline-lint` function
+- **cli/core.clj** — `"lint"` dispatch in pipeline subcommand
+
+### New Routes
+
+| Route | Description |
+|-------|-------------|
+| `GET /jobs/:name/pipeline` | Pipeline DAG visualization page |
+| `GET/POST /search/logs` | Build log search (form + results) |
+| `GET /compare` | Build comparison page |
+| `GET /admin/linter` | Pipeline linter web UI |
+| `POST /admin/linter/check` | Lint pipeline content (htmx) |
+
+### New CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `chengis pipeline lint <file>` | Lint a pipeline file (.clj, .edn, .yml, .yaml) |
+
+### Test Summary
+
+- **1,187 tests, 3,876 assertions — 0 failures, 0 errors**
+- 120 new tests across 4 new test files
+- New test files: `engine/build_compare_test.clj`, `web/views/pipeline_viz_test.clj`, `web/views/responsive_test.clj`, `db/log_search_store_test.clj`
+
+---
+
+## Phase 8: Enterprise Identity & Access
 
 ### Feature 8a: SAML 2.0 SSO
 

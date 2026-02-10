@@ -85,6 +85,13 @@
             [chengis.web.views.permissions :as v-permissions]
             [chengis.web.views.shared-resources :as v-shared]
             [chengis.web.views.secret-rotation :as v-rotation]
+            [chengis.web.views.pipeline-viz :as v-pipeline-viz]
+            [chengis.web.views.log-search :as v-log-search]
+            [chengis.web.views.build-compare :as v-build-compare]
+            [chengis.engine.build-compare :as build-compare]
+            [chengis.db.log-search-store :as log-search-store]
+            [chengis.web.views.linter :as v-linter]
+            [chengis.engine.linter :as linter]
             [chengis.db.permission-store :as permission-store]
             [chengis.db.shared-resource-store :as shared-store]
             [chengis.db.rotation-store :as rotation-store]
@@ -171,6 +178,22 @@
                                    :recent-history recent-history
                                    :secret-names (distinct secret-names)
                                    :csrf-token (csrf-token req)})))))))
+
+(defn pipeline-detail-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          job-name (get-in req [:path-params :name])
+          job (job-store/get-job ds job-name :org-id org-id)]
+      (if-not job
+        (not-found (str "Job not found: " job-name))
+        (html-response
+          (v-pipeline-viz/render-pipeline-detail-page
+            {:job job
+             :pipeline (:pipeline job)
+             :csrf-token (csrf-token req)
+             :user (auth/current-user req)
+             :auth-enabled (get-in (:config system) [:auth :enabled] false)}))))))
 
 (defn- extract-params-from-form
   "Extract build parameters from form submission.
@@ -2653,3 +2676,154 @@
           new-enabled (if (and (:enabled policy) (not (zero? (:enabled policy)))) 0 1)]
       (rotation-store/update-policy! ds policy-id {:enabled new-enabled})
       {:status 303 :headers {"Location" "/admin/rotation"}})))
+
+;; ---------------------------------------------------------------------------
+;; Log Search (Phase 9c)
+;; ---------------------------------------------------------------------------
+
+(defn log-search-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          params (merge (:params req) (:query-params req))
+          query (get params "q")
+          job-filter (get params "job")
+          status-filter (get params "status")
+          page (try (some-> (get params "page") Integer/parseInt)
+                    (catch Exception _ 1))
+          page (max 1 (or page 1))
+          per-page 20
+          jobs (job-store/list-jobs ds :org-id org-id)
+          status-kw (when (and status-filter (not (str/blank? status-filter)))
+                      (keyword status-filter))
+          job-name (when (not (str/blank? job-filter)) job-filter)
+          results (when (not (str/blank? query))
+                    (log-search-store/search-build-logs ds query
+                      :org-id org-id
+                      :job-name job-name
+                      :status status-kw
+                      :limit per-page
+                      :offset (* (dec page) per-page)))
+          total-count (when (not (str/blank? query))
+                        (log-search-store/count-search-results ds query
+                          :org-id org-id
+                          :job-name job-name
+                          :status status-kw))]
+      (html-response
+        (v-log-search/render-log-search-page
+          {:csrf-token (csrf-token req)
+           :user (auth/current-user req)
+           :auth-enabled (get-in config [:auth :enabled])
+           :notifications-enabled (feature-flags/enabled? config :notifications)
+           :query query
+           :results (or results [])
+           :total-count (or total-count 0)
+           :job-filter job-filter
+           :status-filter status-filter
+           :jobs jobs
+           :page page})))))
+
+(defn log-search-results-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (merge (:params req) (:form-params req))
+          query (get params "q")
+          job-filter (get params "job")
+          status-filter (get params "status")
+          page (try (some-> (get params "page") Integer/parseInt)
+                    (catch Exception _ 1))
+          page (max 1 (or page 1))
+          per-page 20
+          status-kw (when (and status-filter (not (str/blank? status-filter)))
+                      (keyword status-filter))
+          job-name (when (not (str/blank? job-filter)) job-filter)
+          results (when (not (str/blank? query))
+                    (log-search-store/search-build-logs ds query
+                      :org-id org-id
+                      :job-name job-name
+                      :status status-kw
+                      :limit per-page
+                      :offset (* (dec page) per-page)))
+          total-count (when (not (str/blank? query))
+                        (log-search-store/count-search-results ds query
+                          :org-id org-id
+                          :job-name job-name
+                          :status status-kw))]
+      (html-response
+        (str (h/html
+               (v-log-search/render-search-results
+                 {:results (or results [])
+                  :query query
+                  :total-count (or total-count 0)
+                  :page page
+                  :per-page per-page
+                  :job-filter job-filter
+                  :status-filter status-filter})))))))
+
+;; --- Build Comparison ---
+
+(defn build-compare-page [system]
+  (fn [req]
+    (let [params (merge (:params req) (:query-params req))
+          ds (:db system)
+          org-id (auth/current-org-id req)
+          build-a-id (get params "a")
+          build-b-id (get params "b")
+          job-name (get params "job")
+          ;; Get list of recent builds for selection
+          builds-list (if (and job-name (not (str/blank? job-name)))
+                        (let [job (job-store/get-job ds job-name :org-id org-id)]
+                          (if job
+                            (build-store/list-builds ds {:job-id (:id job) :org-id org-id})
+                            []))
+                        (build-store/list-builds ds {:org-id org-id}))
+          ;; If both builds selected, compute comparison
+          comparison (when (and build-a-id build-b-id
+                                (not (str/blank? build-a-id))
+                                (not (str/blank? build-b-id)))
+                      (let [build-a (build-store/get-build ds build-a-id :org-id org-id)
+                            build-b (build-store/get-build ds build-b-id :org-id org-id)]
+                        (when (and build-a build-b)
+                          (let [stages-a (build-store/get-build-stages ds build-a-id)
+                                stages-b (build-store/get-build-stages ds build-b-id)
+                                steps-a (build-store/get-build-steps ds build-a-id)
+                                steps-b (build-store/get-build-steps ds build-b-id)
+                                artifacts-a (artifact-store/list-artifacts ds build-a-id)
+                                artifacts-b (artifact-store/list-artifacts ds build-b-id)]
+                            (build-compare/compare-builds
+                              build-a stages-a steps-a artifacts-a
+                              build-b stages-b steps-b artifacts-b)))))]
+      (html-response
+        (v-build-compare/render-compare-page
+          {:csrf-token (csrf-token req)
+           :user (auth/current-user req)
+           :auth-enabled (get-in (:config system) [:auth :enabled] false)
+           :comparison comparison
+           :builds-list (or builds-list [])
+           :job-name job-name
+           :build-a-id build-a-id
+           :build-b-id build-b-id})))))
+
+;; ---------------------------------------------------------------------------
+;; Pipeline Linter (developer+)
+;; ---------------------------------------------------------------------------
+
+(defn linter-page [system]
+  (fn [req]
+    (let [config (:config system)]
+      (html-response
+        (v-linter/render-linter-page
+          {:csrf-token (csrf-token req)
+           :user (auth/current-user req)
+           :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn linter-check-handler [system]
+  (fn [req]
+    (let [params (:form-params req)
+          content (get params "content")
+          format-type (get params "format" "edn")
+          result (linter/lint-content content format-type)]
+      (html-response
+        (v-linter/render-lint-results {:results result})))))

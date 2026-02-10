@@ -69,7 +69,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |            flaky_tests, pr_checks, cron, webhook_replay,      |
 |            dependencies, supply_chain, regulatory, signatures, |
 |            mfa, permissions, shared_resources,                 |
-|            secret_rotation)                                    |
+|            secret_rotation, pipeline_viz, log_search,          |
+|            build_compare, linter)                              |
 |   distributed/master_api.clj                                  |
 +---------------------------------------------------------------+
 |                    Auth & Security Layer                       |
@@ -92,6 +93,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   provenance.clj   sbom.clj   vulnerability_scanner.clj      |
 |   opa.clj   license_scanner.clj   signing.clj                |
 |   regulatory.clj   secret_rotation.clj                        |
+|   linter.clj   build_compare.clj                              |
 +---------------------------------------------------------------+
 |                    Supply Chain Security Layer                 |
 |   engine/provenance.clj   engine/sbom.clj                    |
@@ -157,7 +159,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/pr_check_store.clj  db/dependency_store.clj              |
 |   db/cron_store.clj                                           |
 |   db/permission_store.clj  db/shared_resource_store.clj      |
-|   db/rotation_store.clj                                       |
+|   db/rotation_store.clj  db/log_search_store.clj              |
 |   db/provenance_store.clj  db/sbom_store.clj                 |
 |   db/scan_store.clj  db/opa_store.clj                        |
 |   db/license_store.clj  db/signature_store.clj               |

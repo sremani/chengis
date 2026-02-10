@@ -33,6 +33,7 @@ Commands:
   secret delete <name>     Delete a secret (--scope <job-id>)
   pipeline validate <file> Validate a pipeline file (.clj)
   pipeline validate-edn <file>  Validate a Chengisfile (EDN)
+  pipeline lint <file>   Lint a pipeline file (.clj, .edn, .yml)
   backup [output-dir]      Create database backup
   restore <backup-file>    Restore from backup (--force to overwrite)
   status                   Show system status
@@ -83,6 +84,7 @@ Options:
           "pipeline" (case sub-command
                        "validate"     (cmd/cmd-pipeline-validate rest-args)
                        "validate-edn" (cmd/cmd-pipeline-validate-edn rest-args)
+                       "lint"         (cmd/cmd-pipeline-lint rest-args)
                        (do (println (str "Unknown pipeline command: " sub-command))
                            (usage)))
           "backup"   (cmd/cmd-backup rest-args)

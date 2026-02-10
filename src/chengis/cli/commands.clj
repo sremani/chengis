@@ -11,6 +11,7 @@
             [chengis.dsl.core :as dsl]
             [chengis.dsl.chengisfile :as chengisfile]
             [chengis.engine.build-runner :as build-runner]
+            [chengis.engine.linter :as linter]
             [chengis.cli.output :as out]
             [chengis.util :as util]
             [clojure.java.io :as io]))
@@ -296,6 +297,44 @@
                               (when (:parallel? stage) " [parallel]")))))))
         (catch Exception e
           (out/print-error (str "Failed to read file: " (.getMessage e))))))))
+
+(defn cmd-pipeline-lint
+  "Lint a pipeline file with comprehensive checks."
+  [args]
+  (let [file-path (first args)]
+    (if-not file-path
+      (out/print-error "Usage: chengis pipeline lint <file>")
+      (let [result (linter/lint-file file-path)
+            {:keys [valid? errors warnings info]} result]
+        ;; Print info summary
+        (out/print-header "Pipeline Lint Results")
+        (println (str "  Format:  " (:format info)))
+        (println (str "  Stages:  " (:stages info)))
+        (println (str "  Steps:   " (:steps info)))
+        (when (:has-dag? info)   (println "  DAG:     yes"))
+        (when (:has-matrix? info) (println "  Matrix:  yes"))
+        (when (:has-docker? info) (println "  Docker:  yes"))
+        (println)
+        ;; Print errors
+        (when (seq errors)
+          (println (str "ERRORS (" (count errors) "):"))
+          (doseq [e errors]
+            (println (str "  [ERROR] " (:location e) ": " (:message e))))
+          (println))
+        ;; Print warnings
+        (when (seq warnings)
+          (println (str "WARNINGS (" (count warnings) "):"))
+          (doseq [w warnings]
+            (println (str "  [WARN]  " (:location w) ": " (:message w))))
+          (println))
+        ;; Final verdict
+        (if valid?
+          (out/print-success (str "Pipeline is valid."
+                                  (when (seq warnings)
+                                    (str " (" (count warnings) " warnings)"))))
+          (do
+            (out/print-error (str "Pipeline has " (count errors) " error(s)."))
+            (System/exit 1)))))))
 
 ;; --- secret commands ---
 

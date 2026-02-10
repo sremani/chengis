@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**1,067 tests | 3,564 assertions | 0 failures**
+**1,187 tests | 3,876 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -78,6 +78,7 @@ Build #1 — SUCCESS (8.3 sec)
 ### Core Pipeline Engine
 
 - **Pipeline DSL** &mdash; Define pipelines in pure Clojure with `defpipeline`, `stage`, `step`, `parallel`, `sh`
+- **Pipeline linter** &mdash; Comprehensive offline validation (`pipeline lint <file>`) for Clojure DSL, EDN, and YAML formats with detailed error messages
 - **Pipeline as Code** &mdash; Drop a `Chengisfile` (EDN format) in your repo root; Chengis auto-detects it
 - **YAML Workflows** &mdash; GitHub Actions-style YAML (`chengis.yml`) with `${{ }}` expression syntax
 - **Git integration** &mdash; Clone any Git repo, extract commit metadata (SHA, branch, author, message)
@@ -261,7 +262,8 @@ Build #1 — SUCCESS (8.3 sec)
 
 ### User Interface
 
-- **Web UI** &mdash; htmx + Tailwind CSS, zero custom JavaScript, dark theme
+- **Web UI** &mdash; htmx + Tailwind CSS, zero custom JavaScript, dark/light theme toggle with localStorage persistence
+- **Mobile-responsive** &mdash; CSS-only hamburger menu, responsive nav and grids for mobile monitoring
 - **CLI** &mdash; Full command-line interface for headless/scripted usage
 - **Login page** &mdash; Username/password authentication with lockout protection
 - **Parameterized builds** &mdash; Dynamic trigger forms with text, choice, and boolean parameters
@@ -284,6 +286,10 @@ Build #1 — SUCCESS (8.3 sec)
 - **Permission management** &mdash; Admin UI for granting/revoking resource-level permissions and managing permission groups
 - **Shared resources** &mdash; Admin UI for managing cross-org agent label and template sharing
 - **Secret rotation** &mdash; Admin UI for managing rotation policies with schedules and version history
+- **Pipeline linter** &mdash; Interactive linter page at `/admin/linter` with htmx-powered live validation results
+- **Pipeline visualization** &mdash; DAG-style graphical pipeline view with SVG arrows and status-colored nodes
+- **Build log search** &mdash; Full-text search across build logs with line highlighting and filters at `/search/logs`
+- **Build comparison** &mdash; Side-by-side diff of two builds showing stage/step/timing/artifact differences
 
 ## Quick Start
 
@@ -1006,6 +1012,12 @@ Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings 
 | `POST /admin/rotation` | Create/update rotation policy |
 | `POST /admin/rotation/delete/:id` | Delete rotation policy |
 | `POST /admin/rotation/toggle/:id` | Enable/disable rotation policy |
+| `GET /jobs/:name/pipeline` | Pipeline DAG visualization page |
+| `GET /search/logs` | Build log search page |
+| `POST /search/logs` | Build log search results (htmx) |
+| `GET /compare` | Build comparison page |
+| `GET /admin/linter` | Pipeline linter web UI |
+| `POST /admin/linter/check` | Lint pipeline content (htmx) |
 
 ## Project Structure
 
@@ -1022,7 +1034,7 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # Database persistence layer (40 files)
+    db/                     # Database persistence layer (41 files)
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
@@ -1062,6 +1074,7 @@ chengis/
       permission_store.clj  # Resource-level permissions and permission groups
       shared_resource_store.clj # Cross-org shared resource grants
       rotation_store.clj    # Secret rotation policies and version history
+      log_search_store.clj  # Build log full-text search
       backup.clj            # Database backup/restore
     distributed/            # Distributed build coordination (9 files)
       agent_registry.clj    # Write-through agent registry (atom + DB)
@@ -1080,7 +1093,7 @@ chengis/
       yaml.clj              # YAML workflow parser
       expressions.clj       # ${{ }} expression resolver
       templates.clj         # Pipeline template DSL
-    engine/                 # Build execution engine (42 files)
+    engine/                 # Build execution engine (44 files)
       executor.clj          # Core pipeline runner (sequential + DAG modes)
       build_runner.clj      # Build lifecycle + thread pool + deduplication
       dag.clj               # DAG utilities (topological sort, ready-stages)
@@ -1123,6 +1136,8 @@ chengis/
       signing.clj           # cosign/GPG artifact signing
       regulatory.clj        # SOC 2/ISO 27001 regulatory assessment
       secret_rotation.clj   # Policy-driven secret rotation with schedules
+      linter.clj            # Pipeline linter (structural, semantic, expression checks)
+      build_compare.clj     # Build comparison engine (stage/step/artifact diff)
     model/                  # Data specs (1 file)
       spec.clj              # Clojure specs for validation
     plugin/                 # Plugin system (20 files)
@@ -1148,7 +1163,7 @@ chengis/
         aws_secrets.clj     # AWS Secrets Manager backend
         gcp_secrets.clj     # Google Cloud Secret Manager backend
         azure_keyvault.clj  # Azure Key Vault backend
-    web/                    # HTTP server and UI (48 files)
+    web/                    # HTTP server and UI (49 files)
       server.clj            # http-kit server startup + HA wiring
       routes.clj            # Reitit routes + middleware
       handlers.clj          # Request handlers
@@ -1165,7 +1180,7 @@ chengis/
       rate_limit.clj        # Request rate limiting
       account_lockout.clj   # Account lockout logic
       metrics_middleware.clj # HTTP request metrics
-      views/                # Hiccup view templates (36 files)
+      views/                # Hiccup view templates (40 files)
         layout.clj          # Base HTML layout
         dashboard.clj       # Home page
         jobs.clj            # Job list + detail
@@ -1201,12 +1216,16 @@ chengis/
         permissions.clj     # Fine-grained permission management views
         shared_resources.clj # Cross-org shared resource views
         secret_rotation.clj # Secret rotation policy management views
+        pipeline_viz.clj    # Pipeline DAG visualization (SVG arrows, status nodes)
+        log_search.clj      # Build log search page with highlighting
+        build_compare.clj   # Build comparison side-by-side diff views
+        linter.clj          # Pipeline linter web UI with htmx results
     config.clj              # Configuration loading + env var overrides
     logging.clj             # Structured logging setup
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (~134 files)
+  test/chengis/             # Test suite (~138 files)
   resources/migrations/     # Database migrations (58 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
@@ -1219,7 +1238,7 @@ chengis/
   docker-compose.ha.yml     # HA override: PostgreSQL + 2 masters for multi-master testing
 ```
 
-**Codebase:** ~31,000 lines source + ~21,000 lines tests across 320 files
+**Codebase:** ~33,000 lines source + ~22,000 lines tests across 330 files
 
 ## Technology Stack
 

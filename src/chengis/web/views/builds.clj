@@ -1,6 +1,8 @@
 (ns chengis.web.views.builds
   (:require [chengis.web.views.layout :as layout]
             [chengis.web.views.components :as c]
+            [chengis.web.views.pipeline-viz :as pipeline-viz]
+            [chengis.engine.dag :as dag]
             [hiccup.util :refer [escape-html]]))
 
 (defn- render-git-info-section
@@ -256,6 +258,12 @@
                               hover:bg-yellow-700 active:bg-yellow-800 transition-colors
                               focus:outline-none focus:ring-2 focus:ring-yellow-500"}
              "Retry"]])
+         ;; Compare button
+         [:a {:href (str "/compare?a=" build-id)
+              :class "bg-gray-600 text-white px-3 py-1.5 rounded-md text-sm font-medium
+                      hover:bg-gray-700 active:bg-gray-800 transition-colors
+                      focus:outline-none focus:ring-2 focus:ring-gray-500 no-underline"}
+          "Compare"]
          (c/status-badge (:status build))]]
 
        ;; Build info
@@ -298,14 +306,19 @@
        (render-matrix-grid stages)
 
        ;; Pipeline visualization (with live status)
+       ;; Use DAG viz when pipeline has dependencies, otherwise linear graph
        (when (seq stages)
          (let [stage-defs (mapv (fn [s] {:stage-name (:stage-name s)
                                           :steps (filter #(= (:stage-name %) (:stage-name s)) steps)
                                           :parallel? false})
                                 stages)]
-           (c/pipeline-graph stage-defs
-                             {:stage-results stages
-                              :step-results steps})))
+           (if (dag/has-dag? stage-defs)
+             (pipeline-viz/render-dag-pipeline stage-defs
+                                              {:stage-results stages
+                                               :step-results steps})
+             (c/pipeline-graph stage-defs
+                               {:stage-results stages
+                                :step-results steps}))))
 
        ;; Git info (only for git-sourced builds)
        (render-git-info-section build)
