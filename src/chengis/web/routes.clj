@@ -227,7 +227,15 @@
         ;; Phase 6: Cron schedules
         ["/cron" {:get {:handler (auth/wrap-require-role :admin (h/cron-schedules-page system))}}]
         ;; Phase 6: Webhook replay
-        ["/webhook-replay" {:get {:handler (auth/wrap-require-role :admin (h/webhook-replay-page system))}}]]
+        ["/webhook-replay" {:get {:handler (auth/wrap-require-role :admin (h/webhook-replay-page system))}}]
+        ;; Phase 7: Supply Chain Security
+        ["/supply-chain"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/supply-chain-page system))}}]
+         ["/opa" {:get {:handler (auth/wrap-require-role :admin (h/opa-policies-page system))}}]
+         ["/licenses" {:get {:handler (auth/wrap-require-role :admin (h/license-policies-page system))}}]
+         ["/builds/:build-id" {:get {:handler (auth/wrap-require-role :admin (h/supply-chain-build-page system))}}]]
+        ;; Phase 7: Regulatory readiness
+        ["/regulatory" {:get {:handler (auth/wrap-require-role :admin (h/regulatory-page system))}}]]
        ;; Analytics (viewer+)
        ["/analytics" {:get {:handler (auth/wrap-require-role :viewer (h/analytics-page system))}}]
        ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/flaky-tests-page system))}}]
@@ -266,7 +274,25 @@
         ;; Phase 6: Webhook replay API
         ["/webhooks/:id/replay" {:post {:handler (auth/wrap-require-role :admin (h/api-replay-webhook system))}}]
         ;; Phase 6: Dependencies delete API
-        ["/dependencies/:id/delete" {:post {:handler (auth/wrap-require-role :developer (h/api-delete-dependency system))}}]]]))
+        ["/dependencies/:id/delete" {:post {:handler (auth/wrap-require-role :developer (h/api-delete-dependency system))}}]
+        ;; Phase 7: Supply Chain API (build-scoped)
+        ["/supply-chain/builds/:build-id"
+         ["/provenance" {:get {:handler (auth/wrap-require-role :viewer (h/api-provenance system))}}]
+         ["/sbom/:format" {:get {:handler (auth/wrap-require-role :viewer (h/api-sbom system))}}]
+         ["/scans" {:get {:handler (auth/wrap-require-role :viewer (h/api-build-scans system))}}]
+         ["/licenses" {:get {:handler (auth/wrap-require-role :viewer (h/api-build-licenses system))}}]
+         ["/verify" {:post {:handler (auth/wrap-require-role :admin (h/api-verify-signatures system))}}]]
+        ;; Phase 7: Supply Chain management API
+        ["/supply-chain/opa"
+         ["" {:post {:handler (auth/wrap-require-role :admin (h/api-create-opa-policy system))}}]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/api-delete-opa-policy system))}}]]
+        ["/supply-chain/licenses/policy"
+         ["" {:post {:handler (auth/wrap-require-role :admin (h/api-create-license-policy system))}}]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/api-delete-license-policy system))}}]]
+        ;; Phase 7: Regulatory API
+        ["/regulatory"
+         ["/assess" {:post {:handler (auth/wrap-require-role :admin (h/api-regulatory-assess system))}}]
+         ["/frameworks/:framework" {:get {:handler (auth/wrap-require-role :viewer (h/api-regulatory-framework system))}}]]]]))
     (ring/create-default-handler
       {:not-found (constantly {:status 404
                                :headers {"Content-Type" "text/html"}

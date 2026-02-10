@@ -65,6 +65,18 @@
             [chengis.web.views.cron :as v-cron]
             [chengis.web.views.dependencies :as v-deps]
             [chengis.web.views.webhook-replay :as v-replay]
+            [chengis.db.provenance-store :as provenance-store]
+            [chengis.db.sbom-store :as sbom-store]
+            [chengis.db.scan-store :as scan-store]
+            [chengis.db.opa-store :as opa-store]
+            [chengis.db.license-store :as license-store]
+            [chengis.db.signature-store :as signature-store]
+            [chengis.db.regulatory-store :as regulatory-store]
+            [chengis.engine.regulatory :as regulatory-engine]
+            [chengis.engine.signing :as signing-engine]
+            [chengis.web.views.supply-chain :as v-supply-chain]
+            [chengis.web.views.regulatory :as v-regulatory]
+            [chengis.web.views.signatures :as v-signatures]
             [chengis.web.webhook :as webhook]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
@@ -91,6 +103,11 @@
   {:status 404
    :headers {"Content-Type" "text/html; charset=utf-8"}
    :body (str "<h1>404</h1><p>" (escape-html msg) "</p>")})
+
+(defn- json-not-found [msg]
+  {:status 404
+   :headers {"Content-Type" "application/json"}
+   :body (json/write-str {:error msg})})
 
 (defn dashboard-page [system]
   (fn [req]
@@ -1940,3 +1957,338 @@
       (pr-check-store/delete-check! ds check-id :org-id org-id)
       {:status 303
        :headers {"Location" (str "/jobs/" job-id)}})))
+
+;; ---------------------------------------------------------------------------
+;; Phase 7: Supply Chain Security Handlers
+;; ---------------------------------------------------------------------------
+
+(defn supply-chain-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          attestations (provenance-store/list-attestations ds :org-id org-id :limit 20)
+          sboms (sbom-store/list-sboms ds :org-id org-id :limit 20)
+          scans (scan-store/list-scans ds :org-id org-id :limit 20)
+          license-reports (license-store/list-reports ds :org-id org-id :limit 20)
+          signatures (signature-store/list-signatures ds :org-id org-id :limit 20)]
+      (html-response
+        (str (h/html
+          (v-supply-chain/supply-chain-dashboard
+            {:attestations attestations
+             :sboms sboms
+             :scans scans
+             :license-reports license-reports
+             :signatures signatures
+             :csrf-token (csrf-token req)})))))))
+
+(defn supply-chain-build-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :build-id])
+          attestation (provenance-store/get-attestation ds build-id :org-id org-id)
+          sboms (sbom-store/get-build-sboms ds build-id :org-id org-id)
+          scans (scan-store/get-build-scans ds build-id :org-id org-id)
+          license-report (license-store/get-build-report ds build-id :org-id org-id)
+          signatures (signature-store/get-build-signatures ds build-id :org-id org-id)]
+      (html-response
+        (str (h/html
+          [:div {:class "space-y-6"}
+           [:h2 {:class "text-xl font-bold text-gray-900"}
+            (str "Supply Chain — Build " (subs build-id 0 (min 8 (count build-id))))]
+           (when attestation
+             (v-supply-chain/supply-chain-dashboard
+               {:attestations [attestation]
+                :sboms sboms
+                :scans scans
+                :license-reports (if license-report [license-report] [])
+                :signatures signatures
+                :csrf-token (csrf-token req)}))
+           (when (and (nil? attestation) (empty? sboms) (empty? scans))
+             [:div {:class "bg-white rounded-lg shadow p-8 text-center"}
+              [:p {:class "text-gray-500"} "No supply chain data for this build."]])]))))))
+
+(defn regulatory-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          framework-names (regulatory-store/list-frameworks ds :org-id org-id)
+          frameworks (mapv (fn [fw]
+                             (let [checks (regulatory-store/get-framework-checks ds fw :org-id org-id)
+                                   passing (count (filter #(= "passing" (:status %)) checks))
+                                   total (count checks)]
+                               {:framework fw
+                                :checks checks
+                                :score {:passing passing
+                                        :total total
+                                        :percentage (if (pos? total)
+                                                      (* 100.0 (/ (double passing) (double total)))
+                                                      0.0)}}))
+                           framework-names)]
+      (html-response
+        (str (h/html
+          (v-regulatory/regulatory-dashboard
+            {:frameworks frameworks
+             :csrf-token (csrf-token req)})))))))
+
+(defn opa-policies-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policies (opa-store/list-policies ds :org-id org-id)]
+      (html-response
+        (str (h/html
+          [:div {:class "space-y-6"}
+           [:div {:class "flex items-center justify-between"}
+            [:h2 {:class "text-xl font-bold text-gray-900"} "OPA Policies"]
+            [:form {:method "POST" :action "/api/supply-chain/opa" :class "inline"}
+             [:input {:type "hidden" :name "__anti-forgery-token" :value (csrf-token req)}]
+             [:details {:class "inline relative"}
+              [:summary {:class "px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 cursor-pointer"}
+               "Add Policy"]
+              [:div {:class "absolute right-0 mt-2 bg-white shadow-lg rounded-lg p-4 z-10 w-96 border"}
+               [:div {:class "space-y-3"}
+                [:input {:type "text" :name "name" :placeholder "Policy name"
+                         :class "w-full border rounded px-3 py-2 text-sm" :required true}]
+                [:input {:type "text" :name "package-name" :placeholder "Package (e.g. chengis.build)"
+                         :class "w-full border rounded px-3 py-2 text-sm" :required true}]
+                [:textarea {:name "rego-source" :placeholder "Rego source code..."
+                            :class "w-full border rounded px-3 py-2 text-sm font-mono h-32" :required true}]
+                [:input {:type "text" :name "description" :placeholder "Description (optional)"
+                         :class "w-full border rounded px-3 py-2 text-sm"}]
+                [:button {:type "submit"
+                          :class "w-full px-4 py-2 bg-green-600 text-white rounded text-sm hover:bg-green-700"}
+                 "Create Policy"]]]]]]
+           (if (empty? policies)
+             [:div {:class "bg-white rounded-lg shadow p-8 text-center"}
+              [:p {:class "text-gray-500"} "No OPA policies configured."]]
+             [:div {:class "bg-white rounded-lg shadow-sm border p-5"}
+              [:table {:class "w-full text-sm"}
+               [:thead
+                [:tr {:class "text-left text-gray-500 border-b"}
+                 [:th {:class "py-2 font-medium"} "Name"]
+                 [:th {:class "py-2 font-medium"} "Package"]
+                 [:th {:class "py-2 font-medium"} "Enabled"]
+                 [:th {:class "py-2 font-medium"} "Actions"]]]
+               [:tbody
+                (for [p policies]
+                  [:tr {:class "border-b border-gray-100 hover:bg-gray-50"}
+                   [:td {:class "py-2 font-semibold"} (:name p)]
+                   [:td {:class "py-2 font-mono text-xs"} (:package-name p)]
+                   [:td {:class "py-2"}
+                    (if (= 1 (:enabled p))
+                      [:span {:class "text-green-600"} "Yes"]
+                      [:span {:class "text-gray-400"} "No"])]
+                   [:td {:class "py-2"}
+                    [:form {:method "POST"
+                            :action (str "/api/supply-chain/opa/" (:id p) "/delete")
+                            :class "inline"}
+                     [:input {:type "hidden" :name "__anti-forgery-token" :value (csrf-token req)}]
+                     [:button {:type "submit"
+                               :class "text-red-600 hover:text-red-800 text-xs"}
+                      "Delete"]]]])]]])]))))))
+
+(defn license-policies-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policies (license-store/list-license-policies ds :org-id org-id)]
+      (html-response
+        (str (h/html
+          [:div {:class "space-y-6"}
+           [:div {:class "flex items-center justify-between"}
+            [:h2 {:class "text-xl font-bold text-gray-900"} "License Policies"]
+            [:form {:method "POST" :action "/api/supply-chain/licenses/policy" :class "inline"}
+             [:input {:type "hidden" :name "__anti-forgery-token" :value (csrf-token req)}]
+             [:div {:class "flex items-center gap-2"}
+              [:input {:type "text" :name "license-id" :placeholder "SPDX ID (e.g. MIT)"
+                       :class "border rounded px-3 py-2 text-sm" :required true}]
+              [:select {:name "action" :class "border rounded px-3 py-2 text-sm"}
+               [:option {:value "allow"} "Allow"]
+               [:option {:value "deny"} "Deny"]]
+              [:button {:type "submit"
+                        :class "px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"}
+               "Add Rule"]]]]
+           (if (empty? policies)
+             [:div {:class "bg-white rounded-lg shadow p-8 text-center"}
+              [:p {:class "text-gray-500"} "No license policies configured. All licenses allowed by default."]]
+             [:div {:class "bg-white rounded-lg shadow-sm border p-5"}
+              [:table {:class "w-full text-sm"}
+               [:thead
+                [:tr {:class "text-left text-gray-500 border-b"}
+                 [:th {:class "py-2 font-medium"} "License"]
+                 [:th {:class "py-2 font-medium"} "Action"]
+                 [:th {:class "py-2 font-medium"} "Actions"]]]
+               [:tbody
+                (for [p policies]
+                  [:tr {:class "border-b border-gray-100 hover:bg-gray-50"}
+                   [:td {:class "py-2 font-mono"} (:license-id p)]
+                   [:td {:class "py-2"}
+                    (if (= "allow" (:action p))
+                      [:span {:class "px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800"} "Allow"]
+                      [:span {:class "px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800"} "Deny"])]
+                   [:td {:class "py-2"}
+                    [:form {:method "POST"
+                            :action (str "/api/supply-chain/licenses/policy/" (:id p) "/delete")
+                            :class "inline"}
+                     [:input {:type "hidden" :name "__anti-forgery-token" :value (csrf-token req)}]
+                     [:button {:type "submit"
+                               :class "text-red-600 hover:text-red-800 text-xs"}
+                      "Delete"]]]])]]])]))))))
+
+;; --- Phase 7: Supply Chain API Handlers ---
+
+(defn api-provenance [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :build-id])
+          att (provenance-store/get-attestation ds build-id :org-id org-id)]
+      (if att
+        {:status 200
+         :headers {"Content-Type" "application/json"}
+         :body (json/write-str att)}
+        (json-not-found (str "No provenance for build " build-id))))))
+
+(defn api-sbom [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :build-id])
+          fmt (get-in req [:path-params :format])
+          sboms (sbom-store/get-build-sboms ds build-id :org-id org-id)
+          sbom (first (filter #(= fmt (:sbom-format %)) sboms))]
+      (if sbom
+        {:status 200
+         :headers {"Content-Type" "application/json"}
+         :body (or (:sbom-content sbom) (json/write-str sbom))}
+        (json-not-found (str "No SBOM (" fmt ") for build " build-id))))))
+
+(defn api-build-scans [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :build-id])
+          scans (scan-store/get-build-scans ds build-id :org-id org-id)]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str scans)})))
+
+(defn api-build-licenses [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :build-id])
+          report (license-store/get-build-report ds build-id :org-id org-id)]
+      (if report
+        {:status 200
+         :headers {"Content-Type" "application/json"}
+         :body (json/write-str report)}
+        (json-not-found (str "No license report for build " build-id))))))
+
+(defn api-create-opa-policy [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (or (:params req) {})
+          policy-name (:name params)
+          package-name (:package-name params)
+          rego-source (:rego-source params)
+          description (:description params)]
+      (try
+        (opa-store/create-policy! ds
+          {:org-id org-id
+           :name policy-name
+           :package-name package-name
+           :rego-source rego-source
+           :description description})
+        {:status 303
+         :headers {"Location" "/admin/supply-chain/opa"}}
+        (catch Exception e
+          {:status 400
+           :headers {"Content-Type" "application/json"}
+           :body (json/write-str {:error (.getMessage e)})})))))
+
+(defn api-delete-opa-policy [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policy-id (get-in req [:path-params :id])]
+      (opa-store/delete-policy! ds policy-id :org-id org-id)
+      {:status 303
+       :headers {"Location" "/admin/supply-chain/opa"}})))
+
+(defn api-create-license-policy [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (or (:params req) {})
+          license-id (:license-id params)
+          action (or (:action params) "allow")]
+      (try
+        (license-store/create-license-policy! ds
+          {:org-id org-id
+           :license-id license-id
+           :action action})
+        {:status 303
+         :headers {"Location" "/admin/supply-chain/licenses"}}
+        (catch Exception e
+          {:status 400
+           :headers {"Content-Type" "application/json"}
+           :body (json/write-str {:error (.getMessage e)})})))))
+
+(defn api-delete-license-policy [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          policy-id (get-in req [:path-params :id])]
+      (license-store/delete-license-policy! ds policy-id :org-id org-id)
+      {:status 303
+       :headers {"Location" "/admin/supply-chain/licenses"}})))
+
+(defn api-verify-signatures [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          build-id (get-in req [:path-params :build-id])
+          sigs (signature-store/get-build-signatures ds build-id :org-id org-id)
+          results (mapv (fn [sig]
+                          (try
+                            (let [vresult (signing-engine/verify-signature! system sig)]
+                              {:id (:id sig) :verified (:verified? vresult)})
+                            (catch Exception _
+                              {:id (:id sig) :verified false})))
+                        sigs)]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:results results})})))
+
+(defn api-regulatory-framework [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          framework (get-in req [:path-params :framework])
+          checks (regulatory-store/get-framework-checks ds framework :org-id org-id)
+          passing (count (filter #(= "passing" (:status %)) checks))
+          total (count checks)]
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/write-str {:framework framework
+                              :checks checks
+                              :passing passing
+                              :total total
+                              :percentage (if (pos? total)
+                                            (* 100.0 (/ (double passing) (double total)))
+                                            0.0)})})))
+
+(defn api-regulatory-assess [system]
+  (fn [req]
+    (let [org-id (auth/current-org-id req)]
+      (try
+        (regulatory-engine/assess-and-store! system org-id)
+        {:status 303
+         :headers {"Location" "/admin/regulatory"}}
+        (catch Exception e
+          {:status 500
+           :headers {"Content-Type" "application/json"}
+           :body (json/write-str {:error (.getMessage e)})})))))

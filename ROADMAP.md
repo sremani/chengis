@@ -200,19 +200,25 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 
 ---
 
-## Phase 7: Supply Chain Security
+### Phase 7: Supply Chain Security
 
-**Theme:** Build provenance, software bill of materials, and compliance automation.
-
-| Feature | Description | Priority |
-|---------|-------------|----------|
-| SLSA provenance | Generate SLSA v1.0 provenance attestations for build outputs | High |
-| SBOM generation | CycloneDX and SPDX bill-of-materials from build artifacts | High |
-| Container image scanning | Trivy/Grype integration for CVE detection before deployment | High |
-| Policy-as-code | Define build policies in OPA/Rego for complex decision logic | Medium |
-| License scanning | Dependency license detection and policy enforcement | Medium |
-| Signed artifacts | GPG/Sigstore signing of build artifacts and attestations | Medium |
-| Regulatory dashboards | SOC 2 / ISO 27001 readiness indicators based on audit trail completeness | Low |
+- SLSA v1.0 build provenance attestations tracking builder, source, and materials (`provenance.clj`, `provenance_store.clj`)
+- SBOM generation in CycloneDX and SPDX formats via Syft/cdxgen with graceful degradation (`sbom.clj`, `sbom_store.clj`)
+- Container image scanning via Trivy/Grype with severity classification and graceful degradation (`vulnerability_scanner.clj`, `scan_store.clj`)
+- Policy-as-code with OPA/Rego evaluation against build context, admin UI for policy management (`opa.clj`, `opa_store.clj`)
+- License scanning from SBOMs with allow/deny policy enforcement (`license_scanner.clj`, `license_store.clj`)
+- Artifact signing via cosign/GPG with signature verification API (`signing.clj`, `signature_store.clj`)
+- Regulatory readiness dashboards for SOC 2 / ISO 27001 with automated framework scoring (`regulatory.clj`, `regulatory_store.clj`)
+- 3 new view files: `supply_chain.clj`, `regulatory.clj`, `signatures.clj`
+- 7 new feature flags (slsa-provenance, sbom-generation, container-scanning, opa-policies, license-scanning, artifact-signing, regulatory-dashboards)
+- 14 new environment variables for tool paths, signing keys, and policy configuration
+- External tool integrations: Trivy, Grype, Syft, cdxgen, cosign, GPG, OPA (all degrade gracefully)
+- Admin routes: `/admin/supply-chain`, `/admin/supply-chain/opa`, `/admin/supply-chain/licenses`, `/admin/regulatory`
+- API routes: `/api/supply-chain/builds/:build-id/{provenance,sbom,scans,licenses,verify}`, `/api/supply-chain/opa`, `/api/supply-chain/licenses/policy`, `/api/regulatory/{assess,frameworks}`
+- 13 new source files, 7 new test files, 3 new view files, 6 migration pairs
+- Migrations 048-050 (50 total migration versions)
+- Code review: 16 issues fixed across 12 files (2 critical, 3 high, 7 medium, 4 low) — timestamp format alignment, OPA shell injection prevention, cross-tenant signature verification scoping, handler result propagation, and supply chain view wiring
+- **928 tests, 3,152 assertions — all passing**
 
 ---
 
@@ -301,3 +307,4 @@ These items are under consideration but not yet scheduled:
 | Phase 4 | Performance | DAG execution, Caching, Delta artifacts, Resource scheduling, Dedup | **587** | 37-39 |
 | Phase 5 | Observability | Tracing, Analytics, Notifications, Cost, Flaky tests, Grafana, Logs | **678** | 40-43 |
 | Phase 6 | Advanced SCM | PR checks, Branch overrides, Monorepo, Dependencies, Cron, Gitea/Bitbucket, Webhook replay, Auto-merge | **838** | 44-47 |
+| Phase 7 | Supply Chain | SLSA provenance, SBOM, Container scanning, OPA, License scanning, Artifact signing, Regulatory dashboards | **928** | 48-50 |

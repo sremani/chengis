@@ -66,7 +66,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |            approvals, templates, webhooks, compliance,         |
 |            policies, plugin_policies, docker_policies,         |
 |            traces, analytics, notifications, cost,             |
-|            flaky_tests, pr_checks, cron, webhook_replay)      |
+|            flaky_tests, pr_checks, cron, webhook_replay,      |
+|            dependencies, supply_chain, regulatory, signatures) |
 |   distributed/master_api.clj                                  |
 +---------------------------------------------------------------+
 |                    Auth & Security Layer                       |
@@ -84,6 +85,19 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   cost.clj   test_parser.clj   pr_checks.clj                 |
 |   branch_overrides.clj   monorepo.clj   build_deps.clj       |
 |   cron.clj   webhook_replay.clj   auto_merge.clj             |
+|   provenance.clj   sbom.clj   vulnerability_scanner.clj      |
+|   opa.clj   license_scanner.clj   signing.clj                |
+|   regulatory.clj                                              |
++---------------------------------------------------------------+
+|                    Supply Chain Security Layer                 |
+|   engine/provenance.clj   engine/sbom.clj                    |
+|   engine/vulnerability_scanner.clj   engine/opa.clj           |
+|   engine/license_scanner.clj   engine/signing.clj             |
+|   engine/regulatory.clj                                       |
+|   db/provenance_store.clj   db/sbom_store.clj                |
+|   db/scan_store.clj   db/opa_store.clj                       |
+|   db/license_store.clj   db/signature_store.clj              |
+|   db/regulatory_store.clj                                     |
 +---------------------------------------------------------------+
 |                    Metrics & Observability Layer               |
 |   metrics.clj   logging.clj   tracing.clj   analytics.clj   |
@@ -137,6 +151,10 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/cost_store.clj  db/test_result_store.clj                 |
 |   db/pr_check_store.clj  db/dependency_store.clj              |
 |   db/cron_store.clj                                           |
+|   db/provenance_store.clj  db/sbom_store.clj                 |
+|   db/scan_store.clj  db/opa_store.clj                        |
+|   db/license_store.clj  db/signature_store.clj               |
+|   db/regulatory_store.clj                                     |
 |   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |
@@ -780,7 +798,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 47 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 50 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -916,6 +934,24 @@ build_logs        -- Structured log entries
 --          and persistent cron scheduling
 ```
 
+### Supply Chain Security Tables (Migrations 048-050)
+
+```sql
+-- 048: Supply chain core tables
+--       provenance_attestations — build_id, builder_id, build_type, invocation,
+--         materials, metadata, slsa_version, org_id
+--       sbom_records — build_id, format (cyclonedx/spdx), tool, content, org_id
+--       vulnerability_scans — build_id, scanner, image, severity_counts, findings, org_id
+-- 049: OPA and license tables
+--       opa_policies — name, description, rego_source, enabled, org_id
+--       license_results — build_id, license_id, package, status, org_id
+--       license_policies — name, allowed_licenses, denied_licenses, mode, org_id
+-- 050: Signatures and regulatory tables
+--       artifact_signatures — build_id, artifact_id, tool, key_id, signature, verified, org_id
+--       regulatory_assessments — framework, assessment_date, overall_score,
+--         control_scores, recommendations, org_id
+```
+
 ## Build Performance & Caching
 
 ### DAG-Based Parallel Stage Execution
@@ -973,6 +1009,107 @@ Agent Selection Pipeline
   |           + memory_score × 0.2
   |-- Sort: highest score wins
 ```
+
+## Supply Chain Security
+
+### Architecture
+
+```
+Build Executor                  Supply Chain Layer
+  |                                    |
+  |-- build completes              Provenance Engine
+  |                                    |-- generate SLSA v1.0 attestation
+  |                                    |-- record builder, source, materials
+  |                                    |-- store in provenance_attestations
+  |                                    |
+  |                                 SBOM Generator
+  |                                    |-- detect tool: syft or cdxgen
+  |                                    |-- generate CycloneDX / SPDX
+  |                                    |-- store in sbom_records
+  |                                    |
+  |                                 Vulnerability Scanner
+  |                                    |-- detect tool: trivy or grype
+  |                                    |-- scan container images
+  |                                    |-- classify by severity
+  |                                    |-- store in vulnerability_scans
+  |                                    |
+  |                                 License Scanner
+  |                                    |-- parse SBOM for license data
+  |                                    |-- evaluate against license policy
+  |                                    |-- store in license_results
+  |                                    |
+  |                                 OPA Policy Engine
+  |                                    |-- load Rego policies from DB
+  |                                    |-- evaluate against build context
+  |                                    |-- return allow/deny decisions
+  |                                    |
+  |                                 Artifact Signer
+  |                                    |-- detect tool: cosign or gpg
+  |                                    |-- sign artifacts + attestations
+  |                                    |-- store in artifact_signatures
+  |                                    |
+  |                                 Regulatory Engine
+  |                                    |-- assess audit trail completeness
+  |                                    |-- score per control category
+  |                                    |-- store in regulatory_assessments
+```
+
+### External Tool Integration
+
+All external tools are detected at runtime and degrade gracefully when not installed:
+
+```
+Tool Detection                      Execution
+  |                                    |
+  |-- which trivy -------> found? --->| trivy image --format json <image>
+  |                    \-> not found ->| try grype, or skip scanning
+  |
+  |-- which syft --------> found? --->| syft <target> -o cyclonedx-json
+  |                    \-> not found ->| try cdxgen, or skip SBOM
+  |
+  |-- which cosign ------> found? --->| cosign sign --key <key> <artifact>
+  |                    \-> not found ->| try gpg, or skip signing
+  |
+  |-- which opa ---------> found? --->| opa eval -d <policy> -i <input>
+  |                    \-> not found ->| skip OPA evaluation
+```
+
+### Data Flow
+
+```
+Build Artifacts
+  |
+  +---> SBOM Generation -----> License Scanning
+  |         |                       |
+  |         v                       v
+  |     sbom_records          license_results
+  |
+  +---> Image Scanning -----> vulnerability_scans
+  |
+  +---> Provenance ---------> provenance_attestations
+  |
+  +---> Artifact Signing ---> artifact_signatures
+  |
+  +---> All data feeds -----> Regulatory Assessment
+                                    |
+                                    v
+                              regulatory_assessments
+                              (SOC 2 / ISO 27001 scoring)
+```
+
+### Feature Flags
+
+Each supply chain feature is independently gated:
+
+| Flag | Component | External Tool |
+|------|-----------|---------------|
+| `:slsa-provenance` | `provenance.clj` | None (pure Clojure) |
+| `:sbom-generation` | `sbom.clj` | Syft or cdxgen |
+| `:container-scanning` | `vulnerability_scanner.clj` | Trivy or Grype |
+| `:opa-policies` | `opa.clj` | OPA |
+| `:license-scanning` | `license_scanner.clj` | None (parses SBOM data) |
+| `:artifact-signing` | `signing.clj` | cosign or GPG |
+| `:regulatory-dashboards` | `regulatory.clj` | None (queries audit data) |
 
 ## Secrets Management
 
@@ -1170,13 +1307,13 @@ Web UI:
 |-----------|---------------|---------------|-------|
 | `agent/` | Agent node lifecycle | Separate process entry point | 5 |
 | `cli/` | User-facing CLI commands | Thin layer over engine | 3 |
-| `db/` | Data access (stores) | One file per table/concern | 30 |
+| `db/` | Data access (stores) | One file per table/concern | 37 |
 | `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability, HA | 9 |
 | `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
-| `engine/` | Build orchestration | Core business logic | 34 |
+| `engine/` | Build orchestration | Core business logic | 41 |
 | `model/` | Data validation (specs) | Schema definitions | 1 |
 | `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 17 |
 | `web/` | HTTP handling | Handlers + middleware | 12 |
-| `web/views/` | Hiccup templates | One file per page/component | 27 |
+| `web/views/` | Hiccup templates | One file per page/component | 31 |
 
 Dependencies flow downward: `web` -> `engine` -> `db` -> `util`. The engine layer never imports web concerns, and the database layer never imports engine concerns. The plugin layer is cross-cutting but only depends on foundation. The auth/security layer wraps web handlers and is applied via middleware composition in `routes.clj`.

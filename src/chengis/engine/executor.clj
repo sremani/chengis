@@ -18,6 +18,11 @@
             [chengis.engine.matrix :as matrix]
             [chengis.engine.artifacts :as artifacts]
             [chengis.engine.notify :as notify]
+            [chengis.engine.provenance :as provenance]
+            [chengis.engine.sbom :as sbom]
+            [chengis.engine.vulnerability-scanner :as vuln-scanner]
+            [chengis.engine.license-scanner :as license-scanner]
+            [chengis.engine.signing :as signing]
             [chengis.engine.git :as git]
             [chengis.engine.process :as process]
             [chengis.engine.workspace :as workspace]
@@ -696,6 +701,21 @@
                                         :pipeline-source pipeline-source
                                         :artifacts collected-artifacts}
                                  git-info (assoc :git-info git-info))
+                  ;; --- Supply chain checks (after artifacts, before notifications) ---
+                  _ (when (:db system)
+                      (try
+                        (when (ff/enabled? (:config system) :slsa-provenance)
+                          (provenance/generate-provenance! system build-result))
+                        (when (ff/enabled? (:config system) :sbom-generation)
+                          (sbom/generate-sbom! system build-result))
+                        (when (ff/enabled? (:config system) :container-scanning)
+                          (vuln-scanner/scan-build! system build-result))
+                        (when (ff/enabled? (:config system) :license-scanning)
+                          (license-scanner/scan-licenses! system build-result))
+                        (when (ff/enabled? (:config system) :artifact-signing)
+                          (signing/sign-artifacts! system build-result))
+                        (catch Exception e
+                          (log/warn "Supply chain checks failed:" (.getMessage e)))))
                   ;; --- Notifications ---
                   _ (try
                       (notify/dispatch-notifications!

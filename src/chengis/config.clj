@@ -149,6 +149,19 @@
    :auto-merge {:require-all-checks true
                 :merge-method "merge"        ;; "merge", "squash", or "rebase"
                 :delete-branch-after false}
+   ;; Phase 7: Supply Chain Security
+   :sbom {:tool "syft"
+          :formats ["cyclonedx-json"]
+          :timeout-ms 300000}
+   :container-scanning {:scanner "trivy"
+                        :severity-threshold "high"
+                        :timeout-ms 600000
+                        :ignore-unfixed true}
+   :opa {:eval-timeout-ms 10000
+         :binary-path "opa"}
+   :signing {:tool "cosign"
+             :key-ref nil
+             :timeout-ms 60000}
    :ha {:enabled false
         :leader-poll-ms 15000
         :instance-id nil}      ;; defaults to "standalone" if nil; set from K8s pod name via CHENGIS_HA_INSTANCE_ID
@@ -177,7 +190,15 @@
                    :build-dependencies false
                    :cron-scheduling false
                    :webhook-replay false
-                   :auto-merge false}
+                   :auto-merge false
+                   ;; Phase 7: Supply Chain Security
+                   :slsa-provenance false
+                   :sbom-generation false
+                   :container-scanning false
+                   :opa-policies false
+                   :license-scanning false
+                   :artifact-signing false
+                   :regulatory-dashboards false}
    :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
@@ -292,7 +313,22 @@
    "CHENGIS_SCM_GITEA_TOKEN"                    [:scm :gitea :token]
    "CHENGIS_SCM_GITEA_BASE_URL"                 [:scm :gitea :base-url]
    "CHENGIS_SCM_BITBUCKET_USERNAME"             [:scm :bitbucket :username]
-   "CHENGIS_SCM_BITBUCKET_APP_PASSWORD"         [:scm :bitbucket :app-password]})
+   "CHENGIS_SCM_BITBUCKET_APP_PASSWORD"         [:scm :bitbucket :app-password]
+   ;; Phase 7: Supply Chain Security
+   "CHENGIS_FEATURE_SLSA_PROVENANCE"            [:feature-flags :slsa-provenance]
+   "CHENGIS_FEATURE_SBOM_GENERATION"            [:feature-flags :sbom-generation]
+   "CHENGIS_FEATURE_CONTAINER_SCANNING"         [:feature-flags :container-scanning]
+   "CHENGIS_FEATURE_OPA_POLICIES"               [:feature-flags :opa-policies]
+   "CHENGIS_FEATURE_LICENSE_SCANNING"            [:feature-flags :license-scanning]
+   "CHENGIS_FEATURE_ARTIFACT_SIGNING"            [:feature-flags :artifact-signing]
+   "CHENGIS_FEATURE_REGULATORY_DASHBOARDS"       [:feature-flags :regulatory-dashboards]
+   "CHENGIS_SBOM_TOOL"                           [:sbom :tool]
+   "CHENGIS_SBOM_TIMEOUT_MS"                     [:sbom :timeout-ms]
+   "CHENGIS_SCANNING_SCANNER"                    [:container-scanning :scanner]
+   "CHENGIS_SCANNING_SEVERITY_THRESHOLD"         [:container-scanning :severity-threshold]
+   "CHENGIS_SIGNING_TOOL"                        [:signing :tool]
+   "CHENGIS_SIGNING_KEY_REF"                     [:signing :key-ref]
+   "CHENGIS_OPA_BINARY_PATH"                     [:opa :binary-path]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.

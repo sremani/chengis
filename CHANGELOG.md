@@ -2,6 +2,184 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [Unreleased] — Phase 7: Supply Chain Security
+
+### Feature 7a: SLSA Provenance
+
+- **Build provenance attestations** — SLSA v1.0 provenance generation tracking builder, source, build config, and materials
+- **Attestation storage** — Provenance records persisted per build with builder ID, invocation metadata, and material hashes
+- **API endpoint** — `GET /api/supply-chain/builds/:build-id/provenance` returns SLSA provenance JSON
+- **Feature flag** — `:slsa-provenance` (default false)
+- **New source**: `src/chengis/engine/provenance.clj`, `src/chengis/db/provenance_store.clj`
+
+### Feature 7b: SBOM Generation
+
+- **CycloneDX/SPDX support** — Generate software bill of materials via Syft or cdxgen
+- **Dual format output** — SBOM available in both CycloneDX and SPDX formats
+- **Graceful degradation** — SBOM generation skipped when external tools (Syft/cdxgen) are not installed
+- **API endpoint** — `GET /api/supply-chain/builds/:build-id/sbom/:format` returns SBOM in requested format
+- **Feature flag** — `:sbom-generation` (default false)
+- **New source**: `src/chengis/engine/sbom.clj`, `src/chengis/db/sbom_store.clj`
+
+### Feature 7c: Container Image Scanning
+
+- **Trivy/Grype integration** — Vulnerability scanning for container images with CVE detection
+- **Dual scanner support** — Use Trivy or Grype (auto-detected), graceful degradation when neither is installed
+- **Severity tracking** — Vulnerabilities classified by severity (critical, high, medium, low)
+- **API endpoint** — `GET /api/supply-chain/builds/:build-id/scans` returns scan results
+- **Feature flag** — `:container-scanning` (default false)
+- **New source**: `src/chengis/engine/vulnerability_scanner.clj`, `src/chengis/db/scan_store.clj`
+
+### Feature 7d: Policy-as-Code with OPA
+
+- **OPA/Rego policy evaluation** — Define build policies in Rego for complex decision logic
+- **Policy management** — CRUD operations for OPA policies with admin UI
+- **Build-time evaluation** — Policies evaluated against build context before/after execution
+- **Graceful degradation** — OPA evaluation skipped when OPA binary is not installed
+- **API endpoints** — `GET/POST /api/supply-chain/opa` for policy management
+- **Admin UI** — `/admin/supply-chain/opa` for policy browsing and editing
+- **Feature flag** — `:opa-policies` (default false)
+- **New source**: `src/chengis/engine/opa.clj`, `src/chengis/db/opa_store.clj`
+
+### Feature 7e: License Scanning
+
+- **SPDX license compliance** — Detect dependency licenses from SBOMs and enforce license policies
+- **License policy engine** — Allow/deny lists for license types with configurable enforcement
+- **API endpoints** — `GET /api/supply-chain/builds/:build-id/licenses`, `GET/POST /api/supply-chain/licenses/policy`
+- **Admin UI** — `/admin/supply-chain/licenses` for license policy management
+- **Feature flag** — `:license-scanning` (default false)
+- **New source**: `src/chengis/engine/license_scanner.clj`, `src/chengis/db/license_store.clj`
+
+### Feature 7f: Artifact Signing
+
+- **cosign/GPG signature support** — Sign build artifacts and attestations with cosign or GPG
+- **Signature verification** — Verify artifact signatures via API endpoint
+- **Graceful degradation** — Signing skipped when cosign/GPG tools are not installed
+- **API endpoint** — `GET /api/supply-chain/builds/:build-id/verify` for signature verification
+- **Admin UI** — `/admin/supply-chain` includes signature status overview
+- **Feature flag** — `:artifact-signing` (default false)
+- **New source**: `src/chengis/engine/signing.clj`, `src/chengis/db/signature_store.clj`
+- **View**: `src/chengis/web/views/signatures.clj`
+
+### Feature 7g: Regulatory Dashboards
+
+- **SOC 2 / ISO 27001 readiness** — Regulatory framework assessment based on audit trail completeness
+- **Framework scoring** — Automated readiness scoring across control categories
+- **Assessment API** — `POST /api/regulatory/assess`, `GET /api/regulatory/frameworks/:framework`
+- **Admin UI** — `/admin/regulatory` for regulatory readiness dashboard
+- **Feature flag** — `:regulatory-dashboards` (default false)
+- **New source**: `src/chengis/engine/regulatory.clj`, `src/chengis/db/regulatory_store.clj`
+- **View**: `src/chengis/web/views/regulatory.clj`
+
+### New Feature Flags (7)
+
+| Flag | Default | Feature |
+|------|---------|---------|
+| `:slsa-provenance` | `false` | SLSA v1.0 build provenance attestations |
+| `:sbom-generation` | `false` | CycloneDX/SPDX SBOM generation |
+| `:container-scanning` | `false` | Trivy/Grype vulnerability scanning |
+| `:opa-policies` | `false` | OPA/Rego policy-as-code evaluation |
+| `:license-scanning` | `false` | SPDX license compliance scanning |
+| `:artifact-signing` | `false` | cosign/GPG artifact signing |
+| `:regulatory-dashboards` | `false` | SOC 2 / ISO 27001 readiness dashboards |
+
+### New Environment Variables (14)
+
+| Variable | Feature |
+|----------|---------|
+| `CHENGIS_FEATURE_SLSA_PROVENANCE` | Enable SLSA provenance generation |
+| `CHENGIS_FEATURE_SBOM_GENERATION` | Enable SBOM generation |
+| `CHENGIS_FEATURE_CONTAINER_SCANNING` | Enable container image scanning |
+| `CHENGIS_FEATURE_OPA_POLICIES` | Enable OPA policy-as-code |
+| `CHENGIS_FEATURE_LICENSE_SCANNING` | Enable license scanning |
+| `CHENGIS_FEATURE_ARTIFACT_SIGNING` | Enable artifact signing |
+| `CHENGIS_FEATURE_REGULATORY_DASHBOARDS` | Enable regulatory dashboards |
+| `CHENGIS_SBOM_TOOL` | Preferred SBOM tool (`syft` or `cdxgen`) |
+| `CHENGIS_SCANNER_TOOL` | Preferred scanner tool (`trivy` or `grype`) |
+| `CHENGIS_OPA_BINARY` | Path to OPA binary |
+| `CHENGIS_SIGNING_TOOL` | Preferred signing tool (`cosign` or `gpg`) |
+| `CHENGIS_SIGNING_KEY` | Signing key path or reference |
+| `CHENGIS_REGULATORY_FRAMEWORKS` | Comma-separated frameworks to assess |
+| `CHENGIS_LICENSE_POLICY_MODE` | License policy enforcement mode (`warn` or `deny`) |
+
+### New Routes
+
+**Admin UI:**
+| Route | Description |
+|-------|-------------|
+| `GET /admin/supply-chain` | Supply chain security overview dashboard |
+| `GET /admin/supply-chain/opa` | OPA policy management |
+| `GET /admin/supply-chain/licenses` | License policy management |
+| `GET /admin/supply-chain/builds/:build-id` | Per-build supply chain detail |
+| `GET /admin/regulatory` | Regulatory readiness dashboard |
+
+**API:**
+| Route | Description |
+|-------|-------------|
+| `GET /api/supply-chain/builds/:build-id/provenance` | SLSA provenance attestation |
+| `GET /api/supply-chain/builds/:build-id/sbom/:format` | SBOM in CycloneDX or SPDX format |
+| `GET /api/supply-chain/builds/:build-id/scans` | Vulnerability scan results |
+| `GET /api/supply-chain/builds/:build-id/licenses` | License scan results |
+| `GET /api/supply-chain/builds/:build-id/verify` | Artifact signature verification |
+| `GET/POST /api/supply-chain/opa` | OPA policy CRUD |
+| `GET/POST /api/supply-chain/licenses/policy` | License policy CRUD |
+| `POST /api/regulatory/assess` | Trigger regulatory assessment |
+| `GET /api/regulatory/frameworks/:framework` | Framework readiness details |
+
+### External Tool Integrations
+
+All external tools degrade gracefully when not installed:
+
+| Tool | Purpose | Detection |
+|------|---------|-----------|
+| Trivy | Container vulnerability scanning | `which trivy` |
+| Grype | Container vulnerability scanning (alternative) | `which grype` |
+| Syft | SBOM generation (CycloneDX/SPDX) | `which syft` |
+| cdxgen | SBOM generation (alternative) | `which cdxgen` |
+| cosign | Artifact signing (Sigstore) | `which cosign` |
+| GPG | Artifact signing (traditional) | `which gpg` |
+| OPA | Policy-as-code evaluation | `which opa` |
+
+### Migrations 048-050
+
+- 048: Supply chain core tables (provenance attestations, SBOM records, vulnerability scans)
+- 049: OPA policies and license compliance tables
+- 050: Artifact signatures and regulatory assessment tables
+
+### Code Review Fixes (16 issues resolved across 12 source files)
+
+**Critical (2):**
+- **Verify-signatures handler never detects failure** — `api-verify-signatures` handler in `handlers.clj` was wrapping `verify-signature!` in try/catch, swallowing the actual result. Fixed to inspect return value (`{:verified? true/false}`) and propagate verification status correctly to the JSON response.
+- **Signatures view form action URL missing `/builds/` segment** — `signatures.clj` form action was `"/api/supply-chain/"` instead of `"/api/supply-chain/builds/"`, causing 404 on signature verification requests.
+
+**High (3):**
+- **Timestamp format mismatch in 5 store cleanup functions** — `cleanup-old-*!` functions in `provenance_store.clj`, `sbom_store.clj`, `scan_store.clj`, `signature_store.clj`, and `license_store.clj` used `Instant.toString()` (ISO-8601 `"2025-01-15T10:30:00Z"`) for cutoff comparison against SQLite's `CURRENT_TIMESTAMP` format (`"2025-01-15 10:30:00"`). Fixed by adding `DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss"` formatting (consistent with `build_store.clj`).
+- **OPA cond branch ordering** — In `opa.clj`, the `:timed-out?` check was after the `(zero? (:exit-code result))` check. A timed-out process could have exit code 0, causing false positive results. Moved timeout check to first position.
+- **OPA shell injection via package-name** — Package names were interpolated into shell commands without sanitization. Added regex validation (`[a-zA-Z0-9._]+`) to reject malicious package names before command construction.
+
+**Medium (7):**
+- **scan_store.clj boolean-to-integer for `:passed`** — Clojure booleans passed for `:passed` field were not coerced to SQLite integers. Added `(if (boolean? passed) (if passed 1 0) passed)` conversion.
+- **signature_store.clj `verify-signature!` org-id scoping** — `verify-signature!` lacked org-id filtering, allowing cross-tenant signature verification updates. Added optional `org-id` parameter with conditional WHERE clause.
+- **signing.clj unused import** — Removed unused `clojure.data.json` require.
+- **signing.clj verify-signature! temp file handling** — Refactored to use proper `try/catch/finally` with `File/createTempFile` for reliable cleanup.
+- **vulnerability_scanner.clj timed-out scan silently passes** — Timed-out scans were falling through to the `:else` branch with empty stdout, resulting in a passing scan record. Added explicit `:timed-out?` check as first cond branch, creating a failing scan record (`passed=0`).
+- **regulatory.clj redundant DB queries** — `audit-log-count` was called twice per check (once for `passing?`, once for `evidence`). Refactored to use a single `let` binding.
+- **supply_chain.clj signatures panel not wired** — The supply chain dashboard was missing the artifact signatures panel. Added `v-signatures/signatures-panel` call at the end of the dashboard view.
+
+**Low (4):**
+- **provenance.clj unused imports** — Removed unused `MessageDigest` and `BigInteger` imports (only `Base64` needed).
+- **API endpoints return HTML on 404** — Three API endpoints (`api-get-provenance`, `api-get-scans`, `api-get-licenses`) returned HTML 404 instead of JSON. Added `json-not-found` helper returning `{"error": "..."}` with `Content-Type: application/json`.
+- **regulatory.clj unused json import** — Removed unused `clojure.data.json` require.
+- **signing_test.clj cleanup edge case** — `cleanup-old-signatures!` test used `retention-days=0`, which in the new timestamp format creates a cutoff at exactly "now" and misses records created in the same second. Changed to `retention-days=-1` to ensure the cutoff is in the future.
+
+### Test Suite
+- **928 tests, 3,152 assertions — all passing**
+- 13 new source files, 7 new test files, 3 new view files, 6 migration pairs added in Phase 7
+- 90 new tests added in Phase 7
+- New test files: provenance_test, sbom_test, vulnerability_scanner_test, opa_test, license_scanner_test, signing_test, regulatory_test
+
+---
+
 ## [Unreleased] — Phase 6: Advanced SCM & Workflow
 
 ### Feature 6a: PR/MR Status Checks
@@ -1056,4 +1234,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 838 passed, 2,849 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 928 passed, 3,152 assertions | varies | SUCCESS |
