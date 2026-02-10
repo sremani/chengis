@@ -4,6 +4,7 @@
             [chengis.web.audit :as audit]
             [chengis.web.webhook :as webhook]
             [chengis.web.oidc :as oidc]
+            [chengis.web.saml :as saml]
             [chengis.web.rate-limit :as rate-limit]
             [chengis.metrics :as metrics]
             [chengis.web.alerts :as alerts]
@@ -88,7 +89,8 @@
 (def ^:private csrf-exempt-prefixes
   "API path prefixes for CSRF exemption (parameterized routes)."
   ["/api/agents/"          ;; heartbeat: /api/agents/:id/heartbeat
-   "/api/builds/"])        ;; agent events/results: /api/builds/:id/agent-events, /api/builds/:id/result
+   "/api/builds/"          ;; agent events/results: /api/builds/:id/agent-events, /api/builds/:id/result
+   "/auth/saml/"])         ;; SAML ACS POST from IdP
 
 (defn- wrap-skip-csrf-for-api
   "Middleware that skips CSRF validation for API endpoints used by agents/webhooks.
@@ -136,6 +138,17 @@
        ["/auth/oidc"
         ["/login" {:get {:handler (oidc/oidc-login-handler system)}}]
         ["/callback" {:get {:handler (oidc/oidc-callback-handler system)}}]]
+       ;; SAML routes (public — handle IdP redirects)
+       ["/auth/saml"
+        ["/login" {:get {:handler (saml/saml-login-handler system)}}]
+        ["/acs" {:post {:handler (saml/saml-acs-handler system)}}]
+        ["/metadata" {:get {:handler (saml/saml-metadata-handler system)}}]]
+       ;; MFA challenge routes (public — pre-auth)
+       ["/auth/mfa"
+        ["/challenge" {:get {:handler (h/mfa-challenge-page system)}
+                       :post {:handler (h/mfa-challenge-submit system)}}]
+        ["/recovery" {:get {:handler (h/mfa-recovery-page system)}
+                      :post {:handler (h/mfa-recovery-submit system)}}]]
        ["/health" {:get {:handler (h/health-check system)}}]
        ["/ready" {:get {:handler (h/readiness-check system)}}]
        ["/startup" {:get {:handler (h/startup-check system)}}]
@@ -174,7 +187,11 @@
        ["/settings"
         ["/tokens" {:get {:handler (auth/wrap-require-role :viewer (h/tokens-page system))}
                     :post {:handler (auth/wrap-require-role :viewer (h/generate-token-handler system))}}]
-        ["/tokens/:id/revoke" {:post {:handler (auth/wrap-require-role :viewer (h/revoke-token-handler system))}}]]
+        ["/tokens/:id/revoke" {:post {:handler (auth/wrap-require-role :viewer (h/revoke-token-handler system))}}]
+        ["/mfa" {:get {:handler (auth/wrap-require-role :viewer (h/mfa-settings-page system))}}]
+        ["/mfa/setup" {:post {:handler (auth/wrap-require-role :viewer (h/mfa-setup-submit system))}}]
+        ["/mfa/confirm" {:post {:handler (auth/wrap-require-role :viewer (h/mfa-confirm-submit system))}}]
+        ["/mfa/disable" {:post {:handler (auth/wrap-require-role :viewer (h/mfa-disable-submit system))}}]]
        ;; Admin-only routes
        ["/admin"
         ["" {:get {:handler (auth/wrap-require-role :admin (h/admin-page system))}}]
@@ -235,7 +252,32 @@
          ["/licenses" {:get {:handler (auth/wrap-require-role :admin (h/license-policies-page system))}}]
          ["/builds/:build-id" {:get {:handler (auth/wrap-require-role :admin (h/supply-chain-build-page system))}}]]
         ;; Phase 7: Regulatory readiness
-        ["/regulatory" {:get {:handler (auth/wrap-require-role :admin (h/regulatory-page system))}}]]
+        ["/regulatory" {:get {:handler (auth/wrap-require-role :admin (h/regulatory-page system))}}]
+        ;; Phase 8: Permissions
+        ["/permissions"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/permissions-page system))}}]
+         ["/grant" {:post {:handler (auth/wrap-require-role :admin (h/grant-permission-handler system))}}]
+         ["/revoke/:id" {:post {:handler (auth/wrap-require-role :admin (h/revoke-permission-handler system))}}]
+         ["/groups"
+          ["" {:get {:handler (auth/wrap-require-role :admin (h/permission-groups-page system))}
+               :post {:handler (auth/wrap-require-role :admin (h/create-permission-group-handler system))}}]
+          ["/:id" {:get {:handler (auth/wrap-require-role :admin (h/permission-group-detail-page system))}}]
+          ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-permission-group-handler system))}}]
+          ["/:id/entries" {:post {:handler (auth/wrap-require-role :admin (h/add-group-entry-handler system))}}]
+          ["/:id/entries/:entry-id/remove" {:post {:handler (auth/wrap-require-role :admin (h/remove-group-entry-handler system))}}]
+          ["/:id/members" {:post {:handler (auth/wrap-require-role :admin (h/add-group-member-handler system))}}]
+          ["/:id/members/:uid/remove" {:post {:handler (auth/wrap-require-role :admin (h/remove-group-member-handler system))}}]]]
+        ;; Phase 8: Shared Resources
+        ["/shared-resources"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/shared-resources-page system))}}]
+         ["/grant" {:post {:handler (auth/wrap-require-role :admin (h/create-shared-grant-handler system))}}]
+         ["/revoke/:id" {:post {:handler (auth/wrap-require-role :admin (h/revoke-shared-grant-handler system))}}]]
+        ;; Phase 8: Secret Rotation
+        ["/rotation"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/rotation-page system))}
+              :post {:handler (auth/wrap-require-role :admin (h/create-rotation-policy-handler system))}}]
+         ["/delete/:id" {:post {:handler (auth/wrap-require-role :admin (h/delete-rotation-policy-handler system))}}]
+         ["/toggle/:id" {:post {:handler (auth/wrap-require-role :admin (h/toggle-rotation-policy-handler system))}}]]]
        ;; Analytics (viewer+)
        ["/analytics" {:get {:handler (auth/wrap-require-role :viewer (h/analytics-page system))}}]
        ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/flaky-tests-page system))}}]

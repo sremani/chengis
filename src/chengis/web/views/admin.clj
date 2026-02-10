@@ -122,6 +122,15 @@
         [:a {:href "/admin/docker/policies"
              :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
          "Docker Policies"]
+        [:a {:href "/admin/permissions"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "Permissions"]
+        [:a {:href "/admin/shared-resources"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "Shared Resources"]
+        [:a {:href "/admin/rotation"
+             :class "px-4 py-2 bg-gray-100 rounded text-sm font-medium text-gray-700 hover:bg-gray-200 transition"}
+         "Secret Rotation"]
         [:form {:method "POST" :action "/admin/retention" :class "inline"}
          [:input {:type "hidden" :name "__anti-forgery-token" :value csrf-token}]
          [:button {:type "submit"

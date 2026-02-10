@@ -4,8 +4,9 @@
             [hiccup.util :refer [raw-string escape-html]]))
 
 (defn render
-  "Render the login page. Options: :error, :csrf-token, :oidc-enabled, :oidc-provider-name."
-  [{:keys [error csrf-token oidc-enabled oidc-provider-name]}]
+  "Render the login page. Options: :error, :csrf-token, :oidc-enabled, :oidc-provider-name,
+   :saml-enabled, :saml-provider-name."
+  [{:keys [error csrf-token oidc-enabled oidc-provider-name saml-enabled saml-provider-name]}]
   (str
     (h/html
       (raw-string "<!DOCTYPE html>")
@@ -33,6 +34,18 @@
              [:a {:href "/auth/oidc/login"
                   :class "w-full flex items-center justify-center bg-gray-800 text-white py-2 px-4 rounded-md hover:bg-gray-900 transition font-medium"}
               (str "Sign in with " (or oidc-provider-name "SSO"))]
+             (when-not saml-enabled
+               [:div {:class "relative my-4"}
+                [:div {:class "absolute inset-0 flex items-center"}
+                 [:div {:class "w-full border-t border-gray-300"}]]
+                [:div {:class "relative flex justify-center text-sm"}
+                 [:span {:class "px-2 bg-white text-gray-500"} "or sign in with password"]]])])
+          ;; SSO button (when SAML is enabled)
+          (when saml-enabled
+            [:div {:class "mb-6"}
+             [:a {:href "/auth/saml/login"
+                  :class "w-full flex items-center justify-center bg-indigo-700 text-white py-2 px-4 rounded-md hover:bg-indigo-800 transition font-medium"}
+              (str "Sign in with " (or saml-provider-name "SAML SSO"))]
              [:div {:class "relative my-4"}
               [:div {:class "absolute inset-0 flex items-center"}
                [:div {:class "w-full border-t border-gray-300"}]]

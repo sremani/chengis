@@ -2,6 +2,256 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [Unreleased] — Phase 8: Enterprise Identity & Access
+
+### Feature 8a: SAML 2.0 SSO
+
+- **SP-initiated SAML flow** — Enterprise SSO via SAML 2.0 alongside existing OIDC
+- **Assertion Consumer Service** — POST binding ACS endpoint validates SAML responses, extracts attributes
+- **SP metadata** — Auto-generated SP metadata XML endpoint for IdP configuration
+- **JIT provisioning** — Automatic user creation on first SAML login with attribute mapping
+- **SAML identity tracking** — `saml_identities` table links SAML assertions to local user accounts
+- **Feature flag** — `:saml` (default false)
+- **New source**: `src/chengis/web/saml.clj`
+- **Migration 051** — `saml_identities` table
+- **New dependency**: `com.onelogin/java-saml 2.9.0`
+
+### Feature 8b: LDAP/Active Directory
+
+- **LDAP bind authentication** — Authenticate users against LDAP/AD directory via bind operation
+- **Group sync** — Synchronize LDAP group membership to local roles
+- **JIT provisioning** — Automatic user creation on first LDAP login
+- **LDAP-first fallback** — Attempt LDAP bind first; fall back to local password check on failure
+- **LDAP sync scheduler** — Periodic group sync runs as HA singleton (lock 100005)
+- **Feature flag** — `:ldap` (default false)
+- **New source**: `src/chengis/web/ldap.clj`
+- **Migration 052** — `ldap_identities` table
+- **New dependency**: `com.unboundid/unboundid-ldapsdk 6.0.11`
+
+### Feature 8c: Fine-Grained RBAC
+
+- **Resource-level permissions** — Grant specific actions on specific resources (e.g., user X can trigger Job Y)
+- **Permission groups** — Named sets of permissions assigned to multiple users
+- **Permission middleware** — `wrap-require-permission` checks resource+action before handler execution
+- **Resolution order** — Direct user permissions > group membership > role-based fallback
+- **Admin UI** — Permission grant/revoke and group management pages
+- **Feature flag** — `:fine-grained-rbac` (default false)
+- **New source**: `src/chengis/db/permission_store.clj`, `src/chengis/web/permissions.clj`, `src/chengis/web/views/permissions.clj`
+- **Migration 053** — `resource_permissions` table
+- **Migration 054** — `permission_groups` and `permission_group_members` tables
+
+### Feature 8d: MFA/TOTP
+
+- **TOTP enrollment** — Generate secret, display QR code, verify initial code before activation
+- **TOTP verification** — MFA-pending session flow: login → challenge → verify → full session
+- **Recovery codes** — One-time-use recovery codes (bcrypt hashed) for account recovery
+- **Encrypted secrets** — TOTP secrets encrypted with AES-256-GCM at rest
+- **Settings page** — User-facing MFA enable/disable with QR code display
+- **Feature flag** — `:mfa-totp` (default false)
+- **New source**: `src/chengis/web/mfa.clj`, `src/chengis/web/views/mfa.clj`
+- **Migration 055** — `totp_enrollments` and `totp_recovery_codes` tables
+- **New dependency**: `dev.samstevens.totp/totp 1.7.1`
+
+### Feature 8e: Cross-Org Shared Resources
+
+- **Shared agent labels** — Share agent labels across organizations for resource pooling
+- **Shared templates** — Share pipeline templates across organizations
+- **Grant/revoke model** — Source org grants access to target org with audit trail
+- **Admin UI** — Shared resource management page with grant/revoke controls
+- **Feature flag** — `:cross-org-sharing` (default false)
+- **New source**: `src/chengis/db/shared_resource_store.clj`, `src/chengis/web/views/shared_resources.clj`
+- **Migration 056** — `shared_resource_grants` table
+
+### Feature 8f: Cloud Secret Backends
+
+- **AWS Secrets Manager** — Full `SecretBackend` protocol implementation using AWS SDK v2
+- **Google Cloud Secret Manager** — Full `SecretBackend` protocol implementation using GCP client library
+- **Azure Key Vault** — Full `SecretBackend` protocol implementation using Azure SDK
+- **Config-driven selection** — Backend chosen via `:secrets {:backend "aws-sm"|"gcp-sm"|"azure-kv"}` or env vars
+- **Feature flag** — `:cloud-secret-backends` (default false)
+- **New source**: `src/chengis/plugin/builtin/aws_secrets.clj`, `src/chengis/plugin/builtin/gcp_secrets.clj`, `src/chengis/plugin/builtin/azure_keyvault.clj`
+- **New dependencies**: `software.amazon.awssdk/secretsmanager 2.25.0`, `software.amazon.awssdk/auth 2.25.0`, `com.google.cloud/google-cloud-secretmanager 2.37.0`, `com.azure/azure-security-keyvault-secrets 4.8.0`, `com.azure/azure-identity 1.12.0`
+
+### Feature 8g: Secret Rotation
+
+- **Rotation policies** — Per-secret rotation interval, notification window, enabled/disabled toggle
+- **Rotation scheduler** — Periodic check for due rotations (HA singleton, lock 100006)
+- **Version history** — `secret_versions` table tracks all historical secret values
+- **Pre-rotation notifications** — Alert before rotation due date (configurable days)
+- **Admin UI** — Rotation policy management with create/edit/delete/toggle controls
+- **Feature flag** — `:secret-rotation` (default false)
+- **New source**: `src/chengis/engine/secret_rotation.clj`, `src/chengis/db/rotation_store.clj`, `src/chengis/web/views/secret_rotation.clj`
+- **Migration 057** — `rotation_policies` table
+- **Migration 058** — `secret_versions` table
+
+### Modified Existing Files
+
+- **auth.clj** — SAML/MFA public prefix paths, MFA-pending session handling
+- **login.clj** — SAML SSO button on login page
+- **handlers.clj** — LDAP-first login flow, MFA-pending session handling, 25+ new handler functions for permissions, shared resources, rotation
+- **routes.clj** — SAML/MFA/permissions/shared/rotation routes, CSRF exemption for SAML ACS POST
+- **admin.clj** — Permissions, Shared Resources, Secret Rotation nav links
+- **server.clj** — AWS/GCP/Azure backend initialization, LDAP sync scheduler (lock 100005), rotation scheduler (lock 100006)
+
+### New Feature Flags (7)
+
+| Flag | Default | Feature |
+|------|---------|---------|
+| `:saml` | `false` | SAML 2.0 SP-initiated SSO |
+| `:ldap` | `false` | LDAP/Active Directory authentication |
+| `:fine-grained-rbac` | `false` | Resource-level permissions |
+| `:mfa-totp` | `false` | MFA time-based one-time passwords |
+| `:cross-org-sharing` | `false` | Cross-org shared resources |
+| `:cloud-secret-backends` | `false` | AWS SM, GCP SM, Azure KV backends |
+| `:secret-rotation` | `false` | Policy-driven secret rotation |
+
+### New Environment Variables (~20)
+
+| Variable | Feature |
+|----------|---------|
+| `CHENGIS_FEATURE_SAML` | Enable SAML 2.0 SSO |
+| `CHENGIS_SAML_IDP_METADATA_URL` | SAML IdP metadata URL |
+| `CHENGIS_SAML_SP_ENTITY_ID` | SAML SP entity ID |
+| `CHENGIS_SAML_SP_ACS_URL` | SAML Assertion Consumer Service URL |
+| `CHENGIS_SAML_IDP_ENTITY_ID` | SAML IdP entity ID |
+| `CHENGIS_SAML_IDP_SSO_URL` | SAML IdP SSO URL |
+| `CHENGIS_SAML_IDP_CERT` | SAML IdP certificate |
+| `CHENGIS_SAML_SP_PRIVATE_KEY` | SAML SP private key |
+| `CHENGIS_SAML_SP_CERT` | SAML SP certificate |
+| `CHENGIS_FEATURE_LDAP` | Enable LDAP/AD authentication |
+| `CHENGIS_LDAP_HOST` | LDAP server host |
+| `CHENGIS_LDAP_PORT` | LDAP server port |
+| `CHENGIS_LDAP_BIND_DN` | LDAP bind DN |
+| `CHENGIS_LDAP_BIND_PASSWORD` | LDAP bind password |
+| `CHENGIS_LDAP_USER_BASE_DN` | LDAP user search base DN |
+| `CHENGIS_LDAP_USER_FILTER` | LDAP user search filter |
+| `CHENGIS_LDAP_GROUP_BASE_DN` | LDAP group search base DN |
+| `CHENGIS_LDAP_GROUP_FILTER` | LDAP group search filter |
+| `CHENGIS_FEATURE_FINE_GRAINED_RBAC` | Enable fine-grained RBAC |
+| `CHENGIS_FEATURE_MFA_TOTP` | Enable MFA/TOTP |
+| `CHENGIS_FEATURE_CROSS_ORG_SHARING` | Enable cross-org sharing |
+| `CHENGIS_FEATURE_CLOUD_SECRET_BACKENDS` | Enable cloud secret backends |
+| `CHENGIS_AWS_SM_REGION` | AWS Secrets Manager region |
+| `CHENGIS_AWS_SM_ACCESS_KEY_ID` | AWS access key ID |
+| `CHENGIS_AWS_SM_SECRET_ACCESS_KEY` | AWS secret access key |
+| `CHENGIS_GCP_SM_PROJECT_ID` | GCP project ID |
+| `CHENGIS_GCP_SM_CREDENTIALS_PATH` | GCP credentials file path |
+| `CHENGIS_AZURE_KV_VAULT_URL` | Azure Key Vault URL |
+| `CHENGIS_AZURE_KV_TENANT_ID` | Azure tenant ID |
+| `CHENGIS_AZURE_KV_CLIENT_ID` | Azure client ID |
+| `CHENGIS_AZURE_KV_CLIENT_SECRET` | Azure client secret |
+| `CHENGIS_FEATURE_SECRET_ROTATION` | Enable secret rotation |
+
+### New Routes
+
+**SAML:**
+| Route | Description |
+|-------|-------------|
+| `GET /auth/saml/login` | Initiate SAML SP-initiated SSO login |
+| `POST /auth/saml/acs` | SAML Assertion Consumer Service callback |
+| `GET /auth/saml/metadata` | SAML SP metadata XML |
+
+**MFA:**
+| Route | Description |
+|-------|-------------|
+| `GET /auth/mfa/challenge` | MFA TOTP challenge page |
+| `POST /auth/mfa/challenge` | Verify MFA TOTP code |
+| `GET /auth/mfa/recovery` | MFA recovery code entry page |
+| `POST /auth/mfa/recovery` | Verify MFA recovery code |
+| `GET /settings/mfa` | MFA settings page |
+| `GET /settings/mfa/setup` | MFA TOTP enrollment with QR code |
+| `POST /settings/mfa/confirm` | Confirm MFA enrollment |
+| `POST /settings/mfa/disable` | Disable MFA |
+
+**Permissions:**
+| Route | Description |
+|-------|-------------|
+| `GET /admin/permissions` | Permission management page |
+| `POST /admin/permissions/grant` | Grant resource permission |
+| `POST /admin/permissions/revoke/:id` | Revoke resource permission |
+| `GET /admin/permissions/groups` | Permission group listing |
+| `POST /admin/permissions/groups` | Create permission group |
+| `GET /admin/permissions/groups/:id` | Permission group detail |
+| `POST /admin/permissions/groups/:id/members` | Add group member |
+| `POST /admin/permissions/groups/:id/members/:uid/remove` | Remove group member |
+| `POST /admin/permissions/groups/:id/delete` | Delete permission group |
+| `POST /admin/permissions/groups/:id/entries` | Add entry to permission group |
+| `POST /admin/permissions/groups/:id/entries/:entry-id/remove` | Remove entry from permission group |
+
+**Shared Resources:**
+| Route | Description |
+|-------|-------------|
+| `GET /admin/shared-resources` | Cross-org shared resource management |
+| `POST /admin/shared-resources/grant` | Grant shared resource access |
+| `POST /admin/shared-resources/revoke/:id` | Revoke shared resource grant |
+
+**Secret Rotation:**
+| Route | Description |
+|-------|-------------|
+| `GET /admin/rotation` | Secret rotation policy management |
+| `POST /admin/rotation` | Create/update rotation policy |
+| `POST /admin/rotation/delete/:id` | Delete rotation policy |
+| `POST /admin/rotation/toggle/:id` | Enable/disable rotation policy |
+
+### New Library Dependencies (8)
+
+| Library | Version | Purpose |
+|---------|---------|---------|
+| `com.onelogin/java-saml` | 2.9.0 | SAML 2.0 SP-initiated SSO |
+| `com.unboundid/unboundid-ldapsdk` | 6.0.11 | LDAP/AD authentication |
+| `dev.samstevens.totp/totp` | 1.7.1 | MFA TOTP generation/verification |
+| `software.amazon.awssdk/secretsmanager` | 2.25.0 | AWS Secrets Manager |
+| `software.amazon.awssdk/auth` | 2.25.0 | AWS authentication |
+| `com.google.cloud/google-cloud-secretmanager` | 2.37.0 | GCP Secret Manager |
+| `com.azure/azure-security-keyvault-secrets` | 4.8.0 | Azure Key Vault |
+| `com.azure/azure-identity` | 1.12.0 | Azure identity/authentication |
+
+### Migrations 051-058
+
+- 051: SAML identities table (user_id, idp_entity_id, name_id, attributes, org_id)
+- 052: LDAP identities table (user_id, ldap_dn, ldap_uid, ldap_groups, org_id)
+- 053: Resource permissions table (user_id, resource_type, resource_id, action, org_id)
+- 054: Permission groups tables (permission_groups, permission_group_members)
+- 055: TOTP enrollment and recovery codes tables (totp_enrollments, totp_recovery_codes)
+- 056: Cross-org shared resource grants table (source_org_id, target_org_id, resource_type)
+- 057: Secret rotation policies table (secret_name, rotation_interval_days, next_rotation)
+- 058: Secret versions table (secret_name, version, encrypted_value, active)
+
+### Code Review Fixes (9 issues resolved across 6 source files)
+
+**High (3):**
+- **Form field name mismatches (4 handlers)** — HTML forms used hyphenated field names (e.g., `user-id`, `resource-type`, `target-org-id`) but handlers read underscored names (e.g., `user_id`, `resource_type`, `target_org_id`). All form param reads in `grant-permission-handler`, `create-shared-grant-handler`, `create-rotation-policy-handler`, and `add-group-member-handler` corrected to match HTML form field names exactly.
+- **MFA view route URL mismatches** — MFA views (`views/mfa.clj`) had form actions and links pointing to `/login/mfa` and `/login/mfa/recovery`, but actual routes were defined as `/auth/mfa/challenge` and `/auth/mfa/recovery`. Fixed 4 URL references in the view file.
+- **Shared resources create form URL mismatch** — The create-grant form in `views/shared_resources.clj` posted to `/admin/shared-resources` (a GET-only route) instead of `/admin/shared-resources/grant`. Fixed form action URL.
+
+**Medium (4):**
+- **MFA recovery form field name** — Handler `mfa-recovery-submit` read `"code"` from form params, but the form field was named `"recovery-code"`. Changed handler to read `"recovery-code"`.
+- **Function call signature errors** — `list-groups` and `list-policies` were called with positional args (e.g., `(list-groups ds org-id)`) but their signatures use keyword arguments (`[ds & {:keys [org-id]}]`). Fixed to keyword style: `(list-groups ds :org-id org-id)`.
+- **permissions-page listing broken** — Called `list-resource-permissions` with nil resource-type and resource-id, which returned empty results. Added new `list-org-permissions` function to `permission_store.clj` and used it in the handler. Also added missing `groups` data to the view render call.
+- **Missing permission group routes and handlers** — Views had buttons/forms for delete group, add entry, and remove entry, but no corresponding routes existed. Added 3 routes to `routes.clj` (`/:id/delete`, `/:id/entries`, `/:id/entries/:entry-id/remove`) and 3 handler functions to `handlers.clj` (`delete-permission-group-handler`, `add-group-entry-handler`, `remove-group-entry-handler`).
+
+**Low (2):**
+- **Rotation page missing versions data** — The `rotation-page` handler didn't fetch or pass `:versions` data to the view. Added version fetching logic with aggregation across all policies and sorted by `rotated-at` descending.
+- **SQLite-specific SQL in rotation_store** — `create-policy!`, `mark-rotated!`, and `policies-due-for-notification` used SQLite-only functions (`datetime('now', ...)`, `julianday()`). Replaced with database-agnostic Java `Instant`/`Duration` calculations via `now-plus-days` and `now-str` helper functions, ensuring compatibility with both SQLite and PostgreSQL.
+
+### New Routes (added during code review)
+
+| Route | Description |
+|-------|-------------|
+| `POST /admin/permissions/groups/:id/delete` | Delete a permission group |
+| `POST /admin/permissions/groups/:id/entries` | Add entry to permission group |
+| `POST /admin/permissions/groups/:id/entries/:entry-id/remove` | Remove entry from permission group |
+
+### Test Suite
+- **1,067 tests, 3,564 assertions — all passing**
+- ~17 new source files, ~12 new test files, 4 new view files, 8 migration pairs added in Phase 8
+- 139 new tests added in Phase 8 (1,067 - 928)
+- 412 new assertions added in Phase 8 (3,564 - 3,152)
+- 41 total feature flags (was 34)
+- 58 total migration versions (was 50)
+
+---
+
 ## [Unreleased] — Phase 7: Supply Chain Security
 
 ### Feature 7a: SLSA Provenance
@@ -1234,4 +1484,4 @@ Chengis has been verified building real open-source projects:
 |---------|----------|-------|------------|--------|
 | JUnit5 Samples | Java (Maven) | 5 passed | 8.7s | SUCCESS |
 | FluentValidation | C# (.NET 9) | 865 passed | 8.3s | SUCCESS |
-| Chengis (self) | Clojure | 928 passed, 3,152 assertions | varies | SUCCESS |
+| Chengis (self) | Clojure | 1,067 passed, 3,564 assertions | varies | SUCCESS |

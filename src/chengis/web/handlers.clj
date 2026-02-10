@@ -78,6 +78,16 @@
             [chengis.web.views.regulatory :as v-regulatory]
             [chengis.web.views.signatures :as v-signatures]
             [chengis.web.webhook :as webhook]
+            [chengis.web.saml :as saml]
+            [chengis.web.ldap :as ldap]
+            [chengis.web.mfa :as mfa]
+            [chengis.web.views.mfa :as v-mfa]
+            [chengis.web.views.permissions :as v-permissions]
+            [chengis.web.views.shared-resources :as v-shared]
+            [chengis.web.views.secret-rotation :as v-rotation]
+            [chengis.db.permission-store :as permission-store]
+            [chengis.db.shared-resource-store :as shared-store]
+            [chengis.db.rotation-store :as rotation-store]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -596,14 +606,19 @@
           oidc-enabled? (get-in config [:oidc :enabled] false)
           oidc-name (when oidc-enabled?
                       ((resolve 'chengis.web.oidc/oidc-provider-name) config))
-          ;; Support ?error= query param from OIDC callback redirects
+          saml-enabled? (saml/saml-enabled? config)
+          saml-name (when saml-enabled?
+                      (get-in config [:saml :provider-name]))
+          ;; Support ?error= query param from OIDC/SAML callback redirects
           error (or (get (:query-params req) "error")
                     (get (:params req) "error"))]
       (html-response
         (v-login/render {:csrf-token (csrf-token req)
                           :error error
                           :oidc-enabled oidc-enabled?
-                          :oidc-provider-name oidc-name})))))
+                          :oidc-provider-name oidc-name
+                          :saml-enabled saml-enabled?
+                          :saml-provider-name saml-name})))))
 
 (defn login-submit [system]
   (fn [req]
@@ -614,22 +629,41 @@
           username (get params "username")
           password (get params "password")
           ip-address (or (:remote-addr req) "unknown")
-          result (auth/login! ds username password (:metrics system) lockout-config)]
+          ;; Try LDAP first when enabled, then fall back to local
+          result (if (ldap/ldap-enabled? config)
+                   (let [ldap-result (ldap/ldap-login! ds config username password (:metrics system) lockout-config)]
+                     (if (:success ldap-result)
+                       ldap-result
+                       ;; Fallback to local auth
+                       (auth/login! ds username password (:metrics system) lockout-config)))
+                   (auth/login! ds username password (:metrics system) lockout-config))]
       ;; Log the login attempt for forensics
       (lockout/log-login-attempt! ds username ip-address (:success result))
       (if (:success result)
-        ;; Set session and redirect to dashboard
-        {:status 303
-         :headers {"Location" "/"}
-         :session {:user (:user result)}}
+        ;; Check MFA enrollment
+        (let [user (:user result)]
+          (if (and (feature-flags/enabled? config :mfa-totp)
+                   (mfa/totp-enrolled? ds (:id user)))
+            ;; MFA required — set pending session
+            {:status 303
+             :headers {"Location" "/auth/mfa/challenge"}
+             :session {:mfa-pending true :mfa-user-id (:id user)}}
+            ;; No MFA — normal login
+            {:status 303
+             :headers {"Location" "/"}
+             :session {:user user}}))
         ;; Re-render login with error
-        (let [oidc-enabled? (get-in config [:oidc :enabled] false)]
+        (let [oidc-enabled? (get-in config [:oidc :enabled] false)
+              saml-enabled? (saml/saml-enabled? config)]
           (html-response
             (v-login/render {:error (:error result)
                               :csrf-token (csrf-token req)
                               :oidc-enabled oidc-enabled?
                               :oidc-provider-name (when oidc-enabled?
-                                                    ((resolve 'chengis.web.oidc/oidc-provider-name) config))})))))))
+                                                    ((resolve 'chengis.web.oidc/oidc-provider-name) config))
+                              :saml-enabled saml-enabled?
+                              :saml-provider-name (when saml-enabled?
+                                                    (get-in config [:saml :provider-name]))})))))))
 
 (defn logout-submit [_system]
   (fn [_req]
@@ -2292,3 +2326,330 @@
           {:status 500
            :headers {"Content-Type" "application/json"}
            :body (json/write-str {:error (.getMessage e)})})))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 8: MFA Handlers
+;; ---------------------------------------------------------------------------
+
+(defn mfa-challenge-page [_system]
+  (fn [req]
+    (let [error (get (:query-params req) "error")]
+      (html-response (v-mfa/render-challenge-page {:csrf-token (csrf-token req) :error error})))))
+
+(defn mfa-challenge-submit [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          session (:session req)
+          user-id (:mfa-user-id session)
+          code (get (:form-params req) "code")]
+      (if (and user-id (mfa/check-totp! ds user-id code config))
+        (let [user (user-store/get-user ds user-id)]
+          {:status 303
+           :headers {"Location" "/"}
+           :session {:user {:id (:id user)
+                            :username (:username user)
+                            :role (keyword (:role user))
+                            :session-version (or (:session-version user) 0)}}})
+        {:status 303
+         :headers {"Location" "/auth/mfa/challenge?error=Invalid+code"}}))))
+
+(defn mfa-recovery-page [_system]
+  (fn [req]
+    (let [error (get (:query-params req) "error")]
+      (html-response (v-mfa/render-recovery-page {:csrf-token (csrf-token req) :error error})))))
+
+(defn mfa-recovery-submit [system]
+  (fn [req]
+    (let [ds (:db system)
+          session (:session req)
+          user-id (:mfa-user-id session)
+          code (get (:form-params req) "recovery-code")]
+      (if (and user-id (mfa/use-recovery-code! ds user-id code))
+        (let [user (user-store/get-user ds user-id)]
+          {:status 303
+           :headers {"Location" "/"}
+           :session {:user {:id (:id user)
+                            :username (:username user)
+                            :role (keyword (:role user))
+                            :session-version (or (:session-version user) 0)}}})
+        {:status 303
+         :headers {"Location" "/auth/mfa/recovery?error=Invalid+recovery+code"}}))))
+
+(defn mfa-settings-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          user (auth/current-user req)
+          enrolled? (mfa/totp-enrolled? ds (:id user))
+          message (get (:query-params req) "success")
+          error (get (:query-params req) "error")]
+      (html-response (v-mfa/render-settings-page {:csrf-token (csrf-token req)
+                                                    :mfa-enabled enrolled?
+                                                    :user user
+                                                    :auth-enabled (get-in config [:auth :enabled] false)
+                                                    :message message
+                                                    :error error})))))
+
+(defn mfa-setup-submit [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          user (auth/current-user req)
+          result (mfa/enroll-totp! ds (:id user) config)]
+      (html-response (v-mfa/render-setup-page {:csrf-token (csrf-token req)
+                                                :secret-b32 (:secret-b32 result)
+                                                :totp-uri (:uri result)
+                                                :recovery-codes (:recovery-codes result)
+                                                :user user
+                                                :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn mfa-confirm-submit [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          user (auth/current-user req)
+          code (get (:form-params req) "code")]
+      (if (mfa/confirm-totp! ds (:id user) code config)
+        {:status 303 :headers {"Location" "/settings/mfa?success=MFA+enabled"}}
+        {:status 303 :headers {"Location" "/settings/mfa?error=Invalid+code"}}))))
+
+(defn mfa-disable-submit [system]
+  (fn [req]
+    (let [ds (:db system)
+          user (auth/current-user req)]
+      (mfa/disable-totp! ds (:id user))
+      {:status 303 :headers {"Location" "/settings/mfa?success=MFA+disabled"}})))
+
+;; ---------------------------------------------------------------------------
+;; Phase 8: Permissions Handlers
+;; ---------------------------------------------------------------------------
+
+(defn permissions-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          user (auth/current-user req)
+          permissions (permission-store/list-org-permissions ds org-id)
+          groups (permission-store/list-groups ds :org-id org-id)
+          users (user-store/list-users ds)]
+      (html-response (v-permissions/render-permissions-page
+                        {:csrf-token (csrf-token req)
+                         :permissions permissions
+                         :groups groups
+                         :users users
+                         :user user
+                         :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn grant-permission-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          user (auth/current-user req)
+          params (:form-params req)]
+      (permission-store/grant-permission! ds
+        {:org-id org-id
+         :user-id (get params "user-id")
+         :resource-type (get params "resource-type")
+         :resource-id (get params "resource-id")
+         :action (get params "action")
+         :granted-by (:id user)})
+      {:status 303 :headers {"Location" "/admin/permissions"}})))
+
+(defn revoke-permission-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          perm-id (get-in req [:path-params :id])]
+      (permission-store/revoke-permission! ds perm-id)
+      {:status 303 :headers {"Location" "/admin/permissions"}})))
+
+(defn permission-groups-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          user (auth/current-user req)
+          groups (permission-store/list-groups ds :org-id org-id)]
+      (html-response (v-permissions/render-groups-page
+                        {:csrf-token (csrf-token req)
+                         :groups groups
+                         :user user
+                         :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn create-permission-group-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          user (auth/current-user req)
+          params (:form-params req)]
+      (permission-store/create-group! ds
+        {:org-id org-id
+         :name (get params "name")
+         :description (get params "description")
+         :created-by (:id user)})
+      {:status 303 :headers {"Location" "/admin/permissions/groups"}})))
+
+(defn permission-group-detail-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          user (auth/current-user req)
+          group-id (get-in req [:path-params :id])
+          group (permission-store/get-group ds group-id)
+          entries (permission-store/list-group-entries ds group-id)
+          members (permission-store/list-group-members ds group-id)
+          users (user-store/list-users ds)]
+      (html-response (v-permissions/render-group-detail-page
+                        {:csrf-token (csrf-token req)
+                         :group group
+                         :entries entries
+                         :members members
+                         :users users
+                         :user user
+                         :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn delete-permission-group-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          group-id (get-in req [:path-params :id])]
+      (permission-store/delete-group! ds group-id)
+      {:status 303 :headers {"Location" "/admin/permissions/groups"}})))
+
+(defn add-group-entry-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          group-id (get-in req [:path-params :id])
+          params (:form-params req)]
+      (permission-store/add-group-entry! ds
+        {:group-id group-id
+         :resource-type (get params "resource-type")
+         :resource-id (get params "resource-id")
+         :action (get params "action")})
+      {:status 303 :headers {"Location" (str "/admin/permissions/groups/" group-id)}})))
+
+(defn remove-group-entry-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          group-id (get-in req [:path-params :id])
+          entry-id (get-in req [:path-params :entry-id])]
+      (permission-store/remove-group-entry! ds entry-id)
+      {:status 303 :headers {"Location" (str "/admin/permissions/groups/" group-id)}})))
+
+(defn add-group-member-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          group-id (get-in req [:path-params :id])
+          user (auth/current-user req)
+          user-id (get (:form-params req) "user-id")]
+      (permission-store/add-group-member! ds {:group-id group-id :user-id user-id :assigned-by (:id user)})
+      {:status 303 :headers {"Location" (str "/admin/permissions/groups/" group-id)}})))
+
+(defn remove-group-member-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          group-id (get-in req [:path-params :id])
+          user-id (get-in req [:path-params :uid])]
+      (permission-store/remove-group-member! ds group-id user-id)
+      {:status 303 :headers {"Location" (str "/admin/permissions/groups/" group-id)}})))
+
+;; ---------------------------------------------------------------------------
+;; Phase 8: Shared Resources Handlers
+;; ---------------------------------------------------------------------------
+
+(defn shared-resources-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          user (auth/current-user req)
+          grants-from (shared-store/list-grants-from ds org-id)
+          grants-to (shared-store/list-grants-to ds org-id)
+          orgs (org-store/list-orgs ds)]
+      (html-response (v-shared/render-shared-resources-page
+                        {:csrf-token (csrf-token req)
+                         :grants-from grants-from
+                         :grants-to grants-to
+                         :organizations orgs
+                         :user user
+                         :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn create-shared-grant-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          user (auth/current-user req)
+          params (:form-params req)]
+      (shared-store/create-grant! ds
+        {:source-org-id org-id
+         :target-org-id (get params "target-org-id")
+         :resource-type (get params "resource-type")
+         :resource-id (get params "resource-id")
+         :granted-by (:id user)
+         :expires-at (let [v (get params "expires-at")] (when-not (str/blank? v) v))})
+      {:status 303 :headers {"Location" "/admin/shared-resources"}})))
+
+(defn revoke-shared-grant-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          grant-id (get-in req [:path-params :id])]
+      (shared-store/revoke-grant! ds grant-id :source-org-id org-id)
+      {:status 303 :headers {"Location" "/admin/shared-resources"}})))
+
+;; ---------------------------------------------------------------------------
+;; Phase 8: Secret Rotation Handlers
+;; ---------------------------------------------------------------------------
+
+(defn rotation-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          config (:config system)
+          org-id (auth/current-org-id req)
+          user (auth/current-user req)
+          policies (rotation-store/list-policies ds :org-id org-id)
+          ;; Collect recent version history across all policies
+          versions (when (seq policies)
+                     (mapcat (fn [p]
+                               (rotation-store/list-versions ds org-id (:secret-name p)
+                                 :secret-scope (or (:secret-scope p) "global")
+                                 :limit 5))
+                             policies))]
+      (html-response (v-rotation/render-rotation-page
+                        {:csrf-token (csrf-token req)
+                         :policies policies
+                         :versions (vec (take 20 (sort-by :rotated-at #(compare %2 %1) (or versions []))))
+                         :user user
+                         :auth-enabled (get-in config [:auth :enabled] false)})))))
+
+(defn create-rotation-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          user (auth/current-user req)
+          params (:form-params req)]
+      (rotation-store/create-policy! ds
+        {:org-id org-id
+         :secret-name (get params "secret-name")
+         :secret-scope (or (get params "secret-scope") "global")
+         :rotation-interval-days (Integer/parseInt (or (get params "rotation-interval-days") "90"))
+         :max-versions (Integer/parseInt (or (get params "max-versions") "3"))
+         :notify-days-before (Integer/parseInt (or (get params "notify-days-before") "7"))
+         :created-by (:id user)})
+      {:status 303 :headers {"Location" "/admin/rotation"}})))
+
+(defn delete-rotation-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          policy-id (get-in req [:path-params :id])]
+      (rotation-store/delete-policy! ds policy-id)
+      {:status 303 :headers {"Location" "/admin/rotation"}})))
+
+(defn toggle-rotation-policy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          policy-id (get-in req [:path-params :id])
+          policy (rotation-store/get-policy ds policy-id)
+          new-enabled (if (and (:enabled policy) (not (zero? (:enabled policy)))) 0 1)]
+      (rotation-store/update-policy! ds policy-id {:enabled new-enabled})
+      {:status 303 :headers {"Location" "/admin/rotation"}})))

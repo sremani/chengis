@@ -192,7 +192,7 @@
 
 (def ^:private public-prefixes
   "Path prefixes that don't require authentication."
-  ["/health" "/ready" "/auth/oidc/"])
+  ["/health" "/ready" "/auth/oidc/" "/auth/saml/" "/auth/mfa/"])
 
 (defn- public-path?
   "Check if the request path is a public (no-auth) path.
@@ -366,6 +366,14 @@
           ;; validate the shared secret. Only when distributed mode is enabled.
           (and distributed-enabled? (distributed-api-path? uri))
           (handler req)
+
+          ;; MFA-pending session — redirect to MFA challenge
+          ;; (session has :mfa-pending true but user hasn't completed MFA yet)
+          (and (get-in req [:session :mfa-pending])
+               (not (str/starts-with? uri "/auth/mfa/"))
+               (not= uri "/logout"))
+          {:status 303
+           :headers {"Location" "/auth/mfa/challenge"}}
 
           ;; Session auth
           session-user

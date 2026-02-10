@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**928 tests | 3,152 assertions | 0 failures**
+**1,067 tests | 3,564 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -113,7 +113,7 @@ Build #1 — SUCCESS (8.3 sec)
 
 - **Protocol-based** &mdash; Extension points: `StepExecutor`, `PipelineFormat`, `Notifier`, `ArtifactHandler`, `ScmProvider`, `ScmStatusReporter`, `SecretBackend`
 - **Central registry** &mdash; Register/lookup/introspect plugins at runtime
-- **Builtin plugins** &mdash; Shell, Docker (includes Docker Compose), Git, Console, Slack, Email, Local Artifacts, Local Secrets, Vault Secrets, YAML Format, GitHub Status, GitLab Status, Gitea Status, Bitbucket Status
+- **Builtin plugins** &mdash; Shell, Docker (includes Docker Compose), Git, Console, Slack, Email, Local Artifacts, Local Secrets, Vault Secrets, AWS Secrets, GCP Secrets, Azure Key Vault, YAML Format, GitHub Status, GitLab Status, Gitea Status, Bitbucket Status
 - **External plugins** &mdash; Load `.clj` files from plugins directory with lifecycle management
 - **Plugin trust** &mdash; External plugins gated by DB-backed allowlist; untrusted plugins blocked with admin UI management
 
@@ -146,11 +146,17 @@ Build #1 — SUCCESS (8.3 sec)
 - **User management** &mdash; Admin/developer/viewer roles with RBAC
 - **JWT authentication** &mdash; Token-based auth with configurable expiry and blacklist support
 - **SSO/OIDC** &mdash; Single Sign-On via OpenID Connect providers (Google, Okta, etc.)
+- **SAML 2.0** &mdash; Enterprise SSO via SAML 2.0 SP-initiated flow alongside OIDC, with JIT user provisioning
+- **LDAP/Active Directory** &mdash; Directory-based authentication with bind auth, group sync, JIT provisioning, and LDAP-first-then-local fallback
+- **Fine-grained RBAC** &mdash; Resource-level permissions on top of 3-tier roles; permission groups, `wrap-require-permission` middleware
+- **MFA/TOTP** &mdash; Time-based one-time password 2FA with QR code enrollment, recovery codes, AES-256-GCM encrypted secrets
 - **API tokens** &mdash; Generate and revoke API tokens per user with scope restrictions
 - **Session management** &mdash; Secure cookie-based sessions with password-reset invalidation
 - **Account lockout** &mdash; Configurable threshold and duration after failed login attempts
 - **Encrypted secrets** &mdash; AES-256-GCM encryption at rest, automatic log masking with `***`
-- **Secret backends** &mdash; Pluggable secret storage: local (default) or HashiCorp Vault
+- **Secret backends** &mdash; Pluggable secret storage: local (default), HashiCorp Vault, AWS Secrets Manager, Google Secret Manager, or Azure Key Vault
+- **Secret rotation** &mdash; Policy-driven rotation schedules with version history and notifications
+- **Cross-org shared resources** &mdash; Share agent labels and pipeline templates across organizations
 - **CSRF protection** &mdash; Anti-forgery tokens on all form endpoints
 - **Rate limiting** &mdash; Configurable request rate limiting middleware
 - **Audit logging** &mdash; All user actions logged with tamper-evident hash chain and admin viewer with CSV/JSON export
@@ -169,7 +175,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Policy engine** &mdash; Org-scoped build policies with priority ordering and short-circuit evaluation
 - **Artifact checksums** &mdash; SHA-256 integrity verification on collected artifacts
 - **Compliance reports** &mdash; Policy evaluation results tracked per build with admin dashboard
-- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (28 flags for safe rollout)
+- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (41 flags for safe rollout)
 - **Plugin trust** &mdash; External plugin allowlist with admin management UI
 - **Docker image policies** &mdash; Allow/deny rules for Docker registries and images per organization
 
@@ -248,7 +254,7 @@ Build #1 — SUCCESS (8.3 sec)
 ### Persistence
 
 - **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
-- **50 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
+- **58 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -274,6 +280,10 @@ Build #1 — SUCCESS (8.3 sec)
 - **OPA policy admin** &mdash; Manage OPA/Rego policies for build-time evaluation
 - **License policy admin** &mdash; Configure license allow/deny policies for dependency compliance
 - **Regulatory dashboard** &mdash; SOC 2 / ISO 27001 readiness assessment with framework scoring
+- **MFA settings** &mdash; User-facing TOTP enrollment with QR code, recovery codes, and disable option
+- **Permission management** &mdash; Admin UI for granting/revoking resource-level permissions and managing permission groups
+- **Shared resources** &mdash; Admin UI for managing cross-org agent label and template sharing
+- **Secret rotation** &mdash; Admin UI for managing rotation policies with schedules and version history
 
 ## Quick Start
 
@@ -724,7 +734,14 @@ Chengis uses sensible defaults. Override via `resources/config.edn` or environme
                  :opa-policies false
                  :license-scanning false
                  :artifact-signing false
-                 :regulatory-dashboards false}
+                 :regulatory-dashboards false
+                 :saml false
+                 :ldap false
+                 :fine-grained-rbac false
+                 :mfa-totp false
+                 :cross-org-sharing false
+                 :cloud-secret-backends false
+                 :secret-rotation false}
 
  ;; Parallel stage execution (DAG mode)
  :parallel-stages {:max-concurrent 4}
@@ -849,6 +866,38 @@ All configuration can be overridden with `CHENGIS_*` environment variables. Nest
 | `CHENGIS_HA_INSTANCE_ID` | `[:ha :instance-id]` | `pod-name` |
 | `CHENGIS_METRICS_ENABLED` | `[:metrics :enabled]` | `true` |
 | `CHENGIS_RETENTION_ENABLED` | `[:retention :enabled]` | `true` |
+| `CHENGIS_FEATURE_SAML` | `[:feature-flags :saml]` | `false` |
+| `CHENGIS_SAML_IDP_METADATA_URL` | `[:saml :idp-metadata-url]` | — |
+| `CHENGIS_SAML_SP_ENTITY_ID` | `[:saml :sp-entity-id]` | — |
+| `CHENGIS_SAML_SP_ACS_URL` | `[:saml :sp-acs-url]` | — |
+| `CHENGIS_SAML_IDP_ENTITY_ID` | `[:saml :idp-entity-id]` | — |
+| `CHENGIS_SAML_IDP_SSO_URL` | `[:saml :idp-sso-url]` | — |
+| `CHENGIS_SAML_IDP_CERT` | `[:saml :idp-cert]` | — |
+| `CHENGIS_SAML_SP_PRIVATE_KEY` | `[:saml :sp-private-key]` | — |
+| `CHENGIS_SAML_SP_CERT` | `[:saml :sp-cert]` | — |
+| `CHENGIS_FEATURE_LDAP` | `[:feature-flags :ldap]` | `false` |
+| `CHENGIS_LDAP_HOST` | `[:ldap :host]` | `localhost` |
+| `CHENGIS_LDAP_PORT` | `[:ldap :port]` | `389` |
+| `CHENGIS_LDAP_BIND_DN` | `[:ldap :bind-dn]` | — |
+| `CHENGIS_LDAP_BIND_PASSWORD` | `[:ldap :bind-password]` | — |
+| `CHENGIS_LDAP_USER_BASE_DN` | `[:ldap :user-base-dn]` | — |
+| `CHENGIS_LDAP_USER_FILTER` | `[:ldap :user-filter]` | — |
+| `CHENGIS_LDAP_GROUP_BASE_DN` | `[:ldap :group-base-dn]` | — |
+| `CHENGIS_LDAP_GROUP_FILTER` | `[:ldap :group-filter]` | — |
+| `CHENGIS_FEATURE_FINE_GRAINED_RBAC` | `[:feature-flags :fine-grained-rbac]` | `false` |
+| `CHENGIS_FEATURE_MFA_TOTP` | `[:feature-flags :mfa-totp]` | `false` |
+| `CHENGIS_FEATURE_CROSS_ORG_SHARING` | `[:feature-flags :cross-org-sharing]` | `false` |
+| `CHENGIS_FEATURE_CLOUD_SECRET_BACKENDS` | `[:feature-flags :cloud-secret-backends]` | `false` |
+| `CHENGIS_AWS_SM_REGION` | `[:aws-sm :region]` | — |
+| `CHENGIS_AWS_SM_ACCESS_KEY_ID` | `[:aws-sm :access-key-id]` | — |
+| `CHENGIS_AWS_SM_SECRET_ACCESS_KEY` | `[:aws-sm :secret-access-key]` | — |
+| `CHENGIS_GCP_SM_PROJECT_ID` | `[:gcp-sm :project-id]` | — |
+| `CHENGIS_GCP_SM_CREDENTIALS_PATH` | `[:gcp-sm :credentials-path]` | — |
+| `CHENGIS_AZURE_KV_VAULT_URL` | `[:azure-kv :vault-url]` | — |
+| `CHENGIS_AZURE_KV_TENANT_ID` | `[:azure-kv :tenant-id]` | — |
+| `CHENGIS_AZURE_KV_CLIENT_ID` | `[:azure-kv :client-id]` | — |
+| `CHENGIS_AZURE_KV_CLIENT_SECRET` | `[:azure-kv :client-secret]` | — |
+| `CHENGIS_FEATURE_SECRET_ROTATION` | `[:feature-flags :secret-rotation]` | `false` |
 
 Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings become integers.
 
@@ -928,6 +977,35 @@ Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings 
 | `GET/POST /api/supply-chain/licenses/policy` | License policy CRUD (JSON) |
 | `POST /api/regulatory/assess` | Trigger regulatory assessment (JSON) |
 | `GET /api/regulatory/frameworks/:framework` | Framework readiness details (JSON) |
+| `GET /auth/saml/login` | Initiate SAML SP-initiated SSO login |
+| `POST /auth/saml/acs` | SAML Assertion Consumer Service (ACS) callback |
+| `GET /auth/saml/metadata` | SAML SP metadata XML |
+| `GET /auth/mfa/challenge` | MFA TOTP challenge page |
+| `POST /auth/mfa/challenge` | Verify MFA TOTP code |
+| `GET /auth/mfa/recovery` | MFA recovery code entry page |
+| `POST /auth/mfa/recovery` | Verify MFA recovery code |
+| `GET /settings/mfa` | MFA settings page (enable/disable) |
+| `GET /settings/mfa/setup` | MFA TOTP enrollment with QR code |
+| `POST /settings/mfa/confirm` | Confirm MFA TOTP enrollment |
+| `POST /settings/mfa/disable` | Disable MFA for user |
+| `GET /admin/permissions` | Fine-grained permission management |
+| `POST /admin/permissions/grant` | Grant resource-level permission |
+| `POST /admin/permissions/revoke/:id` | Revoke a resource permission |
+| `GET /admin/permissions/groups` | Permission group listing |
+| `POST /admin/permissions/groups` | Create permission group |
+| `GET /admin/permissions/groups/:id` | Permission group detail |
+| `POST /admin/permissions/groups/:id/members` | Add member to permission group |
+| `POST /admin/permissions/groups/:id/members/:uid/remove` | Remove member from permission group |
+| `POST /admin/permissions/groups/:id/delete` | Delete a permission group |
+| `POST /admin/permissions/groups/:id/entries` | Add entry to permission group |
+| `POST /admin/permissions/groups/:id/entries/:entry-id/remove` | Remove entry from permission group |
+| `GET /admin/shared-resources` | Cross-org shared resource management |
+| `POST /admin/shared-resources/grant` | Grant shared resource access |
+| `POST /admin/shared-resources/revoke/:id` | Revoke shared resource grant |
+| `GET /admin/rotation` | Secret rotation policy management |
+| `POST /admin/rotation` | Create/update rotation policy |
+| `POST /admin/rotation/delete/:id` | Delete rotation policy |
+| `POST /admin/rotation/toggle/:id` | Enable/disable rotation policy |
 
 ## Project Structure
 
@@ -944,7 +1022,7 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # Database persistence layer (37 files)
+    db/                     # Database persistence layer (40 files)
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
@@ -981,6 +1059,9 @@ chengis/
       license_store.clj     # License compliance records
       signature_store.clj   # Artifact signature records
       regulatory_store.clj  # Regulatory assessment records
+      permission_store.clj  # Resource-level permissions and permission groups
+      shared_resource_store.clj # Cross-org shared resource grants
+      rotation_store.clj    # Secret rotation policies and version history
       backup.clj            # Database backup/restore
     distributed/            # Distributed build coordination (9 files)
       agent_registry.clj    # Write-through agent registry (atom + DB)
@@ -999,7 +1080,7 @@ chengis/
       yaml.clj              # YAML workflow parser
       expressions.clj       # ${{ }} expression resolver
       templates.clj         # Pipeline template DSL
-    engine/                 # Build execution engine (41 files)
+    engine/                 # Build execution engine (42 files)
       executor.clj          # Core pipeline runner (sequential + DAG modes)
       build_runner.clj      # Build lifecycle + thread pool + deduplication
       dag.clj               # DAG utilities (topological sort, ready-stages)
@@ -1041,13 +1122,14 @@ chengis/
       license_scanner.clj   # SPDX license compliance scanning
       signing.clj           # cosign/GPG artifact signing
       regulatory.clj        # SOC 2/ISO 27001 regulatory assessment
+      secret_rotation.clj   # Policy-driven secret rotation with schedules
     model/                  # Data specs (1 file)
       spec.clj              # Clojure specs for validation
-    plugin/                 # Plugin system (17 files)
+    plugin/                 # Plugin system (20 files)
       protocol.clj          # Plugin protocols (7 protocols)
       registry.clj          # Central plugin registry
       loader.clj            # Plugin discovery + lifecycle
-      builtin/              # 14 builtin plugins
+      builtin/              # 17 builtin plugins
         shell.clj           # Shell step executor
         docker.clj          # Docker step executor
         docker_compose.clj  # Docker Compose step executor
@@ -1063,7 +1145,10 @@ chengis/
         gitlab_status.clj   # GitLab commit status reporter
         gitea_status.clj    # Gitea commit status reporter
         bitbucket_status.clj # Bitbucket commit status reporter
-    web/                    # HTTP server and UI (43 files)
+        aws_secrets.clj     # AWS Secrets Manager backend
+        gcp_secrets.clj     # Google Cloud Secret Manager backend
+        azure_keyvault.clj  # Azure Key Vault backend
+    web/                    # HTTP server and UI (48 files)
       server.clj            # http-kit server startup + HA wiring
       routes.clj            # Reitit routes + middleware
       handlers.clj          # Request handlers
@@ -1071,12 +1156,16 @@ chengis/
       webhook.clj           # SCM webhook handler
       auth.clj              # JWT/session/API token authentication + RBAC
       oidc.clj              # OpenID Connect SSO integration
+      saml.clj              # SAML 2.0 SSO (login, ACS, metadata handlers)
+      ldap.clj              # LDAP/Active Directory authentication and group sync
+      mfa.clj               # MFA/TOTP enrollment and verification
+      permissions.clj       # Fine-grained RBAC middleware and permission checks
       audit.clj             # Audit logging middleware
       alerts.clj            # System alert management
       rate_limit.clj        # Request rate limiting
       account_lockout.clj   # Account lockout logic
       metrics_middleware.clj # HTTP request metrics
-      views/                # Hiccup view templates (31 files)
+      views/                # Hiccup view templates (36 files)
         layout.clj          # Base HTML layout
         dashboard.clj       # Home page
         jobs.clj            # Job list + detail
@@ -1108,13 +1197,17 @@ chengis/
         supply_chain.clj    # Supply chain security dashboard and per-build views
         regulatory.clj      # Regulatory readiness dashboard views
         signatures.clj      # Artifact signature views
+        mfa.clj             # MFA enrollment and settings views
+        permissions.clj     # Fine-grained permission management views
+        shared_resources.clj # Cross-org shared resource views
+        secret_rotation.clj # Secret rotation policy management views
     config.clj              # Configuration loading + env var overrides
     logging.clj             # Structured logging setup
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (122 files)
-  resources/migrations/     # Database migrations (50 versions × 2 drivers)
+  test/chengis/             # Test suite (~134 files)
+  resources/migrations/     # Database migrations (58 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
@@ -1126,7 +1219,7 @@ chengis/
   docker-compose.ha.yml     # HA override: PostgreSQL + 2 masters for multi-master testing
 ```
 
-**Codebase:** ~27,500 lines source + ~18,500 lines tests across 290 files
+**Codebase:** ~31,000 lines source + ~21,000 lines tests across 320 files
 
 ## Technology Stack
 
@@ -1137,7 +1230,7 @@ chengis/
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
 | Connection pool | HikariCP | PostgreSQL connection pooling |
-| Migrations | Migratus | Schema evolution (50 versions × 2 drivers) |
+| Migrations | Migratus | Schema evolution (58 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -1149,6 +1242,12 @@ chengis/
 | Scheduling | Chime | Cron-based triggers + heartbeats |
 | Logging | Timbre | Structured logging |
 | Encryption | javax.crypto (AES-256-GCM) | Secrets at rest |
+| SAML | onelogin/java-saml 2.9.0 | SAML 2.0 SP-initiated SSO |
+| LDAP | UnboundID LDAP SDK 6.0.11 | LDAP/AD authentication and group sync |
+| TOTP | totp 1.7.1 (samstevens) | MFA time-based one-time passwords |
+| AWS | aws-sdk secretsmanager 2.25.0 | AWS Secrets Manager backend |
+| GCP | google-cloud-secretmanager 2.37.0 | Google Cloud Secret Manager backend |
+| Azure | azure-security-keyvault-secrets 4.8.0 | Azure Key Vault backend |
 | Build tool | Leiningen | Project management |
 
 ## Chengis vs Jenkins: Detailed Comparison
@@ -1160,7 +1259,7 @@ chengis/
 | Runtime | Single JVM, optional agent nodes | Master + optional agent nodes |
 | Storage | SQLite (default) or PostgreSQL | XML files on filesystem |
 | UI rendering | Server-side (Hiccup + htmx) | Server-side (Jelly/Groovy) + client JS |
-| Plugin system | Protocol-based (14 builtin plugins) | 1800+ plugins, complex classloader |
+| Plugin system | Protocol-based (17 builtin plugins) | 1800+ plugins, complex classloader |
 | Pipeline formats | Clojure DSL + EDN + YAML | Groovy DSL (scripted/declarative) |
 | Container support | Docker steps (built-in) | Docker Pipeline plugin |
 | Distributed | HTTP master/agent (built-in) | JNLP/SSH agents |
@@ -1179,7 +1278,7 @@ chengis/
 
 ### When to Choose Jenkins
 
-- You need specific integrations (LDAP, Artifactory, Kubernetes, etc.)
+- You need specific integrations (Artifactory, Kubernetes, etc.)
 - You're in a large enterprise with existing Jenkins infrastructure
 - You need the ecosystem of 1800+ community plugins
 
@@ -1196,7 +1295,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **928 tests, 3,152 assertions, 0 failures**
+Current test suite: **1,067 tests, 3,564 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
@@ -1262,6 +1361,13 @@ Test coverage spans:
 - License scanning and policy enforcement
 - Artifact signing (cosign/GPG, signature verification)
 - Regulatory assessment (SOC 2/ISO 27001 framework scoring)
+- SAML 2.0 SSO (SP-initiated login flow, ACS handling, JIT provisioning)
+- LDAP/Active Directory (bind authentication, group sync, fallback to local auth)
+- Fine-grained RBAC (resource-level permissions, permission groups, middleware enforcement)
+- MFA/TOTP (enrollment, verification, recovery codes, encrypted secret storage)
+- Cross-org shared resources (agent label and template sharing, grant/revoke)
+- Cloud secret backends (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault)
+- Secret rotation (policy-driven schedules, version history, rotation notifications)
 
 ## Building an Uberjar
 

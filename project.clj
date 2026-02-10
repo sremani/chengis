@@ -25,7 +25,17 @@
                  [clj-commons/iapetos "0.1.14"]
                  [io.prometheus/simpleclient_hotspot "0.16.0"]
                  [viesti/timbre-json-appender "0.2.14"]
-                 [com.sun.mail/javax.mail "1.6.2"]]
+                 [com.sun.mail/javax.mail "1.6.2"]
+                 ;; Phase 8: Enterprise Identity & Access
+                 [com.onelogin/java-saml "2.9.0"]
+                 [com.unboundid/unboundid-ldapsdk "6.0.11"]
+                 [dev.samstevens.totp/totp "1.7.1"]
+                 ;; Cloud secret backends (lazy-loaded via requiring-resolve)
+                 [software.amazon.awssdk/secretsmanager "2.25.0"]
+                 [software.amazon.awssdk/auth "2.25.0"]
+                 [com.google.cloud/google-cloud-secretmanager "2.37.0"]
+                 [com.azure/azure-security-keyvault-secrets "4.8.0"]
+                 [com.azure/azure-identity "1.12.0"]]
   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
   :main chengis.core
   :target-path "target/%s"

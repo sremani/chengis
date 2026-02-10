@@ -85,6 +85,15 @@
               "vault" (let [create-fn (requiring-resolve 'chengis.plugin.builtin.vault-secrets/create-backend)]
                         (plugin-reg "vault" (create-fn))
                         (log/info "Secret backend: HashiCorp Vault"))
+              "aws-sm" (let [create-fn (requiring-resolve 'chengis.plugin.builtin.aws-secrets/create-backend)]
+                         (plugin-reg "aws-sm" (create-fn))
+                         (log/info "Secret backend: AWS Secrets Manager"))
+              "gcp-sm" (let [create-fn (requiring-resolve 'chengis.plugin.builtin.gcp-secrets/create-backend)]
+                         (plugin-reg "gcp-sm" (create-fn))
+                         (log/info "Secret backend: Google Cloud Secret Manager"))
+              "azure-kv" (let [create-fn (requiring-resolve 'chengis.plugin.builtin.azure-keyvault/create-backend)]
+                           (plugin-reg "azure-kv" (create-fn))
+                           (log/info "Secret backend: Azure Key Vault"))
               ;; Default to local encrypted DB store
               (let [create-fn (requiring-resolve 'chengis.plugin.builtin.local-secrets/create-backend)]
                 (plugin-reg "local" (create-fn ds))
@@ -142,6 +151,35 @@
                       poll-ms)))
               (do (log/info "Starting build analytics scheduler")
                   (analytics/start-analytics! system))))
+        ;; LDAP group sync scheduler (lock-id 100005)
+        _ (when (get-in cfg [:feature-flags :ldap])
+            (let [sync-fn (requiring-resolve 'chengis.web.ldap/sync-ldap-groups!)]
+              (if ha-enabled?
+                (do (log/info "Starting LDAP group sync with leader election")
+                    (swap! leader-loops conj
+                      (leader/start-leader-loop! ds 100005 "ldap-sync"
+                        #(future (while true
+                                   (sync-fn ds cfg)
+                                   (Thread/sleep (* 60 1000 (get-in cfg [:ldap :sync-interval-minutes] 60)))))
+                        #(log/info "Stopping LDAP sync scheduler")
+                        poll-ms)))
+                (do (log/info "Starting LDAP group sync scheduler")
+                    (future (while true
+                              (sync-fn ds cfg)
+                              (Thread/sleep (* 60 1000 (get-in cfg [:ldap :sync-interval-minutes] 60)))))))))
+        ;; Secret rotation scheduler (lock-id 100006)
+        _ (when (get-in cfg [:feature-flags :secret-rotation])
+            (let [start-fn (requiring-resolve 'chengis.engine.secret-rotation/start-rotation-scheduler!)
+                  stop-fn (requiring-resolve 'chengis.engine.secret-rotation/stop-rotation-scheduler!)]
+              (if ha-enabled?
+                (do (log/info "Starting secret rotation scheduler with leader election")
+                    (swap! leader-loops conj
+                      (leader/start-leader-loop! ds 100006 "secret-rotation"
+                        #(start-fn system)
+                        #(stop-fn)
+                        poll-ms)))
+                (do (log/info "Starting secret rotation scheduler")
+                    (start-fn system)))))
         ;; Seed admin user when auth is enabled
         _ (when (get-in cfg [:auth :enabled])
             (user-store/seed-admin! ds (get-in cfg [:auth :seed-admin-password] "admin")))

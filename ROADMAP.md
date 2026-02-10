@@ -222,19 +222,25 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 
 ---
 
-## Phase 8: Enterprise Identity & Access
+### Phase 8: Enterprise Identity & Access
 
-**Theme:** Advanced authentication, fine-grained permissions, and cross-org capabilities.
-
-| Feature | Description | Priority |
-|---------|-------------|----------|
-| SAML 2.0 | Enterprise SSO via SAML alongside existing OIDC | High |
-| LDAP/Active Directory | Directory-based user provisioning and group sync | High |
-| Fine-grained RBAC | Resource-level permissions (e.g., user X can trigger Job Y but not Job Z) | High |
-| Multi-factor authentication | TOTP-based 2FA for user accounts | Medium |
-| Cross-org shared resources | Shared agent pools and pipeline templates across organizations | Medium |
-| Additional secret backends | AWS Secrets Manager, Google Secret Manager, Azure Key Vault | Medium |
-| Automatic secret rotation | Policy-driven rotation schedules for credentials | Low |
+- SAML 2.0 SP-initiated SSO with JIT provisioning and IdP metadata integration (`saml.clj`)
+- LDAP/Active Directory bind authentication with group sync, JIT provisioning, and LDAP-first-then-local fallback (`ldap.clj`)
+- Fine-grained RBAC with resource-level permissions, permission groups, and `wrap-require-permission` middleware (`permission_store.clj`, `permissions.clj`)
+- MFA/TOTP with QR code enrollment, TOTP verification, recovery codes, and AES-256-GCM encrypted secrets (`mfa.clj`, views `mfa.clj`)
+- Cross-org shared resources: share agent labels and pipeline templates across organizations (`shared_resource_store.clj`, views `shared_resources.clj`)
+- Cloud secret backends: AWS Secrets Manager, Google Secret Manager, Azure Key Vault implementing `SecretBackend` protocol (`aws_secrets.clj`, `gcp_secrets.clj`, `azure_keyvault.clj`)
+- Secret rotation: policy-driven rotation schedules with version history and pre-rotation notifications (`secret_rotation.clj`, `rotation_store.clj`, views `secret_rotation.clj`)
+- 7 new feature flags (saml, ldap, fine-grained-rbac, mfa-totp, cross-org-sharing, cloud-secret-backends, secret-rotation) — 41 total
+- ~20 new environment variables (`CHENGIS_SAML_*`, `CHENGIS_LDAP_*`, `CHENGIS_AWS_SM_*`, `CHENGIS_GCP_SM_*`, `CHENGIS_AZURE_KV_*`, feature flags)
+- New library dependencies: java-saml 2.9.0, UnboundID LDAP SDK 6.0.11, samstevens/totp 1.7.1, AWS SDK 2.25.0, GCP Secret Manager 2.37.0, Azure Key Vault 4.8.0, Azure Identity 1.12.0
+- SAML/MFA routes, permission admin routes, shared resource routes, rotation routes
+- LDAP sync scheduler (HA lock 100005), rotation scheduler (HA lock 100006)
+- 17 builtin plugins (was 14): added aws_secrets, gcp_secrets, azure_keyvault
+- ~17 new source files, ~12 new test files, 4 new view files, 8 migration pairs
+- Migrations 051-058 (58 total migration versions)
+- Code review: 9 issues fixed across 6 files (3 high, 4 medium, 2 low) — form field name mismatches, MFA route URL corrections, function call signature fixes, missing permission group routes/handlers, database-agnostic SQL in rotation store
+- **1,067 tests, 3,564 assertions — all passing**
 
 ---
 
@@ -308,3 +314,4 @@ These items are under consideration but not yet scheduled:
 | Phase 5 | Observability | Tracing, Analytics, Notifications, Cost, Flaky tests, Grafana, Logs | **678** | 40-43 |
 | Phase 6 | Advanced SCM | PR checks, Branch overrides, Monorepo, Dependencies, Cron, Gitea/Bitbucket, Webhook replay, Auto-merge | **838** | 44-47 |
 | Phase 7 | Supply Chain | SLSA provenance, SBOM, Container scanning, OPA, License scanning, Artifact signing, Regulatory dashboards | **928** | 48-50 |
+| Phase 8 | Enterprise Identity | SAML 2.0, LDAP/AD, Fine-grained RBAC, MFA/TOTP, Cross-org sharing, Cloud secret backends, Secret rotation | **1,067** | 51-58 |

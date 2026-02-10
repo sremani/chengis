@@ -162,6 +162,38 @@
    :signing {:tool "cosign"
              :key-ref nil
              :timeout-ms 60000}
+   ;; Phase 8: Enterprise Identity & Access
+   :saml {:enabled false
+          :sp-entity-id nil        ;; Service Provider entity ID
+          :idp-metadata-url nil    ;; IdP metadata URL for auto-configuration
+          :idp-sso-url nil         ;; IdP Single Sign-On URL
+          :idp-certificate nil     ;; IdP X.509 certificate (PEM)
+          :acs-url nil             ;; Assertion Consumer Service URL (auto-detect if nil)
+          :role-attribute nil      ;; SAML attribute for role mapping
+          :role-mapping {}         ;; e.g., {"Admin" "admin", "Developer" "developer"}
+          :default-role "viewer"
+          :auto-create-users true
+          :provider-name nil}      ;; Display name, e.g., "Okta SAML"
+   :ldap {:enabled false
+          :host "ldap://localhost"
+          :port 389
+          :use-ssl false
+          :bind-dn nil
+          :bind-password nil
+          :user-base-dn nil
+          :user-filter "(uid={0})"
+          :username-attribute "uid"
+          :email-attribute "mail"
+          :display-name-attribute "cn"
+          :group-base-dn nil
+          :group-filter "(member={0})"
+          :role-mapping {}
+          :default-role "viewer"
+          :auto-create-users true
+          :sync-interval-minutes 60}
+   :mfa {:enforce-for-admins false}
+   :secret-rotation {:check-interval-hours 6
+                     :default-interval-days 90}
    :ha {:enabled false
         :leader-poll-ms 15000
         :instance-id nil}      ;; defaults to "standalone" if nil; set from K8s pod name via CHENGIS_HA_INSTANCE_ID
@@ -198,7 +230,15 @@
                    :opa-policies false
                    :license-scanning false
                    :artifact-signing false
-                   :regulatory-dashboards false}
+                   :regulatory-dashboards false
+                   ;; Phase 8: Enterprise Identity & Access
+                   :saml false
+                   :ldap false
+                   :fine-grained-rbac false
+                   :mfa-totp false
+                   :cross-org-sharing false
+                   :cloud-secret-backends false
+                   :secret-rotation false}
    :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
@@ -328,7 +368,33 @@
    "CHENGIS_SCANNING_SEVERITY_THRESHOLD"         [:container-scanning :severity-threshold]
    "CHENGIS_SIGNING_TOOL"                        [:signing :tool]
    "CHENGIS_SIGNING_KEY_REF"                     [:signing :key-ref]
-   "CHENGIS_OPA_BINARY_PATH"                     [:opa :binary-path]})
+   "CHENGIS_OPA_BINARY_PATH"                     [:opa :binary-path]
+   ;; Phase 8: Enterprise Identity & Access
+   "CHENGIS_FEATURE_SAML"                         [:feature-flags :saml]
+   "CHENGIS_FEATURE_LDAP"                         [:feature-flags :ldap]
+   "CHENGIS_FEATURE_FINE_GRAINED_RBAC"            [:feature-flags :fine-grained-rbac]
+   "CHENGIS_FEATURE_MFA_TOTP"                     [:feature-flags :mfa-totp]
+   "CHENGIS_FEATURE_CROSS_ORG_SHARING"            [:feature-flags :cross-org-sharing]
+   "CHENGIS_FEATURE_CLOUD_SECRET_BACKENDS"        [:feature-flags :cloud-secret-backends]
+   "CHENGIS_FEATURE_SECRET_ROTATION"              [:feature-flags :secret-rotation]
+   "CHENGIS_SAML_ENABLED"                         [:saml :enabled]
+   "CHENGIS_SAML_SP_ENTITY_ID"                    [:saml :sp-entity-id]
+   "CHENGIS_SAML_IDP_SSO_URL"                     [:saml :idp-sso-url]
+   "CHENGIS_SAML_IDP_CERTIFICATE"                 [:saml :idp-certificate]
+   "CHENGIS_SAML_ACS_URL"                         [:saml :acs-url]
+   "CHENGIS_SAML_ROLE_ATTRIBUTE"                  [:saml :role-attribute]
+   "CHENGIS_SAML_DEFAULT_ROLE"                    [:saml :default-role]
+   "CHENGIS_SAML_PROVIDER_NAME"                   [:saml :provider-name]
+   "CHENGIS_LDAP_ENABLED"                         [:ldap :enabled]
+   "CHENGIS_LDAP_HOST"                            [:ldap :host]
+   "CHENGIS_LDAP_PORT"                            [:ldap :port]
+   "CHENGIS_LDAP_USE_SSL"                         [:ldap :use-ssl]
+   "CHENGIS_LDAP_BIND_DN"                         [:ldap :bind-dn]
+   "CHENGIS_LDAP_BIND_PASSWORD"                   [:ldap :bind-password]
+   "CHENGIS_LDAP_USER_BASE_DN"                    [:ldap :user-base-dn]
+   "CHENGIS_LDAP_USER_FILTER"                     [:ldap :user-filter]
+   "CHENGIS_LDAP_DEFAULT_ROLE"                    [:ldap :default-role]
+   "CHENGIS_SECRET_ROTATION_INTERVAL_HOURS"       [:secret-rotation :check-interval-hours]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.

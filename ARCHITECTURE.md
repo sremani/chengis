@@ -67,12 +67,16 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |            policies, plugin_policies, docker_policies,         |
 |            traces, analytics, notifications, cost,             |
 |            flaky_tests, pr_checks, cron, webhook_replay,      |
-|            dependencies, supply_chain, regulatory, signatures) |
+|            dependencies, supply_chain, regulatory, signatures, |
+|            mfa, permissions, shared_resources,                 |
+|            secret_rotation)                                    |
 |   distributed/master_api.clj                                  |
 +---------------------------------------------------------------+
 |                    Auth & Security Layer                       |
 |   auth.clj          rate_limit.clj     account_lockout.clj    |
 |   audit.clj         alerts.clj         metrics_middleware.clj |
+|   saml.clj          ldap.clj           mfa.clj                |
+|   permissions.clj                                              |
 +---------------------------------------------------------------+
 |                        Engine Layer                            |
 |   build_runner.clj   executor.clj   process.clj              |
@@ -87,7 +91,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   cron.clj   webhook_replay.clj   auto_merge.clj             |
 |   provenance.clj   sbom.clj   vulnerability_scanner.clj      |
 |   opa.clj   license_scanner.clj   signing.clj                |
-|   regulatory.clj                                              |
+|   regulatory.clj   secret_rotation.clj                        |
 +---------------------------------------------------------------+
 |                    Supply Chain Security Layer                 |
 |   engine/provenance.clj   engine/sbom.clj                    |
@@ -107,7 +111,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   plugin/loader.clj                                           |
 |   builtin/  (shell, docker, docker-compose, console, slack,   |
 |              email, git, local-artifacts, local-secrets,       |
-|              vault-secrets, yaml-format, github-status,        |
+|              vault-secrets, aws-secrets, gcp-secrets,          |
+|              azure-keyvault, yaml-format, github-status,       |
 |              gitlab-status, gitea-status, bitbucket-status)    |
 +---------------------------------------------------------------+
 |                        DSL Layer                              |
@@ -151,6 +156,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/cost_store.clj  db/test_result_store.clj                 |
 |   db/pr_check_store.clj  db/dependency_store.clj              |
 |   db/cron_store.clj                                           |
+|   db/permission_store.clj  db/shared_resource_store.clj      |
+|   db/rotation_store.clj                                       |
 |   db/provenance_store.clj  db/sbom_store.clj                 |
 |   db/scan_store.clj  db/opa_store.clj                        |
 |   db/license_store.clj  db/signature_store.clj               |
@@ -314,6 +321,11 @@ Build Runner: Finalization
 |                    :email → EmailN        |
 |  :artifact-handlers "local" → LocalAH   |
 |  :scm-providers    :git → GitSCM         |
+|  :secret-backends  "local" → LocalSec     |
+|                    "vault" → VaultSec     |
+|                    "aws-sm" → AWSSec      |
+|                    "gcp-sm" → GCPSec      |
+|                    "azure-kv" → AzureSec  |
 |  :scm-status       :github → GHStatus    |
 |                    :gitlab → GLStatus     |
 |                    :gitea → GiteaStatus   |
@@ -423,6 +435,9 @@ Glob patterns use `Pattern/quote` for safe regex conversion, preventing injectio
 | Local Artifacts | ArtifactHandler | `"local"` |
 | Local Secrets | SecretBackend | `"local"` |
 | Vault Secrets | SecretBackend | `"vault"` |
+| AWS Secrets | SecretBackend | `"aws-sm"` |
+| GCP Secrets | SecretBackend | `"gcp-sm"` |
+| Azure Key Vault | SecretBackend | `"azure-kv"` |
 | Git SCM | ScmProvider | `:git` |
 | YAML Format | PipelineFormat | `"yaml"`, `"yml"` |
 | GitHub Status | ScmStatusReporter | `:github` |
@@ -458,7 +473,54 @@ wrap-auth middleware
   |
   +-- OIDC callback? → validate state, exchange code, provision user
   |
+  +-- SAML ACS? → validate SAML response, extract attributes, JIT provision user
+  |
   +-- No credentials → 401 (API) or redirect to /login (browser)
+
+MFA-Pending Session Flow:
+  Login succeeds (password or LDAP)
+    |
+    +-- User has MFA enabled?
+         |-- No → create normal session, redirect to dashboard
+         |-- Yes → create MFA-pending session (partial auth)
+              |
+              v
+         Redirect to /auth/mfa/challenge
+              |-- Enter TOTP code → verify → upgrade to full session
+              |-- Use recovery code → verify → upgrade to full session
+              |-- Invalid code → retry with error
+```
+
+### SAML 2.0 Login Flow
+
+```
+User clicks "Sign in with SAML"
+  |
+  v
+GET /auth/saml/login
+  |-- Generate SAML AuthnRequest
+  |-- Redirect to IdP SSO URL with SAMLRequest parameter
+  |
+  v
+IdP authenticates user, POSTs to /auth/saml/acs
+  |-- Validate SAML Response signature and assertions
+  |-- Extract NameID, email, display name from attributes
+  |-- Lookup or JIT-provision user in saml_identities table
+  |-- Create session (or MFA-pending session if MFA enabled)
+  |-- Redirect to dashboard
+```
+
+### LDAP Authentication Flow
+
+```
+User submits login form
+  |
+  v
+LDAP feature enabled?
+  |-- Yes → Attempt LDAP bind auth first
+  |    |-- LDAP bind succeeds → JIT provision/update user, sync groups
+  |    |-- LDAP bind fails → fall back to local password check
+  |-- No → Local password check only
 ```
 
 ### RBAC
@@ -467,6 +529,22 @@ wrap-auth middleware
 admin (level 3)     → full access, user management, settings
 developer (level 2) → trigger builds, manage secrets, approve gates
 viewer (level 1)    → read-only access to builds and jobs
+```
+
+#### Fine-Grained RBAC (Feature Flag: `:fine-grained-rbac`)
+
+On top of the 3-tier role hierarchy, resource-level permissions allow granular control:
+
+```
+permission_store.clj
+  |-- Grant: user X can "trigger" resource "job:my-app" in org Y
+  |-- Permission groups: named sets of permissions assigned to users
+  |-- wrap-require-permission middleware checks resource+action before handler
+  |
+  |-- Resolution order:
+  |     1. Check direct user permissions
+  |     2. Check group membership permissions
+  |     3. Fall back to role-based check (admin/developer/viewer)
 ```
 
 ### Security Features
@@ -798,7 +876,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 50 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 58 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -950,6 +1028,27 @@ build_logs        -- Structured log entries
 --       artifact_signatures — build_id, artifact_id, tool, key_id, signature, verified, org_id
 --       regulatory_assessments — framework, assessment_date, overall_score,
 --         control_scores, recommendations, org_id
+```
+
+### Enterprise Identity & Access Tables (Migrations 051-058)
+
+```sql
+-- 051: SAML identities (saml_identities table — user_id, idp_entity_id, name_id,
+--       attributes, org_id; links SAML assertions to local user accounts)
+-- 052: LDAP identities (ldap_identities table — user_id, ldap_dn, ldap_uid,
+--       ldap_groups, org_id; tracks LDAP-provisioned users and group membership)
+-- 053: Resource permissions (resource_permissions table — user_id, resource_type,
+--       resource_id, action, org_id; fine-grained per-resource permission grants)
+-- 054: Permission groups (permission_groups table — name, description, org_id;
+--       permission_group_members — group_id, user_id; group-based permission sets)
+-- 055: TOTP enrollment (totp_enrollments table — user_id, encrypted_secret,
+--       verified, org_id; totp_recovery_codes — user_id, code_hash, used)
+-- 056: Cross-org shared resources (shared_resource_grants table — source_org_id,
+--       target_org_id, resource_type, resource_id, granted_by)
+-- 057: Secret rotation policies (rotation_policies table — secret_name, org_id,
+--       rotation_interval_days, last_rotated, next_rotation, enabled, notify_before_days)
+-- 058: Secret versions (secret_versions table — secret_name, org_id, version,
+--       encrypted_value, created_at, created_by, active)
 ```
 
 ## Build Performance & Caching
@@ -1111,23 +1210,137 @@ Each supply chain feature is independently gated:
 | `:artifact-signing` | `signing.clj` | cosign or GPG |
 | `:regulatory-dashboards` | `regulatory.clj` | None (queries audit data) |
 
-## Secrets Management
+### Enterprise Identity & Access Feature Flags
 
-Secrets are encrypted at rest using AES-256-GCM:
+| Flag | Component | External Dependency |
+|------|-----------|---------------------|
+| `:saml` | `saml.clj` | onelogin/java-saml |
+| `:ldap` | `ldap.clj` | UnboundID LDAP SDK |
+| `:fine-grained-rbac` | `permissions.clj`, `permission_store.clj` | None |
+| `:mfa-totp` | `mfa.clj` | samstevens/totp |
+| `:cross-org-sharing` | `shared_resource_store.clj` | None |
+| `:cloud-secret-backends` | `aws_secrets.clj`, `gcp_secrets.clj`, `azure_keyvault.clj` | AWS/GCP/Azure SDKs |
+| `:secret-rotation` | `secret_rotation.clj`, `rotation_store.clj` | None |
+
+## Enterprise Identity & Access
+
+### SAML 2.0 SSO
 
 ```
-Store Secret:
+saml.clj (web layer)
+  |
+  |-- GET /auth/saml/login → generate AuthnRequest, redirect to IdP
+  |-- POST /auth/saml/acs → validate Response, extract attributes, JIT provision
+  |-- GET /auth/saml/metadata → serve SP metadata XML
+  |
+  |-- Dependencies: onelogin/java-saml 2.9.0
+  |-- Config: CHENGIS_SAML_* env vars (IdP metadata, SP entity ID, certs)
+  |-- Feature flag: :saml
+  |-- DB: saml_identities table (migration 051)
+```
+
+### LDAP/Active Directory
+
+```
+ldap.clj (web layer)
+  |
+  |-- authenticate-ldap! → LDAP bind with user DN
+  |-- sync-groups! → query LDAP groups, sync to local roles
+  |-- JIT provisioning → create local user on first LDAP login
+  |
+  |-- Auth flow: LDAP bind first → if fails, fall back to local password
+  |-- Dependencies: UnboundID LDAP SDK 6.0.11
+  |-- Config: CHENGIS_LDAP_* env vars (host, port, bind DN, base DNs)
+  |-- Feature flag: :ldap
+  |-- DB: ldap_identities table (migration 052)
+  |-- Scheduler: LDAP group sync runs periodically (HA lock 100005)
+```
+
+### MFA/TOTP
+
+```
+mfa.clj (web layer) + views/mfa.clj
+  |
+  |-- Enrollment: generate secret → QR code → verify first code → store
+  |-- Challenge: MFA-pending session → enter TOTP code → upgrade session
+  |-- Recovery: one-time recovery codes (bcrypt hashed, single-use)
+  |
+  |-- Secrets: AES-256-GCM encrypted in totp_enrollments table
+  |-- Dependencies: samstevens/totp 1.7.1
+  |-- Feature flag: :mfa-totp
+  |-- DB: totp_enrollments + totp_recovery_codes tables (migration 055)
+```
+
+### Cross-Org Shared Resources
+
+```
+shared_resource_store.clj + views/shared_resources.clj
+  |
+  |-- Grant: source org shares agent labels or templates with target org
+  |-- Revoke: remove shared access grant
+  |-- Resource types: "agent-label", "template"
+  |
+  |-- Feature flag: :cross-org-sharing
+  |-- DB: shared_resource_grants table (migration 056)
+```
+
+### Cloud Secret Backends
+
+Five pluggable secret storage backends, all implementing the `SecretBackend` protocol:
+
+| Backend | Plugin Key | Library | Config |
+|---------|-----------|---------|--------|
+| Local (default) | `"local"` | javax.crypto (AES-256-GCM) | Built-in |
+| HashiCorp Vault | `"vault"` | clj-http | `CHENGIS_VAULT_*` |
+| AWS Secrets Manager | `"aws-sm"` | aws-sdk secretsmanager 2.25.0 | `CHENGIS_AWS_SM_*` |
+| Google Secret Manager | `"gcp-sm"` | google-cloud-secretmanager 2.37.0 | `CHENGIS_GCP_SM_*` |
+| Azure Key Vault | `"azure-kv"` | azure-security-keyvault-secrets 4.8.0 | `CHENGIS_AZURE_KV_*` |
+
+Backend selection is config-driven via `:secrets {:backend "local"|"vault"|"aws-sm"|"gcp-sm"|"azure-kv"}` or `CHENGIS_SECRETS_BACKEND`. Cloud backends are gated by the `:cloud-secret-backends` feature flag.
+
+### Secret Rotation
+
+```
+secret_rotation.clj (engine) + rotation_store.clj (db) + views/secret_rotation.clj
+  |
+  |-- Policies: per-secret rotation interval, notification window, enabled/disabled
+  |-- Scheduler: periodic check for due rotations (HA lock 100006)
+  |-- Versioning: secret_versions table tracks all historical values
+  |-- Notifications: alert before rotation due date (configurable days)
+  |
+  |-- Database-agnostic: Java Instant/Duration for date math (no SQLite-specific SQL)
+  |-- Feature flag: :secret-rotation
+  |-- DB: rotation_policies (migration 057) + secret_versions (migration 058)
+```
+
+## Secrets Management
+
+Secrets are encrypted at rest using AES-256-GCM (local backend) or stored in external secret managers:
+
+```
+Store Secret (local backend):
   plaintext -> AES-256-GCM encrypt (master key + random IV)
               -> Base64(ciphertext) + Base64(IV) -> Database
 
+Store Secret (cloud backends):
+  plaintext -> API call to AWS SM / GCP SM / Azure KV
+              -> stored in cloud provider's secret store
+
 Use Secret:
-  Database -> Base64 decode -> AES-256-GCM decrypt (master key + IV)
-           -> plaintext -> injected as env var
+  Database/Cloud -> decrypt/retrieve -> plaintext -> injected as env var
 
 Log Masking:
   All secret values registered with log masker
   stdout/stderr scanned and values replaced with ***
+
+Secret Rotation:
+  rotation_policies table defines per-secret rotation schedules
+  Scheduler checks for due rotations (HA lock 100006)
+  secret_versions table maintains version history
+  Notifications sent before rotation due date
 ```
+
+Backends: local (default), vault, aws-sm, gcp-sm, azure-kv. See [Cloud Secret Backends](#cloud-secret-backends) for details.
 
 ## DSL Design
 
@@ -1307,13 +1520,13 @@ Web UI:
 |-----------|---------------|---------------|-------|
 | `agent/` | Agent node lifecycle | Separate process entry point | 5 |
 | `cli/` | User-facing CLI commands | Thin layer over engine | 3 |
-| `db/` | Data access (stores) | One file per table/concern | 37 |
+| `db/` | Data access (stores) | One file per table/concern | 40 |
 | `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability, HA | 9 |
 | `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
-| `engine/` | Build orchestration | Core business logic | 41 |
+| `engine/` | Build orchestration | Core business logic | 42 |
 | `model/` | Data validation (specs) | Schema definitions | 1 |
-| `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 17 |
-| `web/` | HTTP handling | Handlers + middleware | 12 |
-| `web/views/` | Hiccup templates | One file per page/component | 31 |
+| `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 20 |
+| `web/` | HTTP handling | Handlers + middleware | 16 |
+| `web/views/` | Hiccup templates | One file per page/component | 36 |
 
 Dependencies flow downward: `web` -> `engine` -> `db` -> `util`. The engine layer never imports web concerns, and the database layer never imports engine concerns. The plugin layer is cross-cutting but only depends on foundation. The auth/security layer wraps web handlers and is applied via middleware composition in `routes.clj`.
