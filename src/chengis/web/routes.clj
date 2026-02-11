@@ -283,7 +283,40 @@
          ["/toggle/:id" {:post {:handler (auth/wrap-require-role :admin (h/toggle-rotation-policy-handler system))}}]]
         ;; Phase 9: Pipeline Linter (developer+)
         ["/linter" {:get {:handler (auth/wrap-require-role :developer (h/linter-page system))}}]
-        ["/linter/check" {:post {:handler (auth/wrap-require-role :developer (h/linter-check-handler system))}}]]
+        ["/linter/check" {:post {:handler (auth/wrap-require-role :developer (h/linter-check-handler system))}}]
+        ;; Phase 11: Environment management (admin)
+        ["/environments"
+         ["" {:get {:handler (auth/wrap-require-role :admin (h/environments-page system))}
+              :post {:handler (auth/wrap-require-role :admin (h/create-environment-handler system))}}]
+         ["/:id" {:get {:handler (auth/wrap-require-role :admin (h/environment-detail-page system))}
+                  :post {:handler (auth/wrap-require-role :admin (h/update-environment-handler system))}}]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :admin (h/delete-environment-handler system))}}]
+         ["/:id/lock" {:post {:handler (auth/wrap-require-role :admin (h/lock-environment-handler system))}}]
+         ["/:id/unlock" {:post {:handler (auth/wrap-require-role :admin (h/unlock-environment-handler system))}}]]]
+       ;; Phase 11: Deployment routes (developer+)
+       ["/deploy"
+        ["" {:get {:handler (auth/wrap-require-role :developer (h/deploy-dashboard-page system))}}]
+        ["/releases"
+         ["" {:get {:handler (auth/wrap-require-role :developer (h/releases-page system))}
+              :post {:handler (auth/wrap-require-role :developer (h/create-release-handler system))}}]
+         ["/:id" {:get {:handler (auth/wrap-require-role :developer (h/release-detail-page system))}}]
+         ["/:id/publish" {:post {:handler (auth/wrap-require-role :developer (h/publish-release-handler system))}}]
+         ["/:id/deprecate" {:post {:handler (auth/wrap-require-role :developer (h/deprecate-release-handler system))}}]]
+        ["/promotions"
+         ["" {:get {:handler (auth/wrap-require-role :developer (h/promotions-page system))}
+              :post {:handler (auth/wrap-require-role :developer (h/create-promotion-handler system))}}]
+         ["/:id/approve" {:post {:handler (auth/wrap-require-role :developer (h/approve-promotion-handler system))}}]
+         ["/:id/reject" {:post {:handler (auth/wrap-require-role :developer (h/reject-promotion-handler system))}}]]
+        ["/strategies"
+         ["" {:get {:handler (auth/wrap-require-role :developer (h/strategies-page system))}
+              :post {:handler (auth/wrap-require-role :developer (h/create-strategy-handler system))}}]
+         ["/seed" {:post {:handler (auth/wrap-require-role :admin (h/seed-strategies-handler system))}}]]
+        ["/deployments"
+         ["" {:get {:handler (auth/wrap-require-role :developer (h/deployments-page system))}}]
+         ["/:id" {:get {:handler (auth/wrap-require-role :developer (h/deployment-detail-page system))}}]
+         ["/:id/execute" {:post {:handler (auth/wrap-require-role :developer (h/execute-deployment-handler system))}}]
+         ["/:id/cancel" {:post {:handler (auth/wrap-require-role :developer (h/cancel-deployment-handler system))}}]
+         ["/:id/rollback" {:post {:handler (auth/wrap-require-role :developer (h/rollback-deployment-handler system))}}]]]
        ;; Analytics (viewer+)
        ["/analytics" {:get {:handler (auth/wrap-require-role :viewer (h/analytics-page system))}}]
        ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/flaky-tests-page system))}}]

@@ -70,7 +70,9 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |            dependencies, supply_chain, regulatory, signatures, |
 |            mfa, permissions, shared_resources,                 |
 |            secret_rotation, pipeline_viz, log_search,          |
-|            build_compare, linter, log_stream)                  |
+|            build_compare, linter, log_stream,                  |
+|            environments, releases, promotions, strategies,     |
+|            deployments, deploy_dashboard)                      |
 |   distributed/master_api.clj                                  |
 +---------------------------------------------------------------+
 |                    Auth & Security Layer                       |
@@ -95,6 +97,13 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   regulatory.clj   secret_rotation.clj                        |
 |   linter.clj   build_compare.clj                              |
 |   streaming_process.clj   event_backpressure.clj             |
++---------------------------------------------------------------+
+|                    Deployment & Release Layer                  |
+|   engine/release.clj   engine/promotion.clj                  |
+|   engine/deployment.clj   engine/health_check.clj            |
+|   db/environment_store.clj   db/release_store.clj            |
+|   db/promotion_store.clj   db/strategy_store.clj             |
+|   db/deployment_store.clj   db/health_check_store.clj        |
 +---------------------------------------------------------------+
 |                    Supply Chain Security Layer                 |
 |   engine/provenance.clj   engine/sbom.clj                    |
@@ -169,6 +178,9 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/regulatory_store.clj                                     |
 |   db/pagination.clj  db/log_chunk_store.clj                  |
 |   db/partitioning.clj  db/query_router.clj                   |
+|   db/environment_store.clj  db/release_store.clj             |
+|   db/promotion_store.clj  db/strategy_store.clj              |
+|   db/deployment_store.clj  db/health_check_store.clj         |
 |   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |

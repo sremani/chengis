@@ -246,7 +246,15 @@
                    :read-replicas false
                    :agent-connection-pooling false
                    :event-bus-backpressure false
-                   :multi-region false}
+                   :multi-region false
+                   ;; Phase 11: Deployment & Release Orchestration
+                   :environment-definitions false
+                   :release-management false
+                   :artifact-promotion false
+                   :deployment-strategies false
+                   :deployment-execution false
+                   :environment-health-checks false
+                   :deployment-dashboard false}
    :pagination {:default-page-size 50
                 :max-page-size 200}
    :log-streaming {:chunk-size 1000
@@ -255,6 +263,11 @@
                   :future-partitions 3}
    :event-bus {:buffer-size 8192
                :critical-timeout-ms 5000}
+   :deployment {:health-check {:timeout-ms 300000
+                               :interval-ms 10000
+                               :retries 3}
+                :rollback {:auto-on-health-failure false}
+                :concurrent-limit 1}
    :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
@@ -436,7 +449,20 @@
    "CHENGIS_EVENT_BUS_BUFFER_SIZE"               [:event-bus :buffer-size]
    "CHENGIS_EVENT_BUS_CRITICAL_TIMEOUT_MS"       [:event-bus :critical-timeout-ms]
    "CHENGIS_DISTRIBUTED_REGION"                  [:distributed :region]
-   "CHENGIS_REGION_LOCALITY_WEIGHT"              [:distributed :region-locality-weight]})
+   "CHENGIS_REGION_LOCALITY_WEIGHT"              [:distributed :region-locality-weight]
+   ;; Phase 11: Deployment & Release Orchestration
+   "CHENGIS_FEATURE_ENVIRONMENT_DEFINITIONS"     [:feature-flags :environment-definitions]
+   "CHENGIS_FEATURE_RELEASE_MANAGEMENT"          [:feature-flags :release-management]
+   "CHENGIS_FEATURE_ARTIFACT_PROMOTION"          [:feature-flags :artifact-promotion]
+   "CHENGIS_FEATURE_DEPLOYMENT_STRATEGIES"       [:feature-flags :deployment-strategies]
+   "CHENGIS_FEATURE_DEPLOYMENT_EXECUTION"        [:feature-flags :deployment-execution]
+   "CHENGIS_FEATURE_ENVIRONMENT_HEALTH_CHECKS"   [:feature-flags :environment-health-checks]
+   "CHENGIS_FEATURE_DEPLOYMENT_DASHBOARD"        [:feature-flags :deployment-dashboard]
+   "CHENGIS_DEPLOYMENT_HEALTH_CHECK_TIMEOUT_MS"  [:deployment :health-check :timeout-ms]
+   "CHENGIS_DEPLOYMENT_HEALTH_CHECK_INTERVAL_MS" [:deployment :health-check :interval-ms]
+   "CHENGIS_DEPLOYMENT_HEALTH_CHECK_RETRIES"     [:deployment :health-check :retries]
+   "CHENGIS_DEPLOYMENT_AUTO_ROLLBACK"            [:deployment :rollback :auto-on-health-failure]
+   "CHENGIS_DEPLOYMENT_CONCURRENT_LIMIT"         [:deployment :concurrent-limit]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.

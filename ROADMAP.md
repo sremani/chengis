@@ -274,6 +274,21 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 
 ---
 
+### Phase 11: Deployment & Release Orchestration
+
+- Environment definitions: Ordered environments (dev→staging→prod) with atomic locking, approval gating, auto-promote, and JSON config
+- Release management: Semver versioning with lifecycle states (draft→published→deprecated), auto-version from builds, build validation
+- Artifact promotion: Environment-to-environment promotion pipeline with eligibility checks, approval gates, and transactional superseding
+- Deployment strategies: Direct, blue-green, canary, and rolling strategies as first-class DB entities with type-specific JSON config
+- Deployment execution: Lock-execute-unlock engine with strategy step generation, rollback support, cancellation, concurrent prevention
+- Environment health checks: HTTP and command-based checks with polling loop (`wait-for-healthy!`), configurable timeout/retries, result tracking
+- Deployment dashboard: Unified view with environment cards, promotion pipeline, deployment timeline, full route tree under `/deploy`
+- 7 new feature flags (42 total), ~15 new env vars, 7 new migrations (063-069)
+- 16 new source files, 11 new test files, 6 new view files
+- **1,352 tests, 4,368 assertions — all passing**
+
+---
+
 ## Future Exploration
 
 These items are under consideration but not yet scheduled:
@@ -283,7 +298,6 @@ These items are under consideration but not yet scheduled:
 - **GitOps pipeline sync** — Pipeline definitions synced from Git branches with PR-based review workflow
 - **Chengis Cloud** — Managed SaaS offering with per-org isolation, auto-scaling agents, and usage-based billing
 - **GitHub Actions compatibility layer** — Run GitHub Actions YAML workflows natively on Chengis agents
-- **Deployment orchestration** — Blue/green, canary, and rolling deployment strategies as first-class pipeline stages
 - **Build federation** — Cross-instance build triggers for multi-team, multi-region CI/CD
 - **Terraform/Pulumi integration** — Infrastructure provisioning as pipeline steps with state management
 
@@ -314,3 +328,4 @@ These items are under consideration but not yet scheduled:
 | Phase 8 | Enterprise Identity | SAML 2.0, LDAP/AD, Fine-grained RBAC, MFA/TOTP, Cross-org sharing, Cloud secret backends, Secret rotation | **1,067** | 51-58 |
 | Phase 9 | Developer Experience | Pipeline linter, DAG visualization, Log search, Responsive UI, Theme toggle, Build comparison | **1,187** | — |
 | Phase 10 | Scale & Performance | Chunked logs, Cursor pagination, Partitioning, Read replicas, Connection pooling, Backpressure, Multi-region | **1,257** | 59-62 |
+| Phase 11 | Deployment & Release | Environments, Releases, Artifact promotion, Deployment strategies, Execution engine, Health checks, Dashboard | **1,352** | 63-69 |

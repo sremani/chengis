@@ -2,7 +2,84 @@
 
 All notable changes to Chengis are documented in this file.
 
-## [Unreleased] — Phase 10: Scale & Performance
+## [Unreleased] — Phase 11: Deployment & Release Orchestration
+
+### Feature 11a: Environment Definitions
+
+- **Environment model** — Ordered environments (dev=10, staging=20, prod=30) with org-scoped isolation
+- **Environment locking** — Atomic lock/unlock via `UPDATE WHERE locked=0` to prevent concurrent deployments
+- **Approval gating** — Per-environment `requires_approval` flag for promotion workflows
+- **Auto-promote** — Optional `auto_promote` flag for pipeline-driven promotions
+- **Config JSON** — Flexible per-environment configuration stored as JSON text
+- **New source**: `src/chengis/db/environment_store.clj`, `src/chengis/web/views/environments.clj`
+- **Migration 063**: `environments` table with org/order index
+
+### Feature 11d: Release Management
+
+- **Semantic versioning** — Releases with version uniqueness per org+job, lifecycle states (draft → published → deprecated)
+- **Auto-versioning** — `suggest-next-version` parses existing semver, increments patch; `auto-version-release!` creates and publishes in one step
+- **Build validation** — Release creation requires successful build status
+- **New source**: `src/chengis/db/release_store.clj`, `src/chengis/engine/release.clj`, `src/chengis/web/views/releases.clj`
+- **Migration 064**: `releases` table with org/job and build indexes
+
+### Feature 11b: Artifact Promotion
+
+- **Promotion pipeline** — Track artifact flow between environments (dev → staging → prod)
+- **Eligibility checks** — Validates build success before allowing promotion
+- **Approval gates** — Promotions to `requires_approval` environments await explicit approval
+- **Superseding pattern** — Transactional: marks previous active artifact as superseded, inserts new active
+- **New source**: `src/chengis/db/promotion_store.clj`, `src/chengis/engine/promotion.clj`, `src/chengis/web/views/promotions.clj`
+- **Migration 065**: `artifact_promotions` + `environment_artifacts` tables
+
+### Feature 11c: Deployment Strategies
+
+- **Strategy types** — Direct, blue-green, canary, and rolling deployment strategies as first-class DB entities
+- **Default seeding** — `seed-default-strategies!` populates standard strategies with sensible configs
+- **Per-environment defaults** — Environments can reference a default strategy via `default_strategy_id`
+- **Type-specific config** — JSON configuration per strategy (e.g., canary increments, batch percentages)
+- **New source**: `src/chengis/db/strategy_store.clj`, `src/chengis/web/views/strategies.clj`
+- **Migration 066**: `deployment_strategies` table + ALTER environments for `default_strategy_id`
+
+### Feature 11e: Deployment Execution & History
+
+- **Execution engine** — Lock environment → execute strategy steps → unlock, with automatic step tracking
+- **Strategy step generation** — Direct (1 step), blue-green (4 steps), canary (N steps per increment), rolling (batch steps)
+- **Rollback support** — `rollback-deployment!` finds previous successful deployment and creates reverse deployment
+- **Cancellation** — `cancel-deployment!` for pending/in-progress deployments
+- **Concurrent prevention** — Environment locking ensures single active deployment per environment
+- **Status flow**: `pending → in-progress → succeeded | failed | cancelled`
+- **New source**: `src/chengis/db/deployment_store.clj`, `src/chengis/engine/deployment.clj`, `src/chengis/web/views/deployments.clj`
+- **Migration 067**: `deployments` + `deployment_steps` tables with indexes
+
+### Feature 11f: Environment Health Checks
+
+- **Check types** — HTTP (URL + expected status + timeout) and command-based (process + exit code)
+- **Result tracking** — Health check results stored per check per deployment
+- **Polling loop** — `wait-for-healthy!` with configurable timeout, interval, and retries
+- **Graceful degradation** — Environments without checks auto-pass health verification
+- **New source**: `src/chengis/db/health_check_store.clj`, `src/chengis/engine/health_check.clj`
+- **Migration 068**: `health_check_definitions` + `health_check_results` tables
+
+### Feature 11g: Deployment Dashboard
+
+- **Unified view** — Dashboard showing environment cards, recent deployments, promotion pipeline, and deployment activity
+- **Navigation** — "Deploy" link added to main navigation between Analytics and Search
+- **Full route tree** — `/deploy` (dashboard), `/deploy/releases`, `/deploy/promotions`, `/deploy/strategies`, `/deploy/deployments`
+- **Admin routes** — `/admin/environments` with CRUD, lock/unlock operations
+- **New source**: `src/chengis/web/views/deploy_dashboard.clj`
+- **Migration 069**: Dashboard performance indexes
+
+### Infrastructure
+
+- **7 new feature flags** (42 total): `environment-definitions`, `release-management`, `artifact-promotion`, `deployment-strategies`, `deployment-execution`, `environment-health-checks`, `deployment-dashboard`
+- **~15 new environment variables** for all Phase 11 features + deployment config
+- **7 new migrations** (063-069), 69 total migration versions
+- **16 new source files**, 11 new test files
+- **1,352 tests, 4,368 assertions — all passing**
+
+---
+
+## Phase 10: Scale & Performance
 
 ### Feature 10a: Build Log Streaming Optimization
 

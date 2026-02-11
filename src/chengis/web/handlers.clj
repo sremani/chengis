@@ -95,6 +95,21 @@
             [chengis.db.permission-store :as permission-store]
             [chengis.db.shared-resource-store :as shared-store]
             [chengis.db.rotation-store :as rotation-store]
+            [chengis.db.environment-store :as env-store]
+            [chengis.db.release-store :as release-store]
+            [chengis.db.promotion-store :as promotion-store]
+            [chengis.db.strategy-store :as strategy-store]
+            [chengis.db.deployment-store :as deployment-store]
+            [chengis.db.health-check-store :as hc-store]
+            [chengis.engine.release :as release-engine]
+            [chengis.engine.promotion :as promotion-engine]
+            [chengis.engine.deployment :as deployment-engine]
+            [chengis.web.views.environments :as v-environments]
+            [chengis.web.views.releases :as v-releases]
+            [chengis.web.views.promotions :as v-promotions]
+            [chengis.web.views.strategies :as v-strategies]
+            [chengis.web.views.deployments :as v-deployments]
+            [chengis.web.views.deploy-dashboard :as v-deploy-dashboard]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -2827,3 +2842,310 @@
           result (linter/lint-content content format-type)]
       (html-response
         (v-linter/render-lint-results {:results result})))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 11: Deployment & Release Orchestration
+;; ---------------------------------------------------------------------------
+
+;; Deploy Dashboard
+(defn deploy-dashboard-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          environments (env-store/list-environments ds :org-id org-id)
+          env-artifacts (into {}
+                          (for [env environments]
+                            [(:id env)
+                             (promotion-store/get-current-artifact ds (:id env))]))
+          recent-deployments (deployment-store/list-deployments ds :org-id org-id :limit 20)
+          pending-promotions (promotion-store/list-promotions ds :org-id org-id :status "pending")
+          deployment-stats (deployment-store/count-deployments-by-status ds org-id)]
+      (html-response
+        (v-deploy-dashboard/render
+          {:environments environments
+           :env-artifacts env-artifacts
+           :recent-deployments recent-deployments
+           :pending-promotions pending-promotions
+           :deployment-stats deployment-stats
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)})))))
+
+;; Environments
+(defn environments-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          environments (env-store/list-environments ds :org-id org-id)]
+      (html-response
+        (v-environments/render
+          {:environments environments
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)})))))
+
+(defn create-environment-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (:form-params req)]
+      (env-store/create-environment! ds
+        {:org-id org-id
+         :name (get params "name")
+         :slug (get params "slug")
+         :env-order (Integer/parseInt (or (get params "env_order") "0"))
+         :description (get params "description")
+         :requires-approval (= "true" (get params "requires_approval"))
+         :auto-promote (= "true" (get params "auto_promote"))})
+      {:status 302 :headers {"Location" "/admin/environments"}})))
+
+(defn environment-detail-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          env-id (get-in req [:path-params :id])
+          env (env-store/get-environment ds env-id :org-id org-id)]
+      (if env
+        (let [current (promotion-store/get-current-artifact ds (:id env))
+              deployments (deployment-store/list-deployments ds :environment-id (:id env) :limit 10)]
+          (html-response
+            (v-environments/render-detail
+              {:environment env
+               :current-artifact current
+               :deployments deployments
+               :csrf-token (csrf-token req)
+               :user (auth/current-user req)})))
+        (not-found "Environment not found")))))
+
+(defn update-environment-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          env-id (get-in req [:path-params :id])
+          params (:form-params req)]
+      (env-store/update-environment! ds env-id
+        {:name (get params "name")
+         :description (get params "description")
+         :requires-approval (= "true" (get params "requires_approval"))
+         :auto-promote (= "true" (get params "auto_promote"))}
+        :org-id org-id)
+      {:status 302 :headers {"Location" (str "/admin/environments/" env-id)}})))
+
+(defn delete-environment-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          env-id (get-in req [:path-params :id])]
+      (env-store/delete-environment! ds env-id :org-id org-id)
+      {:status 302 :headers {"Location" "/admin/environments"}})))
+
+(defn lock-environment-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          env-id (get-in req [:path-params :id])
+          user (auth/current-user req)]
+      (env-store/lock-environment! ds env-id (or (:username user) "system") :org-id org-id)
+      {:status 302 :headers {"Location" "/admin/environments"}})))
+
+(defn unlock-environment-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          env-id (get-in req [:path-params :id])]
+      (env-store/unlock-environment! ds env-id :org-id org-id)
+      {:status 302 :headers {"Location" "/admin/environments"}})))
+
+;; Releases
+(defn releases-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          releases (release-store/list-releases ds :org-id org-id)
+          builds (build-store/list-builds ds {:org-id org-id :status "success" :limit 20})]
+      (html-response
+        (v-releases/render
+          {:releases releases
+           :builds builds
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)})))))
+
+(defn create-release-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (:form-params req)
+          user (auth/current-user req)
+          result (release-engine/create-release-from-build! ds
+                   {:org-id org-id
+                    :build-id (get params "build_id")
+                    :version (let [v (get params "version")] (when-not (str/blank? v) v))
+                    :title (get params "title")
+                    :notes (get params "notes")
+                    :created-by (:username user)})]
+      {:status 302 :headers {"Location" "/deploy/releases"}})))
+
+(defn release-detail-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          release-id (get-in req [:path-params :id])
+          release (release-store/get-release ds release-id :org-id org-id)]
+      (if release
+        (html-response
+          (v-releases/render-detail
+            {:release release
+             :csrf-token (csrf-token req)
+             :user (auth/current-user req)}))
+        (not-found "Release not found")))))
+
+(defn publish-release-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          release-id (get-in req [:path-params :id])]
+      (release-store/publish-release! ds release-id :org-id org-id)
+      {:status 302 :headers {"Location" (str "/deploy/releases/" release-id)}})))
+
+(defn deprecate-release-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          release-id (get-in req [:path-params :id])]
+      (release-store/deprecate-release! ds release-id :org-id org-id)
+      {:status 302 :headers {"Location" (str "/deploy/releases/" release-id)}})))
+
+;; Promotions
+(defn promotions-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          environments (env-store/list-environments ds :org-id org-id)
+          env-artifacts (into {}
+                          (for [env environments]
+                            [(:id env)
+                             (promotion-store/get-current-artifact ds (:id env))]))
+          promotions (promotion-store/list-promotions ds :org-id org-id)
+          builds (build-store/list-builds ds {:org-id org-id :status "success" :limit 20})]
+      (html-response
+        (v-promotions/render
+          {:environments environments
+           :env-artifacts env-artifacts
+           :promotions promotions
+           :builds builds
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)})))))
+
+(defn create-promotion-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (:form-params req)
+          user (auth/current-user req)
+          from-env (let [v (get params "from_environment_id")] (when-not (str/blank? v) v))]
+      (promotion-engine/execute-promotion! system
+        {:org-id org-id
+         :build-id (get params "build_id")
+         :from-environment-id from-env
+         :to-environment-id (get params "to_environment_id")
+         :user-id (:username user)})
+      {:status 302 :headers {"Location" "/deploy/promotions"}})))
+
+(defn approve-promotion-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          promo-id (get-in req [:path-params :id])
+          user (auth/current-user req)]
+      (promotion-store/approve-promotion! ds promo-id (:username user) :org-id org-id)
+      (promotion-store/complete-promotion! ds promo-id)
+      {:status 302 :headers {"Location" "/deploy"}})))
+
+(defn reject-promotion-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          promo-id (get-in req [:path-params :id])
+          params (:form-params req)]
+      (promotion-store/reject-promotion! ds promo-id
+        (or (get params "reason") "Rejected") :org-id org-id)
+      {:status 302 :headers {"Location" "/deploy"}})))
+
+;; Strategies
+(defn strategies-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          strategies (strategy-store/list-strategies ds :org-id org-id)]
+      (html-response
+        (v-strategies/render
+          {:strategies strategies
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)})))))
+
+(defn create-strategy-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (:form-params req)]
+      (strategy-store/create-strategy! ds
+        {:org-id org-id
+         :name (get params "name")
+         :strategy-type (get params "strategy_type")
+         :description (get params "description")})
+      {:status 302 :headers {"Location" "/deploy/strategies"}})))
+
+(defn seed-strategies-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)]
+      (strategy-store/seed-default-strategies! ds org-id)
+      {:status 302 :headers {"Location" "/deploy/strategies"}})))
+
+;; Deployments
+(defn deployments-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          deployments (deployment-store/list-deployments ds :org-id org-id)]
+      (html-response
+        (v-deployments/render
+          {:deployments deployments
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)})))))
+
+(defn deployment-detail-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          dep-id (get-in req [:path-params :id])
+          deployment (deployment-store/get-deployment ds dep-id :org-id org-id)]
+      (if deployment
+        (let [steps (deployment-store/get-deployment-steps ds (:id deployment))
+              env (env-store/get-environment ds (:environment-id deployment))]
+          (html-response
+            (v-deployments/render-detail
+              {:deployment deployment
+               :steps steps
+               :environment env
+               :csrf-token (csrf-token req)
+               :user (auth/current-user req)})))
+        (not-found "Deployment not found")))))
+
+(defn execute-deployment-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          dep-id (get-in req [:path-params :id])]
+      (deployment-engine/execute-deployment! system dep-id)
+      {:status 302 :headers {"Location" (str "/deploy/deployments/" dep-id)}})))
+
+(defn cancel-deployment-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          dep-id (get-in req [:path-params :id])]
+      (deployment-engine/cancel-deployment! ds dep-id)
+      {:status 302 :headers {"Location" (str "/deploy/deployments/" dep-id)}})))
+
+(defn rollback-deployment-handler [system]
+  (fn [req]
+    (let [dep-id (get-in req [:path-params :id])]
+      (deployment-engine/rollback-deployment! system dep-id)
+      {:status 302 :headers {"Location" "/deploy/deployments"}})))
