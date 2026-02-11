@@ -231,3 +231,19 @@
       (let [deleted (signature-store/cleanup-old-signatures! ds -1)]
         (is (= 2 deleted))
         (is (empty? (signature-store/list-signatures ds)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation remediation: verify-signature! returns false on error
+;; ---------------------------------------------------------------------------
+
+(deftest verify-unknown-tool-returns-false-test
+  (testing "verify-signature! returns :verified? false for unknown tool"
+    (let [result (signing/verify-signature!
+                   {:config {:signing {:timeout 5000}}}
+                   {:signer "nonexistent-tool"
+                    :key-reference "some-key"
+                    :signature-value "FAKESIG"
+                    :artifact-path "/tmp/fake-artifact.txt"})]
+      (is (false? (:verified? result))
+          ":verified? must be false for unknown signing tool")
+      (is (string? (:error result))))))

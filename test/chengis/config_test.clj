@@ -1,5 +1,6 @@
 (ns chengis.config-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [chengis.config :as config]))
 
 (deftest coerce-env-value-test
@@ -125,3 +126,162 @@
   (testing "matrix max-combinations has default"
     (let [cfg (config/load-config)]
       (is (= 25 (get-in cfg [:matrix :max-combinations]))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation testing remediation: Assert every boolean default value
+;; in default-config to kill true↔false mutation survivors.
+;; ---------------------------------------------------------------------------
+
+(deftest default-config-boolean-defaults-test
+  (let [cfg config/default-config]
+
+    (testing "top-level service toggles default to disabled"
+      (is (false? (get-in cfg [:scheduler :enabled])))
+      (is (false? (get-in cfg [:auth :enabled])))
+      (is (false? (get-in cfg [:https :enabled])))
+      (is (false? (get-in cfg [:metrics :enabled])))
+      (is (false? (get-in cfg [:rate-limit :enabled])))
+      (is (false? (get-in cfg [:retention :enabled])))
+      (is (false? (get-in cfg [:cleanup :enabled])))
+      (is (false? (get-in cfg [:oidc :enabled])))
+      (is (false? (get-in cfg [:saml :enabled])))
+      (is (false? (get-in cfg [:ldap :enabled])))
+      (is (false? (get-in cfg [:ha :enabled])))
+      (is (false? (get-in cfg [:distributed :enabled])))
+      (is (false? (get-in cfg [:security :cors :enabled])))
+      (is (false? (get-in cfg [:metrics :auth-required]))))
+
+    (testing "service toggles that default to enabled"
+      (is (true? (get-in cfg [:notifications :email :tls])))
+      (is (true? (get-in cfg [:audit :enabled])))
+      (is (true? (get-in cfg [:security :csp :enabled])))
+      (is (true? (get-in cfg [:https :hsts])))
+      (is (true? (get-in cfg [:https :redirect-http])))
+      (is (true? (get-in cfg [:auth :lockout :enabled])))
+      (is (true? (get-in cfg [:approvals :enabled])))
+      (is (true? (get-in cfg [:templates :enabled])))
+      (is (true? (get-in cfg [:oidc :auto-create-users])))
+      (is (true? (get-in cfg [:saml :auto-create-users])))
+      (is (true? (get-in cfg [:ldap :auto-create-users])))
+      (is (true? (get-in cfg [:multi-tenancy :auto-assign-default])))
+      (is (true? (get-in cfg [:auto-merge :require-all-checks])))
+      (is (true? (get-in cfg [:container-scanning :ignore-unfixed])))
+      (is (true? (get-in cfg [:distributed :dispatch :artifact-transfer])))
+      (is (true? (get-in cfg [:iac :terraform :auto-init]))))
+
+    (testing "secrets defaults"
+      (is (false? (get-in cfg [:secrets :fallback-to-local]))))
+
+    (testing "distributed dispatch defaults"
+      (is (false? (get-in cfg [:distributed :dispatch :fallback-local])))
+      (is (false? (get-in cfg [:distributed :dispatch :queue-enabled]))))
+
+    (testing "LDAP defaults"
+      (is (false? (get-in cfg [:ldap :use-ssl]))))
+
+    (testing "MFA defaults"
+      (is (false? (get-in cfg [:mfa :enforce-for-admins]))))
+
+    (testing "auto-merge defaults"
+      (is (false? (get-in cfg [:auto-merge :delete-branch-after]))))
+
+    (testing "deployment defaults"
+      (is (false? (get-in cfg [:deployment :rollback :auto-on-health-failure]))))
+
+    (testing "IaC plan defaults"
+      (is (false? (get-in cfg [:iac :plan :require-approval]))))))
+
+(deftest default-config-feature-flags-test
+  (let [flags (get-in config/default-config [:feature-flags])]
+
+    (testing "persistent-agents is the only flag that defaults to true"
+      (is (true? (:persistent-agents flags))))
+
+    (testing "all other feature flags default to false"
+      (let [expected-false-flags
+            [:policy-engine :artifact-checksums :compliance-reports
+             :distributed-dispatch :parallel-stage-execution
+             :docker-layer-cache :artifact-cache :build-result-cache
+             :resource-aware-scheduling :incremental-artifacts
+             :build-deduplication
+             ;; Phase 5: Observability
+             :tracing :build-analytics :browser-notifications
+             :cost-attribution :flaky-test-detection
+             ;; Phase 6: Advanced SCM
+             :pr-status-checks :branch-overrides :monorepo-filtering
+             :build-dependencies :cron-scheduling :webhook-replay :auto-merge
+             ;; Phase 7: Supply Chain
+             :slsa-provenance :sbom-generation :container-scanning
+             :opa-policies :license-scanning :artifact-signing
+             :regulatory-dashboards
+             ;; Phase 8: Enterprise Identity
+             :saml :ldap :fine-grained-rbac :mfa-totp
+             :cross-org-sharing :cloud-secret-backends :secret-rotation
+             ;; Phase 10: Scale
+             :chunked-log-storage :cursor-pagination :db-partitioning
+             :read-replicas :agent-connection-pooling
+             :event-bus-backpressure :multi-region
+             ;; Phase 11: Deployment
+             :environment-definitions :release-management
+             :artifact-promotion :deployment-strategies
+             :deployment-execution :environment-health-checks
+             :deployment-dashboard
+             ;; Phase 12: IaC
+             :infrastructure-as-code :terraform-execution
+             :pulumi-execution :cloudformation-execution
+             :iac-state-management :iac-cost-estimation
+             :iac-policy-enforcement]]
+        (doseq [flag expected-false-flags]
+          (is (false? (get flags flag))
+              (str "Feature flag " flag " should default to false")))))))
+
+(deftest default-config-warn-insecure-defaults-test
+  (testing "warn-insecure-defaults detects default admin password"
+    (let [cfg (assoc-in config/default-config [:auth :enabled] true)
+          output (with-out-str
+                   (binding [*err* *out*]
+                     (config/warn-insecure-defaults cfg)))]
+      (is (str/includes? output "default admin password"))))
+
+  (testing "warn-insecure-defaults detects missing JWT secret"
+    (let [cfg (assoc-in config/default-config [:auth :enabled] true)
+          output (with-out-str
+                   (binding [*err* *out*]
+                     (config/warn-insecure-defaults cfg)))]
+      (is (str/includes? output "JWT secret"))))
+
+  (testing "warn-insecure-defaults detects missing distributed auth token"
+    (let [cfg (assoc-in config/default-config [:distributed :enabled] true)
+          output (with-out-str
+                   (binding [*err* *out*]
+                     (config/warn-insecure-defaults cfg)))]
+      (is (str/includes? output "auth-token"))))
+
+  (testing "no warnings when auth is disabled"
+    (let [output (with-out-str
+                   (binding [*err* *out*]
+                     (config/warn-insecure-defaults config/default-config)))]
+      (is (= "" output))))
+
+  (testing "warn-insecure-defaults returns the config"
+    (is (= config/default-config
+           (config/warn-insecure-defaults config/default-config)))))
+
+(deftest sqlite-postgresql-detection-test
+  (testing "sqlite? returns true for default config"
+    (is (true? (config/sqlite? config/default-config))))
+
+  (testing "postgresql? returns false for default config"
+    (is (false? (config/postgresql? config/default-config))))
+
+  (testing "sqlite? returns false for postgresql config"
+    (let [cfg (assoc-in config/default-config [:database :type] "postgresql")]
+      (is (false? (config/sqlite? cfg)))))
+
+  (testing "postgresql? returns true for postgresql config"
+    (let [cfg (assoc-in config/default-config [:database :type] "postgresql")]
+      (is (true? (config/postgresql? cfg)))))
+
+  (testing "sqlite? and postgresql? are mutually exclusive"
+    (is (not= (config/sqlite? config/default-config)
+              (config/postgresql? config/default-config)))))

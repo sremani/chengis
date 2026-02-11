@@ -127,3 +127,16 @@
     (testing "cancel-deployment! fails for non-existent"
       (let [result (deployment-engine/cancel-deployment! ds "non-existent")]
         (is (false? (:success result)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation remediation: boolean return values
+;; ---------------------------------------------------------------------------
+
+(deftest rollback-nonexistent-deployment-test
+  (let [ds (test-ds)]
+    (testing "rollback returns false success for non-existent deployment"
+      (let [result (deployment-engine/rollback-deployment!
+                     {:db ds :config {}} "nonexistent-id")]
+        (is (false? (:success result))
+            ":success must be false (not true) for missing deployment")
+        (is (string? (:reason result)))))))

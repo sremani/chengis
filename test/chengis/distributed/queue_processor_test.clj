@@ -90,3 +90,28 @@
       (stop-fn)
       (Thread/sleep 100)
       (is (false? (qp/running?*))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation remediation: test boolean defaults
+;; ---------------------------------------------------------------------------
+
+(deftest process-one-no-labels-filter-test
+  (testing "agents with no required labels are accepted (default true)"
+    ;; Register an agent with labels, enqueue a build with NO required labels
+    (agent-reg/register-agent! {:name "labeled-agent"
+                                 :url "http://localhost:1"
+                                 :labels #{"linux" "docker"}
+                                 :max-builds 5})
+    (bq/enqueue! *ds* "build-nolabel" "job-1"
+      {:pipeline {:stages []} :build-id "build-nolabel"} nil)
+    ;; process-one! should find the agent (empty labels → all agents match)
+    ;; It will fail on HTTP dispatch, but the agent should be FOUND first,
+    ;; so the result won't be :no-agent
+    (let [result (qp/process-one! *system*)]
+      (is (not= :no-agent result)
+          "An agent should be found when no labels are required"))))
+
+(deftest processor-not-running-initially-test
+  (testing "processor is not running before start"
+    (is (false? (qp/running?*))
+        "Processor should not be running before start-processor! is called")))

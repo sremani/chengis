@@ -42,3 +42,32 @@
                                          :dispatch {:fallback-local true}}}}
           result (dispatcher/dispatch-build! system {} #{"windows"})]
       (is (= :local (:mode result))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation remediation: test default boolean values in dispatch
+;; ---------------------------------------------------------------------------
+
+(deftest dispatch-default-fallback-local-test
+  (testing "fallback-local defaults to false when not specified in config"
+    ;; dispatch config has no :fallback-local key — should default to false,
+    ;; meaning no fallback → :failed when no agent is available
+    (let [system {:config {:distributed {:enabled true
+                                         :dispatch {}}}}
+          result (dispatcher/dispatch-build! system {} #{})]
+      (is (= :failed (:mode result))
+          "Without :fallback-local, dispatch should fail, not fall back to local")))
+
+  (testing "fallback-local explicitly true allows local fallback"
+    (let [system {:config {:distributed {:enabled true
+                                         :dispatch {:fallback-local true}}}}
+          result (dispatcher/dispatch-build! system {} #{})]
+      (is (= :local (:mode result))))))
+
+(deftest dispatch-default-queue-enabled-test
+  (testing "queue-enabled defaults to false when not specified"
+    ;; When no agents and no :queue-enabled key, should NOT try to enqueue
+    (let [system {:config {:distributed {:enabled true
+                                         :dispatch {:fallback-local false}}}}
+          result (dispatcher/dispatch-build! system {} #{})]
+      (is (= :failed (:mode result))
+          "Without :queue-enabled, should not attempt to enqueue"))))

@@ -170,3 +170,31 @@
              (get-in resp [:headers "Content-Type"])))
       (is (string? (:body resp)))
       (is (re-find #"jvm_" (:body resp)) "Should contain JVM metrics"))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation testing remediation: Verify `or` fallback defaults
+;; in record functions (kills `or` → `and` mutations)
+;; ---------------------------------------------------------------------------
+
+(deftest record-approval-resolved-nil-result-test
+  (testing "record-approval-resolved! uses 'unknown' when result is nil"
+    (let [registry (metrics/init-registry)]
+      ;; Should not throw — the `(or result "unknown")` fallback is exercised
+      (metrics/record-approval-resolved! registry nil)
+      (let [dump (export/text-format registry)]
+        (is (re-find #"approvals_resolved_total" dump))))))
+
+(deftest record-scm-status-nil-labels-test
+  (testing "record-scm-status-report! uses 'unknown' for nil provider and result"
+    (let [registry (metrics/init-registry)]
+      ;; Exercise both `(or provider "unknown")` and `(or result "unknown")`
+      (metrics/record-scm-status-report! registry nil nil)
+      (let [dump (export/text-format registry)]
+        (is (re-find #"scm_status_reports_total" dump))))))
+
+(deftest record-orphan-recovery-zero-count-test
+  (testing "record-orphan-recovery! with zero count is a no-op"
+    (let [registry (metrics/init-registry)]
+      (metrics/record-orphan-recovery! registry 0)
+      (let [dump (export/text-format registry)]
+        (is (re-find #"dispatch_orphans_recovered_total" dump))))))

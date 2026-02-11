@@ -130,3 +130,43 @@
       ;; Cleanup
       (leader/stop-leader-loop! handle)
       (Thread/sleep 100))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation remediation: verify stop/failure boolean state changes
+;; ---------------------------------------------------------------------------
+
+(deftest stop-leader-loop-clears-leading-test
+  (testing "stop-leader-loop! sets leading? to false and stops running"
+    (let [ds (conn/create-datasource test-db-path)
+          handle (leader/start-leader-loop!
+                   ds 100099 "test-stop-svc"
+                   (fn []) (fn []) 50)]
+      ;; Wait for leadership
+      (Thread/sleep 200)
+      (is (true? @(:leading? handle))
+          "Should be leading before stop")
+      ;; Stop
+      (leader/stop-leader-loop! handle)
+      (Thread/sleep 200)
+      (is (false? @(:leading? handle))
+          "leading? should be false after stop"))))
+
+(deftest start-fn-exception-reverts-leadership-test
+  (testing "if start-fn throws, leading? stays false"
+    (let [ds (conn/create-datasource test-db-path)
+          error-thrown? (atom false)
+          handle (leader/start-leader-loop!
+                   ds 100100 "test-error-svc"
+                   (fn [] (reset! error-thrown? true)
+                          (throw (Exception. "start-fn boom")))
+                   (fn []) 50)]
+      ;; Wait for the loop to try acquiring and calling start-fn
+      (Thread/sleep 300)
+      (is (true? @error-thrown?)
+          "start-fn should have been called")
+      ;; Since start-fn threw, leading? should be false
+      (is (false? @(:leading? handle))
+          "leading? should be false when start-fn throws")
+      ;; Cleanup
+      (leader/stop-leader-loop! handle)
+      (Thread/sleep 100))))

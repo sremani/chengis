@@ -54,3 +54,20 @@
         ;; This will log errors for partition creation (SQLite can't do it)
         ;; but should not throw
         (is (nil? (part/maintenance-cycle! *ds* config)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation testing remediation: boolean return values
+;; ---------------------------------------------------------------------------
+
+(deftest create-partition-returns-boolean-test
+  (with-test-db
+    (testing "create-monthly-partition! returns false on SQLite (unsupported DDL)"
+      ;; SQLite can't do CREATE TABLE ... PARTITION — function should return false
+      (let [result (part/create-monthly-partition! *ds* "builds" 2025 1)]
+        (is (false? result))))))
+
+(deftest detach-partition-returns-boolean-test
+  (with-test-db
+    (testing "detach-partition! returns false on SQLite (no partition to detach)"
+      (let [result (part/detach-partition! *ds* "builds" "builds_2025_01")]
+        (is (false? result))))))

@@ -477,3 +477,66 @@
       (let [resp (wrapped {:uri "/metrics" :request-method :get :headers {}})]
         ;; /metrics is not a public path when custom path is set
         (is (= 303 (:status resp)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation testing remediation: scope-sufficient? boolean returns
+;; ---------------------------------------------------------------------------
+
+(deftest scope-sufficient-boolean-returns-test
+  (testing "session user (no :token-scopes key) returns true"
+    (is (true? (auth/scope-sufficient? {:username "alice" :role :admin} "build:read"))))
+
+  (testing "nil scopes (full-access API token) returns true"
+    (is (true? (auth/scope-sufficient? {:username "alice" :token-scopes nil} "build:read"))))
+
+  (testing "exact scope match returns true"
+    (is (true? (auth/scope-sufficient? {:username "alice" :token-scopes #{"build:read"}} "build:read"))))
+
+  (testing "wildcard scope match returns true"
+    (is (true? (auth/scope-sufficient? {:username "alice" :token-scopes #{"admin:*"}} "admin:users"))))
+
+  (testing "missing scope returns false"
+    (is (false? (auth/scope-sufficient? {:username "alice" :token-scopes #{"build:read"}} "build:trigger"))))
+
+  (testing "empty scopes set returns false for any scope"
+    (is (false? (auth/scope-sufficient? {:username "alice" :token-scopes #{}} "build:read")))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation testing remediation: auth-enabled/distributed-enabled defaults
+;; ---------------------------------------------------------------------------
+
+(deftest wrap-auth-config-defaults-test
+  (testing "auth-enabled defaults to false (anonymous admin access)"
+    (let [ds (conn/create-datasource test-db-path)
+          system {:config {} :db ds}
+          handler (fn [req] {:status 200 :body (:auth/user req)})
+          wrapped (auth/wrap-auth handler system)
+          resp (wrapped {:uri "/api/jobs" :request-method :get :headers {}})]
+      (is (= 200 (:status resp)))
+      (is (= "anonymous" (:username (:body resp))))
+      (is (= :admin (:role (:body resp))))))
+
+  (testing "distributed-enabled defaults to false (agent paths require auth)"
+    (let [ds (conn/create-datasource test-db-path)
+          system {:config {:auth {:enabled true
+                                  :jwt-secret "test-jwt-secret-32-chars-min!!!!!"}}
+                  :db ds}
+          handler (fn [req] {:status 200 :body "ok"})
+          wrapped (auth/wrap-auth handler system)
+          resp (wrapped {:uri "/api/builds/b1/agent-events" :request-method :post :headers {}})]
+      ;; Without distributed enabled, agent paths should require auth
+      (is (= 401 (:status resp))))))
+
+(deftest login-returns-success-false-on-failure-test
+  (testing "login! returns :success false for unknown user"
+    (let [ds (conn/create-datasource test-db-path)
+          result (auth/login! ds "nonexistent" "password")]
+      (is (false? (:success result)))
+      (is (string? (:error result)))))
+
+  (testing "login! returns :success false for wrong password"
+    (let [ds (conn/create-datasource test-db-path)]
+      (user-store/create-user! ds {:username "testuser" :password "correctpassword" :role "developer"})
+      (let [result (auth/login! ds "testuser" "wrongpassword")]
+        (is (false? (:success result)))
+        (is (string? (:error result)))))))

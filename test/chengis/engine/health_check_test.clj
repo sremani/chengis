@@ -126,3 +126,23 @@
                      :timeout-ms 5000 :interval-ms 100 :retries 1)]
         (is (false? (:healthy result)))
         (is (some? (:reason result)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 1 mutation remediation: wait-for-healthy! timeout path
+;; ---------------------------------------------------------------------------
+
+(deftest wait-for-healthy-timeout-returns-unhealthy-test
+  (let [ds (test-ds)
+        env (create-test-env! ds "slow")]
+    (testing "wait-for-healthy! returns :healthy false when timeout exceeded"
+      ;; Create a check that always fails (exit 1)
+      (hc-store/create-health-check! ds
+        {:org-id "org-1" :environment-id (:id env)
+         :name "AlwaysFail" :check-type "command"
+         :config {:command "exit 1" :expected-exit-code 0 :timeout-ms 1000}})
+      ;; Very short timeout so it expires quickly
+      (let [result (hc-engine/wait-for-healthy! ds (:id env)
+                     :timeout-ms 200 :interval-ms 50 :retries 0)]
+        (is (false? (:healthy result))
+            ":healthy must be false (not true) on timeout")
+        (is (some? (:reason result)))))))
