@@ -423,3 +423,69 @@
           req {:scheme :https :headers {"host" "chengis.example.com"}}
           resp (handler req)]
       (is (= 400 (:status resp))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 3e: SAML certificate parsing and security path tests
+;; ---------------------------------------------------------------------------
+
+(deftest parse-x509-certificate-nil-returns-nil-test
+  (testing "nil certificate string returns nil"
+    (is (nil? (#'saml/parse-x509-certificate nil)))))
+
+(deftest parse-x509-certificate-blank-returns-nil-test
+  (testing "blank certificate string returns nil"
+    (is (nil? (#'saml/parse-x509-certificate "")))
+    (is (nil? (#'saml/parse-x509-certificate "   ")))))
+
+(deftest parse-x509-certificate-invalid-base64-returns-nil-test
+  (testing "invalid Base64 content returns nil (exception caught)"
+    (is (nil? (#'saml/parse-x509-certificate
+                "-----BEGIN CERTIFICATE-----\nNOT-VALID-BASE64!@#$\n-----END CERTIFICATE-----")))))
+
+(deftest parse-x509-certificate-no-headers-returns-nil-test
+  (testing "garbage without PEM headers returns nil"
+    (is (nil? (#'saml/parse-x509-certificate "just-some-random-text")))))
+
+(deftest generate-authn-request-disabled-returns-nil-test
+  (testing "SAML disabled returns nil from generate-authn-request"
+    (is (nil? (#'saml/generate-authn-request {:saml {:enabled false}})))))
+
+(deftest generate-authn-request-enabled-returns-map-test
+  (testing "SAML enabled returns request with url, relay-state, request-id"
+    (let [config {:saml {:enabled true
+                          :sp-entity-id "chengis"
+                          :idp-sso-url "https://idp.example.com/sso"
+                          :acs-url "https://app.example.com/acs"}}
+          result (#'saml/generate-authn-request config)]
+      (is (some? result))
+      (is (some? (:url result)))
+      (is (some? (:relay-state result)))
+      (is (some? (:request-id result)))
+      (is (clojure.string/starts-with? (:url result) "https://idp.example.com/sso?")))))
+
+(deftest resolve-saml-role-blank-attribute-returns-default-test
+  (testing "blank role-attribute returns default role"
+    (let [result (saml/resolve-saml-role
+                   {"role" "admin"}
+                   {:saml {:role-attribute ""
+                           :role-mapping {"admin" "admin"}
+                           :default-role "viewer"}})]
+      (is (= "viewer" result)))))
+
+(deftest resolve-saml-role-nil-attribute-value-returns-default-test
+  (testing "nil attribute value returns default role"
+    (let [result (saml/resolve-saml-role
+                   {"other-attr" "admin"}
+                   {:saml {:role-attribute "role"
+                           :role-mapping {"admin" "admin"}
+                           :default-role "viewer"}})]
+      (is (= "viewer" result)))))
+
+(deftest resolve-saml-role-sequential-first-match-test
+  (testing "sequential attribute values uses first matching role"
+    (let [result (saml/resolve-saml-role
+                   {"groups" ["ci-user" "ci-admin" "ci-dev"]}
+                   {:saml {:role-attribute "groups"
+                           :role-mapping {"ci-admin" "admin" "ci-dev" "developer"}
+                           :default-role "viewer"}})]
+      (is (= "admin" result)))))

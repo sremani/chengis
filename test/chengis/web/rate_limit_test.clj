@@ -164,3 +164,29 @@
                             :request-method :get})]
         (is (= 429 (:status resp)))
         (is (clojure.string/includes? (get-in resp [:headers "Content-Type"]) "text/html"))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2c: Boundary test — rate limit at exact token boundary
+;; ---------------------------------------------------------------------------
+
+(deftest rate-limit-exact-capacity-boundary-test
+  (testing "requests-per-minute requests are allowed, one more is rejected"
+    (let [handler (fn [_] {:status 200})
+          rpm 3
+          system {:config {:rate-limit {:enabled true
+                                        :requests-per-minute rpm
+                                        :auth-requests-per-minute rpm
+                                        :webhook-requests-per-minute rpm}}
+                  :metrics nil}
+          wrapped (rl/wrap-rate-limit handler system)]
+      ;; First `rpm` requests should succeed
+      (dotimes [i rpm]
+        (let [resp (wrapped {:remote-addr "10.0.0.1" :uri "/api/test"
+                             :request-method :get})]
+          (is (= 200 (:status resp))
+              (str "Request " (inc i) " of " rpm " should succeed"))))
+      ;; The (rpm+1)th request should be rate-limited
+      (let [resp (wrapped {:remote-addr "10.0.0.1" :uri "/api/test"
+                           :request-method :get})]
+        (is (= 429 (:status resp))
+            "Request beyond capacity should be rate-limited")))))

@@ -146,3 +146,38 @@
 
       (let [runs (cron-store/list-cron-runs ds "sched-1")]
         (is (= 2 (count runs)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 3h: Cron store nil-guard and partial update tests
+;; ---------------------------------------------------------------------------
+
+(deftest update-schedule-partial-nil-fields-test
+  (testing "update with only cron-expression changes only that field"
+    (let [ds (conn/create-datasource test-db-path)]
+      (cron-store/create-schedule! ds
+        {:job-id "partial-job" :cron-expression "0 * * * *"
+         :description "original" :org-id "org-1"})
+      (let [schedules (cron-store/list-schedules ds :job-id "partial-job")
+            sched-id (:id (first schedules))]
+        ;; Update only description, leaving cron-expression as nil
+        (cron-store/update-schedule! ds sched-id
+          {:cron-expression nil :description "updated" :enabled nil
+           :parameters nil :next-run-at nil})
+        (let [updated (cron-store/get-schedule ds sched-id)]
+          (is (= "updated" (:description updated)))
+          (is (= "0 * * * *" (:cron-expression updated))
+              "cron-expression should be unchanged when nil"))))))
+
+(deftest update-schedule-with-org-id-test
+  (testing "update with org-id only affects matching org"
+    (let [ds (conn/create-datasource test-db-path)]
+      (cron-store/create-schedule! ds
+        {:job-id "org-job" :cron-expression "0 0 * * *"
+         :description "org sched" :org-id "org-X"})
+      (let [schedules (cron-store/list-schedules ds :job-id "org-job")
+            sched-id (:id (first schedules))]
+        ;; Update with correct org-id
+        (cron-store/update-schedule! ds sched-id
+          {:description "org updated"} :org-id "org-X")
+        (let [updated (cron-store/get-schedule ds sched-id)]
+          (is (= "org updated" (:description updated))))))))

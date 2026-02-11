@@ -127,3 +127,40 @@
       (is (str/includes? summary "$"))
       (is (str/includes? summary "125.30"))
       (is (str/includes? summary "month")))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2d: or-fallback defaults for cost estimation
+;; ---------------------------------------------------------------------------
+
+(deftest parse-terraform-or-fallback-defaults-test
+  (testing "empty Terraform plan uses default empty resource_changes"
+    (let [resources (iac-cost/parse-terraform-plan-resources (json/write-str {}))]
+      (is (= [] resources))))
+
+  (testing "Terraform plan with missing action defaults to 'unknown'"
+    (let [resources (iac-cost/parse-terraform-plan-resources
+                      (json/write-str
+                        {:resource_changes
+                         [{:type "aws_instance" :name "web" :change {}}]}))]
+      (is (= 1 (count resources)))
+      (is (= "unknown" (:action (first resources))))))
+
+  (testing "Terraform plan with missing type/name defaults to empty string"
+    (let [resources (iac-cost/parse-terraform-plan-resources
+                      (json/write-str
+                        {:resource_changes [{:change {:actions ["create"]}}]}))]
+      (is (= 1 (count resources)))
+      (is (= "" (:resource-type (first resources))))
+      (is (= "" (:name (first resources)))))))
+
+(deftest estimate-cost-with-nil-resources-test
+  (testing "estimate-plan-cost with nil resources defaults to []"
+    (let [result (iac-cost/estimate-plan-cost nil :terraform)]
+      (is (= [] (:resources result)))
+      (is (= 0.0 (:total-monthly result)))))
+
+  (testing "format-cost-summary handles zero-cost estimate"
+    (let [estimate {:total-monthly 0.0 :total-hourly 0.0 :resources []}
+          summary (iac-cost/format-cost-summary estimate)]
+      (is (string? summary))
+      (is (str/includes? summary "0")))))

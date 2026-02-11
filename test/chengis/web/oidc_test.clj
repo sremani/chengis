@@ -639,3 +639,77 @@
           ;; The redirect URL should use the configured callback, not the host header
           (is (str/includes? (get-in resp [:headers "Location"])
                              "redirect_uri=https%3A%2F%2Fapp.example.com%2Fauth%2Foidc%2Fcallback")))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 3f: OIDC helper, JWK, and PKCE tests
+;; ---------------------------------------------------------------------------
+
+(deftest find-jwk-by-kid-matching-test
+  (testing "finds JWK with matching kid"
+    (let [jwks [{:kid "key-1" :kty "RSA" :use "sig" :n "abc" :e "def"}
+                {:kid "key-2" :kty "RSA" :use "sig" :n "ghi" :e "jkl"}]
+          result (#'oidc/find-jwk-by-kid jwks "key-2")]
+      (is (= "key-2" (:kid result))))))
+
+(deftest find-jwk-by-kid-no-match-test
+  (testing "returns nil when no kid matches"
+    (let [jwks [{:kid "key-1" :kty "RSA" :use "sig"}]
+          result (#'oidc/find-jwk-by-kid jwks "nonexistent")]
+      (is (nil? result)))))
+
+(deftest find-jwk-by-kid-nil-uses-first-rsa-test
+  (testing "nil kid uses first RSA signing key"
+    (let [jwks [{:kid "enc-key" :kty "RSA" :use "enc"}
+                {:kid "sig-key" :kty "RSA" :use "sig"}
+                {:kid "ec-key" :kty "EC" :use "sig"}]
+          result (#'oidc/find-jwk-by-kid jwks nil)]
+      (is (= "sig-key" (:kid result))
+          "Should select first RSA key with use=sig"))))
+
+(deftest generate-code-verifier-format-test
+  (testing "code verifier is non-empty Base64url string"
+    (let [verifier (#'oidc/generate-code-verifier)]
+      (is (string? verifier))
+      (is (pos? (count verifier)))
+      ;; Should be Base64url-safe (no +, /, =)
+      (is (not (re-find #"[+/=]" verifier))
+          "Code verifier should be Base64url without padding"))))
+
+(deftest compute-code-challenge-deterministic-test
+  (testing "code challenge is deterministic for same verifier"
+    (let [verifier "test-verifier-value-for-pkce"
+          c1 (#'oidc/compute-code-challenge verifier)
+          c2 (#'oidc/compute-code-challenge verifier)]
+      (is (= c1 c2) "Same verifier should produce same challenge")
+      (is (string? c1))
+      (is (pos? (count c1)))
+      ;; Should be Base64url-safe
+      (is (not (re-find #"[+/=]" c1))
+          "Code challenge should be Base64url without padding"))))
+
+(deftest resolve-role-nested-claim-path-test
+  (testing "dot-separated claim path extracts nested value"
+    (let [result (oidc/resolve-role
+                   {:realm_access {:roles ["admin"]}}
+                   {:oidc {:role-claim "realm_access.roles"
+                           :role-mapping {"admin" "admin"}
+                           :default-role "viewer"}})]
+      (is (= "admin" result)))))
+
+(deftest resolve-role-missing-intermediate-key-test
+  (testing "missing intermediate key in path returns default"
+    (let [result (oidc/resolve-role
+                   {:other "data"}
+                   {:oidc {:role-claim "realm_access.roles"
+                           :role-mapping {"admin" "admin"}
+                           :default-role "viewer"}})]
+      (is (= "viewer" result)))))
+
+(deftest resolve-role-blank-claim-returns-default-test
+  (testing "blank role-claim returns default role"
+    (let [result (oidc/resolve-role
+                   {:role "admin"}
+                   {:oidc {:role-claim ""
+                           :role-mapping {"admin" "admin"}
+                           :default-role "developer"}})]
+      (is (= "developer" result)))))

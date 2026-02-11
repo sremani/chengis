@@ -206,4 +206,40 @@
       (let [remaining (rotation-store/list-versions ds "org-1" "ROTATE_ME")]
         (is (= 3 (count remaining)))
         (is (= 5 (:version (first remaining))))
-        (is (= 3 (:version (last remaining))))))))
+        (is (= 3 (:version (last remaining)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2d: or-fallback defaults for rotation policy creation
+;; ---------------------------------------------------------------------------
+
+(deftest create-policy-or-fallback-defaults-test
+  (let [ds (test-ds)]
+    (testing "rotation-interval-days defaults to 90 when not specified"
+      (let [policy (rotation-store/create-policy! ds
+                     {:org-id "org-1" :secret-name "S1" :created-by "admin"})]
+        (is (= 90 (:rotation-interval-days policy)))))
+
+    (testing "secret-scope defaults to 'global' when not specified"
+      (let [policy (rotation-store/create-policy! ds
+                     {:org-id "org-1" :secret-name "S2" :created-by "admin"})]
+        (is (= "global" (:secret-scope policy)))))
+
+    (testing "max-versions defaults to 3 when not specified"
+      (let [policy (rotation-store/create-policy! ds
+                     {:org-id "org-1" :secret-name "S3" :created-by "admin"})]
+        (is (= 3 (:max-versions policy)))))
+
+    (testing "notify-days-before defaults to 7 when not specified"
+      (let [policy (rotation-store/create-policy! ds
+                     {:org-id "org-1" :secret-name "S4" :created-by "admin"})]
+        (is (= 7 (:notify-days-before policy)))))
+
+    (testing "explicit values override defaults"
+      (let [policy (rotation-store/create-policy! ds
+                     {:org-id "org-1" :secret-name "S5" :created-by "admin"
+                      :rotation-interval-days 30 :secret-scope "project"
+                      :max-versions 10 :notify-days-before 14})]
+        (is (= 30 (:rotation-interval-days policy)))
+        (is (= "project" (:secret-scope policy)))
+        (is (= 10 (:max-versions policy)))
+        (is (= 14 (:notify-days-before policy))))))))

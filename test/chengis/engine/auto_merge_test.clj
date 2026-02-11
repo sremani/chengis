@@ -222,3 +222,200 @@
                      {:build-id "b1" :job-id "job-1" :pr-number 42
                       :repo-url "https://github.com/o/r"} {:auto-merge-enabled true})]
         (is (= :not-ready (:status result)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2a: HTTP status boundary tests for merge functions
+;; Phase 2d: or-fallback tests for config defaults
+;; ---------------------------------------------------------------------------
+
+(deftest github-merge-status-boundary-test
+  (testing "HTTP 299 is treated as success (< 300)"
+    (with-redefs [org.httpkit.client/put
+                  (fn [_url _opts]
+                    (let [p (promise)] (deliver p {:status 299 :body "{}"}) p))]
+      (let [result (#'auto-merge/merge-github-pr! "o" "r" 1
+                      {:token "tok"} {:merge-method "merge"})]
+        (is (= :merged (:status result))))))
+
+  (testing "HTTP 300 is treated as failure (not < 300)"
+    (with-redefs [org.httpkit.client/put
+                  (fn [_url _opts]
+                    (let [p (promise)] (deliver p {:status 300 :body "{}"}) p))]
+      (let [result (#'auto-merge/merge-github-pr! "o" "r" 1
+                      {:token "tok"} {:merge-method "merge"})]
+        (is (= :failed (:status result)))))))
+
+(deftest gitlab-merge-status-boundary-test
+  (testing "HTTP 299 is success for GitLab merge"
+    (with-redefs [org.httpkit.client/put
+                  (fn [_url _opts]
+                    (let [p (promise)] (deliver p {:status 299 :body "{}"}) p))]
+      (let [result (#'auto-merge/merge-gitlab-mr! "group/repo" 1
+                      {:token "tok"} {})]
+        (is (= :merged (:status result))))))
+
+  (testing "HTTP 300 is failure for GitLab merge"
+    (with-redefs [org.httpkit.client/put
+                  (fn [_url _opts]
+                    (let [p (promise)] (deliver p {:status 300 :body "{}"}) p))]
+      (let [result (#'auto-merge/merge-gitlab-mr! "group/repo" 1
+                      {:token "tok"} {})]
+        (is (= :failed (:status result)))))))
+
+(deftest bitbucket-merge-status-boundary-test
+  (testing "HTTP 299 is success for Bitbucket merge"
+    (with-redefs [org.httpkit.client/post
+                  (fn [_url _opts]
+                    (let [p (promise)] (deliver p {:status 299 :body "{}"}) p))]
+      (let [result (#'auto-merge/merge-bitbucket-pr! "ws" "r" 1
+                      {:username "u" :app-password "p"} {})]
+        (is (= :merged (:status result))))))
+
+  (testing "HTTP 300 is failure for Bitbucket merge"
+    (with-redefs [org.httpkit.client/post
+                  (fn [_url _opts]
+                    (let [p (promise)] (deliver p {:status 300 :body "{}"}) p))]
+      (let [result (#'auto-merge/merge-bitbucket-pr! "ws" "r" 1
+                      {:username "u" :app-password "p"} {})]
+        (is (= :failed (:status result)))))))
+
+(deftest gitea-merge-status-boundary-test
+  (testing "HTTP 299 is success for Gitea merge"
+    (with-redefs [org.httpkit.client/post
+                  (fn [_url _opts]
+                    (let [p (promise)] (deliver p {:status 299 :body "{}"}) p))]
+      (let [result (#'auto-merge/merge-gitea-pr! "o" "r" 1
+                      {:token "tok" :base-url "https://gitea.example.com"} {})]
+        (is (= :merged (:status result))))))
+
+  (testing "HTTP 300 is failure for Gitea merge"
+    (with-redefs [org.httpkit.client/post
+                  (fn [_url _opts]
+                    (let [p (promise)] (deliver p {:status 300 :body "{}"}) p))]
+      (let [result (#'auto-merge/merge-gitea-pr! "o" "r" 1
+                      {:token "tok" :base-url "https://gitea.example.com"} {})]
+        (is (= :failed (:status result)))))))
+
+(deftest merge-config-or-fallback-defaults-test
+  (testing "merge-method defaults to 'merge' when not specified"
+    (with-redefs [org.httpkit.client/put
+                  (fn [_url opts]
+                    (let [body (clojure.data.json/read-str (:body opts) :key-fn keyword)
+                          p (promise)]
+                      (is (= "merge" (:merge_method body)))
+                      (deliver p {:status 200 :body "{}"})
+                      p))]
+      (#'auto-merge/merge-github-pr! "o" "r" 1 {:token "tok"} {})))
+
+  (testing "base-url defaults to https://api.github.com"
+    (with-redefs [org.httpkit.client/put
+                  (fn [url _opts]
+                    (is (clojure.string/starts-with? url "https://api.github.com"))
+                    (let [p (promise)] (deliver p {:status 200 :body "{}"}) p))]
+      (#'auto-merge/merge-github-pr! "o" "r" 1 {:token "tok"} {}))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 3d: Auto-merge helper functions and branch deletion tests
+;; ---------------------------------------------------------------------------
+
+(deftest extract-owner-repo-https-test
+  (testing "extracts owner/repo from HTTPS URLs"
+    (let [result (#'auto-merge/extract-owner-repo
+                   "https://github.com/acme/myrepo.git")]
+      (is (= "acme" (:owner result)))
+      (is (= "myrepo" (:repo result))))))
+
+(deftest extract-owner-repo-ssh-test
+  (testing "extracts owner/repo from SSH URLs"
+    (let [result (#'auto-merge/extract-owner-repo
+                   "git@github.com:acme/myrepo.git")]
+      (is (= "acme" (:owner result)))
+      (is (= "myrepo" (:repo result))))))
+
+(deftest extract-owner-repo-no-git-suffix-test
+  (testing "extracts owner/repo without .git suffix"
+    (let [result (#'auto-merge/extract-owner-repo
+                   "https://github.com/acme/myrepo")]
+      (is (= "acme" (:owner result)))
+      (is (= "myrepo" (:repo result))))))
+
+(deftest extract-owner-repo-nil-returns-nil-test
+  (testing "nil URL returns nil"
+    (is (nil? (#'auto-merge/extract-owner-repo nil)))))
+
+(deftest extract-pr-number-test
+  (testing "extracts :pr-number when present"
+    (is (= 42 (#'auto-merge/extract-pr-number {:pr-number 42}))))
+  (testing "falls back to :merge-request-number for GitLab"
+    (is (= 7 (#'auto-merge/extract-pr-number {:merge-request-number 7}))))
+  (testing "returns nil when neither present"
+    (is (nil? (#'auto-merge/extract-pr-number {})))))
+
+(deftest delete-github-branch-success-test
+  (testing "branch deletion succeeds with HTTP < 300"
+    (with-redefs [org.httpkit.client/delete
+                  (fn [url _opts]
+                    (is (clojure.string/includes? url "/git/refs/heads/feature-branch"))
+                    (let [p (promise)]
+                      (deliver p {:status 204 :body ""})
+                      p))]
+      ;; Should not throw — just logs on success
+      (#'auto-merge/delete-github-branch! "o" "r" "feature-branch"
+        {:token "tok"}))))
+
+(deftest delete-github-branch-failure-no-throw-test
+  (testing "branch deletion failure logs warning but does not throw"
+    (with-redefs [org.httpkit.client/delete
+                  (fn [_url _opts]
+                    (let [p (promise)]
+                      (deliver p {:status 422 :body "not found"})
+                      p))]
+      ;; Should not throw even on failure
+      (#'auto-merge/delete-github-branch! "o" "r" "gone-branch"
+        {:token "tok"}))))
+
+(deftest gitlab-squash-merge-method-test
+  (testing "GitLab squash method sets squash=true in request body"
+    (with-redefs [org.httpkit.client/put
+                  (fn [_url opts]
+                    (let [body (clojure.data.json/read-str (:body opts) :key-fn keyword)
+                          p (promise)]
+                      (is (true? (:squash body))
+                          "squash merge should set squash=true")
+                      (deliver p {:status 200 :body "{}"})
+                      p))]
+      (#'auto-merge/merge-gitlab-mr! "group/repo" 1
+        {:token "tok"} {:merge-method "squash"}))))
+
+(deftest gitlab-delete-branch-after-merge-test
+  (testing "GitLab delete-branch-after sets should_remove_source_branch"
+    (with-redefs [org.httpkit.client/put
+                  (fn [_url opts]
+                    (let [body (clojure.data.json/read-str (:body opts) :key-fn keyword)
+                          p (promise)]
+                      (is (true? (:should_remove_source_branch body)))
+                      (deliver p {:status 200 :body "{}"})
+                      p))]
+      (#'auto-merge/merge-gitlab-mr! "group/repo" 1
+        {:token "tok"} {:delete-branch-after true}))))
+
+(deftest bitbucket-merge-strategy-mapping-test
+  (testing "Bitbucket maps 'rebase' to 'fast_forward' strategy"
+    (with-redefs [org.httpkit.client/post
+                  (fn [_url opts]
+                    (let [body (clojure.data.json/read-str (:body opts) :key-fn keyword)
+                          p (promise)]
+                      (is (= "fast_forward" (:merge_strategy body)))
+                      (deliver p {:status 200 :body "{}"})
+                      p))]
+      (#'auto-merge/merge-bitbucket-pr! "ws" "r" 1
+        {:username "u" :app-password "p"} {:merge-method "rebase"}))))
+
+(deftest extract-project-path-gitlab-test
+  (testing "extracts GitLab project path from HTTPS URL"
+    (let [result (#'auto-merge/extract-project-path
+                   "https://gitlab.com/mygroup/myrepo.git")]
+      (is (some? result))
+      (is (string? result))))
+  (testing "nil URL returns nil"
+    (is (nil? (#'auto-merge/extract-project-path nil)))))

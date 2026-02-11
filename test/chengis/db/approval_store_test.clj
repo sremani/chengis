@@ -172,3 +172,46 @@
         (approval-store/approve-gate! ds gate-id "admin")
         (is (= 0 (approval-store/count-pending-gates ds)))
         (is (empty? (approval-store/list-pending-gates ds)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2c: Boundary tests for approval threshold
+;; Phase 2d: or-fallback defaults for required-role, timeout, min-approvals
+;; ---------------------------------------------------------------------------
+
+(deftest multi-approver-threshold-boundary-test
+  (let [ds (conn/create-datasource test-db-path)]
+    (testing "gate with min-approvals=2: one approval is not enough"
+      (let [gate-id (approval-store/create-gate! ds
+                      {:build-id "b-multi" :stage-name "review"
+                       :min-approvals 2
+                       :approver-group ["alice" "bob" "carol"]})]
+        ;; First approval — should not resolve gate
+        (approval-store/approve-gate! ds gate-id "alice")
+        (let [gate (approval-store/get-gate ds gate-id)]
+          (is (= "pending" (:status gate))
+              "Gate should still be pending after 1 of 2 required approvals"))
+        ;; Second approval — should resolve gate (>= 2 2)
+        (approval-store/approve-gate! ds gate-id "bob")
+        (let [gate (approval-store/get-gate ds gate-id)]
+          (is (= "approved" (:status gate))
+              "Gate should be approved after meeting min-approvals threshold"))))))
+
+(deftest create-gate-or-fallback-defaults-test
+  (let [ds (conn/create-datasource test-db-path)]
+    (testing "required-role defaults to 'developer' when not specified"
+      (let [gate-id (approval-store/create-gate! ds
+                      {:build-id "b-def" :stage-name "deploy"})
+            gate (approval-store/get-gate ds gate-id)]
+        (is (= "developer" (:required-role gate)))))
+
+    (testing "min-approvals defaults to 1 when not specified"
+      (let [gate-id (approval-store/create-gate! ds
+                      {:build-id "b-def2" :stage-name "deploy2"})
+            gate (approval-store/get-gate ds gate-id)]
+        (is (= 1 (:min-approvals gate)))))
+
+    (testing "timeout-minutes defaults to 1440 when not specified"
+      (let [gate-id (approval-store/create-gate! ds
+                      {:build-id "b-def3" :stage-name "deploy3"})
+            gate (approval-store/get-gate ds gate-id)]
+        (is (= 1440 (:timeout-minutes gate)))))))

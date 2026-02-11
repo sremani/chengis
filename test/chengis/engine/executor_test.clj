@@ -109,3 +109,87 @@
       (is (= "deploying\n"
              (-> result :stage-results first :step-results first :stdout)))
       (cleanup-test-workspaces))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 3c: Executor condition evaluation, cancellation, event-fn tests
+;; ---------------------------------------------------------------------------
+
+(deftest evaluate-condition-nil-returns-true-test
+  (testing "nil condition evaluates to true (unconditional)"
+    (is (true? (#'executor/evaluate-condition nil {}))
+        "nil condition should return true")))
+
+(deftest evaluate-condition-always-type-test
+  (testing ":always condition type returns true"
+    (is (true? (#'executor/evaluate-condition {:type :always} {}))
+        ":always should return true")))
+
+(deftest evaluate-condition-unknown-type-test
+  (testing "unknown condition type defaults to true"
+    (is (true? (#'executor/evaluate-condition {:type :unknown-xyz} {}))
+        "Unknown condition type should default to true")))
+
+(deftest evaluate-condition-branch-default-main-test
+  (testing "branch condition defaults to 'main' when no :branch param"
+    (is (true? (#'executor/evaluate-condition
+                 {:type :branch :value "main"} {}))
+        "Should match default 'main' when no branch param provided")
+    (is (false? (#'executor/evaluate-condition
+                  {:type :branch :value "release"} {}))
+        "Should not match 'release' against default 'main'")))
+
+(deftest evaluate-condition-param-type-test
+  (testing ":param condition matches parameter value"
+    (is (true? (#'executor/evaluate-condition
+                 {:type :param :param "env" :value "production"}
+                 {:parameters {:env "production"}})))
+    (is (false? (#'executor/evaluate-condition
+                  {:type :param :param "env" :value "production"}
+                  {:parameters {:env "staging"}})))))
+
+(deftest cancelled-build-aborts-step-test
+  (testing "cancelled build returns :aborted step status"
+    (let [cancelled (atom true)
+          build-ctx {:build-id "cancel-test"
+                     :cancelled? cancelled
+                     :current-stage "Deploy"}
+          step-def {:step-name "should-abort" :command "echo never"}
+          result (executor/run-step build-ctx step-def)]
+      (is (= :aborted (:step-status result)))
+      (is (= -2 (:exit-code result))))))
+
+(deftest event-fn-receives-events-test
+  (testing "event-fn is called with step-started and step-completed events"
+    (let [events (atom [])
+          build-ctx {:build-id "evt-test"
+                     :current-stage "Build"
+                     :event-fn (fn [evt] (swap! events conj evt))
+                     :workspace "/tmp"
+                     :env {}}
+          step-def {:step-name "echo-hi" :command "echo hi" :type :shell}]
+      (executor/run-step build-ctx step-def)
+      ;; Should have at least step-started and step-completed
+      (let [types (set (map :event-type @events))]
+        (is (contains? types :step-started)
+            "Should emit :step-started event")
+        (is (contains? types :step-completed)
+            "Should emit :step-completed event")
+        ;; Each event should have build-id and timestamp
+        (doseq [evt @events]
+          (is (= "evt-test" (:build-id evt)))
+          (is (some? (:timestamp evt))))))))
+
+(deftest step-condition-skip-emits-completed-test
+  (testing "skipped step still emits step-completed event"
+    (let [events (atom [])
+          build-ctx {:build-id "skip-test"
+                     :current-stage "Deploy"
+                     :event-fn (fn [evt] (swap! events conj evt))
+                     :parameters {:branch "develop"}}
+          step-def {:step-name "deploy"
+                    :command "echo deploy"
+                    :condition {:type :branch :value "release"}}
+          result (executor/run-step build-ctx step-def)]
+      (is (= :skipped (:step-status result)))
+      (is (some #(= :step-completed (:event-type %)) @events)
+          "Skipped step should still emit step-completed"))))

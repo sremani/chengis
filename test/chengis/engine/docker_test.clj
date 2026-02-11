@@ -129,3 +129,24 @@
   (testing "image name validation"
     (is (thrown? clojure.lang.ExceptionInfo
           (docker/pull-image! "alpine;rm -rf /")))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2c: Boundary tests for Docker name/image length validation
+;; ---------------------------------------------------------------------------
+
+(deftest image-name-length-boundary-test
+  (testing "image name at exactly 256 chars is valid (> 256, not >= 256)"
+    (let [name-256 (apply str "a/" (repeat 254 "x"))]
+      (is (= 256 (count name-256)))
+      ;; Should NOT throw — 256 is the boundary (> 256 rejects)
+      (is (some? (docker/build-docker-run-cmd
+                   {:image name-256 :command "echo hi"}
+                   {:workspace "/ws"})))))
+
+  (testing "image name at 257 chars is rejected"
+    (let [name-257 (apply str "a/" (repeat 255 "x"))]
+      (is (= 257 (count name-257)))
+      (is (thrown? clojure.lang.ExceptionInfo
+            (docker/build-docker-run-cmd
+              {:image name-257 :command "echo hi"}
+              {:workspace "/ws"}))))))

@@ -276,3 +276,41 @@
   (testing "YAML pipeline format is registered"
     (is (some? (registry/get-pipeline-format "yaml")))
     (is (some? (registry/get-pipeline-format "yml")))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2d: or-fallback defaults for YAML step/stage parsing
+;; ---------------------------------------------------------------------------
+
+(deftest yaml-parameter-type-defaults-test
+  (testing "parameter type defaults to 'text' when not specified"
+    (let [yaml-str (str "parameters:\n"
+                        "  branch:\n"
+                        "    description: Target branch\n"
+                        "stages:\n"
+                        "  - name: build\n"
+                        "    steps:\n"
+                        "      - name: compile\n"
+                        "        run: echo hi\n")
+          path (write-temp-yaml! yaml-str)
+          result (yaml/parse-yaml-workflow path)
+          pipeline (:pipeline result)
+          params (:parameters pipeline)]
+      (is (some? pipeline))
+      (is (some? params))
+      ;; Parameters is a vector of {:name "branch" :type :text ...}
+      (let [branch-param (first (filter #(= "branch" (:name %)) params))]
+        (is (some? branch-param))
+        (is (= :text (:type branch-param))
+            "type should default to :text when not specified in YAML"))))
+
+  (testing "validation catches stage name '?' substitution for missing names"
+    ;; validate-yaml-workflow uses (or (:name stage) "?") for error messages
+    ;; This test validates the validation error path works
+    (let [yaml-str (str "stages:\n"
+                        "  - steps:\n"
+                        "      - name: compile\n"
+                        "        run: echo hi\n")
+          path (write-temp-yaml! yaml-str)
+          result (yaml/parse-yaml-workflow path)]
+      (is (some? (:error result))
+          "Missing stage name should produce validation error"))))

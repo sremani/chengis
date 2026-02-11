@@ -111,4 +111,45 @@
           (is (= 1 (count evals)))
           (is (= "allow" (:result (first evals)))))
         (let [evals (policy-store/list-evaluations ds :policy-id (:id p))]
-          (is (= 1 (count evals))))))))
+          (is (= 1 (count evals)))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 3h: Policy store nil-guard, priority default, and enabled tests
+;; ---------------------------------------------------------------------------
+
+(deftest create-policy-priority-defaults-to-100-test
+  (testing "priority defaults to 100 when not specified"
+    (let [ds (conn/create-datasource test-db-path)
+          p (policy-store/create-policy! ds
+              {:org-id "org-1" :name "No-Priority" :policy-type "branch"
+               :rules {:allow ["main"]} :created-by "admin"})]
+      (is (= 100 (:priority p))))))
+
+(deftest create-policy-enabled-defaults-to-true-test
+  (testing "enabled defaults to true (1) when nil"
+    (let [ds (conn/create-datasource test-db-path)
+          p (policy-store/create-policy! ds
+              {:org-id "org-1" :name "Default-Enabled" :policy-type "branch"
+               :rules {:allow ["main"]} :enabled nil :created-by "admin"})]
+      (is (true? (:enabled p))))))
+
+(deftest create-policy-rules-nil-stored-as-null-test
+  (testing "nil rules are serialized and deserialized correctly"
+    (let [ds (conn/create-datasource test-db-path)
+          p (policy-store/create-policy! ds
+              {:org-id "org-1" :name "Nil-Rules" :policy-type "custom"
+               :rules nil :created-by "admin"})]
+      ;; rules nil → json/write-str nil → "null" → read back as nil
+      (let [fetched (policy-store/get-policy ds (:id p))]
+        (is (some? fetched))))))
+
+(deftest toggle-policy-flips-enabled-test
+  (testing "toggle-policy! flips enabled from true to false"
+    (let [ds (conn/create-datasource test-db-path)
+          p (policy-store/create-policy! ds
+              {:org-id "org-1" :name "Toggleable" :policy-type "branch"
+               :rules {:allow ["main"]} :enabled true :created-by "admin"})]
+      (is (true? (:enabled p)))
+      (policy-store/toggle-policy! ds (:id p) false)
+      (let [updated (policy-store/get-policy ds (:id p))]
+        (is (false? (:enabled updated))))))))

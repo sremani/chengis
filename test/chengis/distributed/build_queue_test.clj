@@ -247,3 +247,31 @@
           "Each item should be dequeued exactly once")
       (is (= n (count (set @results)))
           "No duplicate build-ids should appear"))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2c: Boundary tests for retry logic (< retry-count max-retries)
+;; ---------------------------------------------------------------------------
+
+(deftest retry-boundary-at-max-retries-test
+  (testing "item at max-retries goes to dead-letter (< not <=)"
+    (let [ds *ds*]
+      (bq/enqueue! ds "retry-boundary" "job-1"
+        {:pipeline {:stages []} :build-id "retry-boundary"} nil)
+      ;; Fail it max-retries times (default max-retries=3)
+      ;; After 3 calls to record-failure!, retry-count will be 3 (= max)
+      ;; so (< 3 3) is false → dead-letter
+      (let [item (bq/get-queue-item-by-build-id ds "retry-boundary")]
+        (bq/mark-failed! ds (:id item) "fail-1")
+        (bq/mark-failed! ds (:id item) "fail-2")
+        (let [result (bq/mark-failed! ds (:id item) "fail-3")]
+          (is (= :dead-letter result)
+              "Third failure should move to dead-letter")))))
+
+  (testing "item below max-retries is retried (< retry-count max-retries)"
+    (let [ds *ds*]
+      (bq/enqueue! ds "retry-ok" "job-1"
+        {:pipeline {:stages []} :build-id "retry-ok"} nil)
+      (let [item (bq/get-queue-item-by-build-id ds "retry-ok")
+            result (bq/mark-failed! ds (:id item) "fail-1")]
+        (is (= :retrying result)
+            "First failure should retry, not dead-letter")))))
