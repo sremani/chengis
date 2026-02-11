@@ -2,7 +2,94 @@
 
 All notable changes to Chengis are documented in this file.
 
-## [Unreleased] — Phase 9: Developer Experience
+## [Unreleased] — Phase 10: Scale & Performance
+
+### Feature 10a: Build Log Streaming Optimization
+
+- **Chunked log storage** — Splits large build logs into manageable chunks (default 1000 lines) stored in `build_log_chunks` table
+- **Streaming process execution** — `execute-command-streaming` with ProcessBuilder, parallel stdout/stderr capture via futures
+- **Line-by-line callbacks** — `on-line` callback for real-time SSE streaming, `on-chunk` callback for batch persistence
+- **Secret masking** — Automatic masking of sensitive values in streaming output
+- **htmx infinite scroll** — Chunked log viewer with `hx-trigger="revealed"` for lazy chunk loading
+- **New source**: `src/chengis/db/log_chunk_store.clj`, `src/chengis/engine/streaming_process.clj`, `src/chengis/web/views/log_stream.clj`
+- **Migration 059**: `build_log_chunks` table with indexes
+
+### Feature 10b: API Pagination (Cursor-Based)
+
+- **Cursor-based pagination** — Base64-encoded `"timestamp|id"` cursors for deterministic, gap-free pagination
+- **Shared pagination module** — `pagination.clj` with `encode-cursor`, `decode-cursor`, `apply-cursor-where`, `paginated-response`
+- **Build store pagination** — `list-builds` accepts `:cursor`, `:limit`, `:cursor-mode` kwargs; backward compatible (returns vector without cursor)
+- **Job store pagination** — `list-jobs` with cursor support
+- **Audit store pagination** — `query-audits` with cursor support alongside existing offset
+- **Paginated response envelope** — `{:items [...] :has-more bool :next-cursor str}`
+- **New source**: `src/chengis/db/pagination.clj`
+- **Migration 060**: Cursor pagination indexes on `builds`, `audit_logs`, `jobs`
+
+### Feature 10c: Database Partitioning
+
+- **Monthly range partitions** — PostgreSQL-only partitioning for `builds`, `build_events`, `audit_logs`
+- **Partition metadata tracking** — `partition_metadata` table tracks partition state across DB types
+- **Maintenance cycle** — Automated creation of future partitions and cleanup of expired ones
+- **Graceful degradation** — SQLite stores metadata only; actual partitioning requires PostgreSQL
+- **New source**: `src/chengis/db/partitioning.clj`
+- **Migration 061**: `partition_metadata` tracking table
+
+### Feature 10d: Read Replicas
+
+- **Query routing** — `RoutedDatasource` record wrapping primary and optional replica datasources
+- **Opt-in reads** — `read-ds` returns replica when available, primary otherwise (zero behavior change for single-DB)
+- **Write safety** — `write-ds` always returns primary datasource
+- **Passthrough** — Non-routed datasources pass through unchanged
+- **New source**: `src/chengis/db/query_router.clj`
+
+### Feature 10e: Agent Connection Pooling
+
+- **Per-agent pools** — Connection state atom tracking URL, health, and failure counts per agent
+- **HTTP keep-alive** — `Connection: keep-alive` and `Keep-Alive: timeout=N` headers for TCP reuse
+- **Health tracking** — Consecutive failure counting with configurable threshold
+- **Async requests** — Promise-based `post!` and `get!` with http-kit callback pattern
+- **Pool lifecycle** — `close-pool!` on agent deregistration, `close-all-pools!` on shutdown
+- **New source**: `src/chengis/distributed/agent_http.clj`
+
+### Feature 10f: Event Bus Backpressure
+
+- **Critical event classification** — Build lifecycle events (started/completed/cancelled, stage/step) MUST NOT be silently dropped
+- **Adaptive publish** — Critical events use `async/alt!!` with configurable timeout; non-critical events use `async/offer!`
+- **Queue depth sampling** — Background thread periodically samples channel buffer depth for monitoring
+- **Integration** — `events.clj` uses backpressure-aware publish when feature flag enabled
+- **SSE sliding buffer** — Subscriber channels use `sliding-buffer 512` (drop oldest for slow clients)
+- **New source**: `src/chengis/engine/event_backpressure.clj`
+
+### Feature 10g: Multi-Region Support
+
+- **Region-aware scoring** — `locality-bonus` adds configurable weight (default 0.3) for same-region agents
+- **Score capping** — `region-aware-score` capped at 1.5 to prevent excessive locality bias
+- **Agent registration** — Agents declare region on registration; stored in `agents.region` column
+- **New source**: `src/chengis/distributed/region.clj`
+- **Migration 062**: `agents.region` column
+
+### Infrastructure
+
+- **7 new feature flags** (35 total): `chunked-log-storage`, `cursor-pagination`, `db-partitioning`, `read-replicas`, `agent-connection-pooling`, `event-bus-backpressure`, `multi-region`
+- **~25 new environment variables** for all Phase 10 features
+- **4 new migrations** (059-062), 62 total migration versions
+- **9 new source files**, 9 new test files
+- **1,257 tests, 4,085 assertions — all passing**
+
+### Code Review
+
+5 bugs fixed across 4 files (1 high, 2 medium, 2 low):
+
+- **[HIGH] agent_http.clj — Atom state corruption** — `record-success!`/`record-failure!` used `swap! update` with `when` guard that returned `nil` for missing keys (race with `close-pool!`), inserting nil into the atom map. Fixed with `contains?` guard on the whole map
+- **[MEDIUM] partitioning.clj — SQL injection in DDL** — Raw `format` string interpolation for table names in `CREATE TABLE`/`ALTER TABLE` allowed arbitrary input. Added `validate-table-name!` function that checks against hardcoded `partitionable-tables` whitelist
+- **[MEDIUM] partitioning.clj — Invalid HoneySQL CASE** — `[:count [:case :status [:inline "active"] 1]]` was invalid HoneySQL syntax. Fixed with `[:sum [:case [:= :status "active"] [:inline 1] :else [:inline 0]]]`
+- **[MEDIUM] region.clj — Clojure falsiness of 0.0** — `(or weight 0.3)` returns `0.3` when weight is `0.0` because `0.0` is falsy in Clojure. Fixed with `(if (some? weight) weight 0.3)` pattern
+- **[LOW] region.clj — Empty string region matching** — Empty strings `""` were treated as valid regions, causing `(same-region? "" "")` to return `true`. Added `str/blank?` guards
+- **event_backpressure.clj — Fragile core.async internals** — Replaced direct `ManyToManyChannel` type cast with reflection-based buffer access wrapped in `try/catch` for graceful degradation
+
+---
+
+## Phase 9: Developer Experience
 
 ### Feature 9a: Pipeline Linter
 

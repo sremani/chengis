@@ -2,7 +2,8 @@
   (:require [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [honey.sql :as sql]
-            [chengis.util :as util]))
+            [chengis.util :as util]
+            [chengis.db.pagination :as pagination]))
 
 (defn- normalize-build
   "Normalize a build row: deserialize parameters, convert status to keyword."
@@ -227,30 +228,43 @@
 
 (defn list-builds
   "List builds, optionally filtered by job ID and/or org-id.
-   Accepts either a job-id string (backward compat) or an options map
-   with keys :job-id and :org-id."
+   Accepts either a job-id string (backward compat) or an options map.
+   Options: :job-id, :org-id, :cursor, :limit, :cursor-mode
+   When :cursor-mode is true, returns {:items [...] :has-more bool :next-cursor str}
+   Otherwise returns a plain vector (backward compat)."
   ([ds]
    (list-builds ds {}))
   ([ds job-id-or-opts]
    (let [opts (if (map? job-id-or-opts)
                 job-id-or-opts
                 {:job-id job-id-or-opts})
-         {:keys [job-id org-id]} opts
+         {:keys [job-id org-id cursor limit cursor-mode]} opts
+         limit (or limit 50)
+         cursor-data (when cursor (pagination/decode-cursor cursor))
          conditions (cond-> []
                       job-id (conj [:= :job-id job-id])
                       org-id (conj [:= :org-id org-id]))
-         where (when (seq conditions)
-                 (if (= 1 (count conditions))
-                   (first conditions)
-                   (into [:and] conditions)))]
-     (mapv normalize-build
-       (jdbc/execute! ds
-         (sql/format (cond-> {:select :*
-                               :from :builds
-                               :order-by [[:created-at :desc]]
-                               :limit 50}
-                       where (assoc :where where)))
-         {:builder-fn rs/as-unqualified-kebab-maps})))))
+         base-where (when (seq conditions)
+                      (if (= 1 (count conditions))
+                        (first conditions)
+                        (into [:and] conditions)))
+         where (if cursor-data
+                 (pagination/apply-cursor-where base-where cursor-data :created-at :id :desc)
+                 base-where)
+         ;; Fetch limit+1 to detect has-more
+         fetch-limit (if cursor-mode (inc limit) limit)
+         rows (mapv normalize-build
+                (jdbc/execute! ds
+                  (sql/format (cond-> {:select :*
+                                       :from :builds
+                                       :order-by [[:created-at :desc] [:id :desc]]
+                                       :limit fetch-limit}
+                                where (assoc :where where)))
+                  {:builder-fn rs/as-unqualified-kebab-maps}))]
+     (if cursor-mode
+       (pagination/paginated-response rows limit :id :created-at)
+       ;; Backward compat: return plain vector, truncated to limit
+       (vec (take limit rows))))))
 
 (defn get-build-stages
   "Get all stages for a build."

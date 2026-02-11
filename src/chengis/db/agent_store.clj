@@ -62,7 +62,7 @@
    system-info, last-heartbeat, current-builds, and org-id.
    Returns the agent map."
   [ds {:keys [id name url labels status max-builds system-info
-              last-heartbeat registered-at current-builds org-id]}]
+              last-heartbeat registered-at current-builds org-id region]}]
   (let [labels-json (labels->json labels)
         sysinfo-json (system-info->json system-info)
         status-str (clojure.core/name (or status :online))]
@@ -79,14 +79,15 @@
                    :last-heartbeat last-heartbeat
                    :registered-at registered-at
                    :current-builds (or current-builds 0)
-                   :org-id org-id}]
+                   :org-id org-id
+                   :region region}]
          :on-conflict [:id]
          :do-update-set [:name :url :labels :status :max-builds
-                         :system-info :last-heartbeat :current-builds :org-id]}))
+                         :system-info :last-heartbeat :current-builds :org-id :region]}))
     {:id id :name name :url url :labels labels :status (keyword status-str)
      :max-builds (or max-builds 2) :system-info system-info
      :last-heartbeat last-heartbeat :registered-at registered-at
-     :current-builds (or current-builds 0) :org-id org-id}))
+     :current-builds (or current-builds 0) :org-id org-id :region region}))
 
 (defn update-agent-heartbeat!
   "Update an agent's heartbeat timestamp and optional fields.

@@ -11,6 +11,7 @@
    Concurrency: All state mutations use swap! with pure functions to avoid
    check-then-act race conditions."
   (:require [chengis.util :as util]
+            [chengis.distributed.region :as region]
             [taoensso.timbre :as log])
   (:import [java.time Instant Duration]))
 
@@ -138,7 +139,7 @@
    When :org-id is nil (default), the agent is shared across all orgs.
    Persists to database (write-through) when ds-ref is set.
    Returns the agent record."
-  [{:keys [name url labels max-builds system-info org-id]}]
+  [{:keys [name url labels max-builds system-info org-id region]}]
   (let [agent-id (util/generate-id)
         now (str (now-instant))
         record (cond-> {:id agent-id
@@ -151,7 +152,8 @@
                         :system-info system-info
                         :registered-at now
                         :last-heartbeat now}
-                 org-id (assoc :org-id org-id))]
+                 org-id (assoc :org-id org-id)
+                 region (assoc :region region))]
     (log/info "Agent registered:" (:name record) "(" agent-id ")"
               (if org-id (str "org:" org-id) "shared"))
     ;; Write to DB first, then update atom
@@ -270,6 +272,9 @@
    Selection strategy: resource-aware scoring (if enabled) or least loaded."
   [required-labels & {:keys [org-id resources]}]
   (let [resource-aware? (get-in @config-ref [:feature-flags :resource-aware-scheduling])
+        multi-region? (get-in @config-ref [:feature-flags :multi-region])
+        master-region (get-in @config-ref [:distributed :region])
+        locality-weight (get-in @config-ref [:distributed :locality-weight] 0.3)
         candidates (->> (vals @agents)
                         (filter agent-available?)
                         ;; Filter by org context when provided
@@ -287,10 +292,32 @@
                                   (if (and resource-aware? resources)
                                     (meets-resource-requirements? agent resources)
                                     true))))]
-    (if resource-aware?
-      ;; Score-based selection
+    (cond
+      ;; Resource-aware + multi-region: combine both scores
+      (and resource-aware? multi-region?)
+      (first (sort-by (fn [a] (- (region/region-aware-score
+                                    (score-agent a)
+                                    master-region
+                                    (:region a)
+                                    locality-weight)))
+                       candidates))
+
+      ;; Resource-aware only
+      resource-aware?
       (first (sort-by (fn [a] (- (score-agent a))) candidates))
+
+      ;; Multi-region only: use locality as primary differentiator on top of load
+      multi-region?
+      (first (sort-by (fn [a] (- (region/region-aware-score
+                                    (- 1.0 (/ (double (:current-builds a 0))
+                                              (double (max 1 (:max-builds a 2)))))
+                                    master-region
+                                    (:region a)
+                                    locality-weight)))
+                       candidates))
+
       ;; Original: least-loaded selection
+      :else
       (first (sort-by :current-builds candidates)))))
 
 (defn increment-builds!

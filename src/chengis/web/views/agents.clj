@@ -147,6 +147,7 @@
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Scope"]
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "URL"]
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Labels"]
+          [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Region"]
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Builds"]
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Circuit"]
           [:th {:class "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase"} "Heartbeat"]]]
@@ -166,6 +167,8 @@
                (escape-html (str (:url agent)))]
               [:td {:class "px-6 py-4"}
                (label-badges (:labels agent))]
+              [:td {:class "px-6 py-4 whitespace-nowrap text-sm text-gray-500"}
+               (or (:region agent) "—")]
               [:td {:class "px-6 py-4 whitespace-nowrap"}
                (utilization-bar (:current-builds agent) (:max-builds agent))]
               [:td {:class "px-6 py-4 whitespace-nowrap"}

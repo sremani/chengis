@@ -258,19 +258,19 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 
 ---
 
-## Phase 10: Scale & Performance
+### Phase 10: Scale & Performance
 
-**Theme:** Handle large-scale deployments with thousands of builds per day.
-
-| Feature | Description | Priority |
-|---------|-------------|----------|
-| Build log streaming optimization | Chunked log storage with lazy loading for builds with 100k+ lines | High |
-| API pagination | Cursor-based pagination on all list endpoints for large datasets | High |
-| Database partitioning | Time-based partitioning of builds, events, and audit tables in PostgreSQL | Medium |
-| Read replicas | Query routing to PostgreSQL read replicas for dashboard/analytics | Medium |
-| Agent connection pooling | Persistent HTTP connections to agents to reduce dispatch latency | Medium |
-| Event bus backpressure | Adaptive backpressure on the core.async event channel under high load | Low |
-| Multi-region support | Agents spanning geographic regions with locality-aware dispatch | Low |
+- Build log streaming: Chunked log storage (1000-line chunks) in `build_log_chunks` table, streaming process execution with on-line/on-chunk callbacks, htmx infinite scroll, secret masking
+- Cursor-based API pagination: Base64-encoded `"timestamp|id"` cursors, `pagination.clj` shared module, applied to builds/jobs/audit stores with backward-compatible envelope `{:items :has-more :next-cursor}`
+- Database partitioning: Monthly range partitions for PostgreSQL on builds/events/audit tables, metadata tracking, automated maintenance cycle with future partition creation and expired partition cleanup
+- Read replicas: `RoutedDatasource` record with `read-ds`/`write-ds` routing, opt-in for dashboard/analytics queries, passthrough for single-DB setups
+- Agent connection pooling: Per-agent HTTP pool state with keep-alive headers, health tracking with configurable failure threshold, promise-based async requests
+- Event bus backpressure: Critical event classification (build lifecycle = must-deliver), adaptive publish with `alt!!` timeout for critical / `offer!` for non-critical, queue depth sampling, SSE sliding buffers
+- Multi-region support: Region-aware agent scoring with locality bonus (0.3 default), score capping at 1.5, agent region stored in DB
+- 7 new feature flags (35 total), ~25 new env vars, 4 new migrations (059-062)
+- 9 new source files, 9 new test files
+- Code review: 5 bugs fixed across 4 files (1 high, 2 medium, 2 low) — agent_http atom corruption, partitioning SQL injection guard and HoneySQL CASE fix, region scoring Clojure falsiness, empty string region matching
+- **1,257 tests, 4,085 assertions — all passing**
 
 ---
 
@@ -313,3 +313,4 @@ These items are under consideration but not yet scheduled:
 | Phase 7 | Supply Chain | SLSA provenance, SBOM, Container scanning, OPA, License scanning, Artifact signing, Regulatory dashboards | **928** | 48-50 |
 | Phase 8 | Enterprise Identity | SAML 2.0, LDAP/AD, Fine-grained RBAC, MFA/TOTP, Cross-org sharing, Cloud secret backends, Secret rotation | **1,067** | 51-58 |
 | Phase 9 | Developer Experience | Pipeline linter, DAG visualization, Log search, Responsive UI, Theme toggle, Build comparison | **1,187** | — |
+| Phase 10 | Scale & Performance | Chunked logs, Cursor pagination, Partitioning, Read replicas, Connection pooling, Backpressure, Multi-region | **1,257** | 59-62 |

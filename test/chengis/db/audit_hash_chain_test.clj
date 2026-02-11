@@ -26,7 +26,7 @@
         {:user-id "u1" :username "alice" :action "login"
          :resource-type "session" :resource-id "s1"})
       (let [rows (jdbc/execute! ds
-                   ["SELECT * FROM audit_logs ORDER BY timestamp ASC"]
+                   ["SELECT * FROM audit_logs ORDER BY seq_num ASC"]
                    {:builder-fn rs/as-unqualified-kebab-maps})
             first-row (first rows)]
         (is (= 1 (count rows)))
@@ -44,7 +44,7 @@
         {:user-id "u1" :username "alice" :action "logout"
          :resource-type "session" :resource-id "s1"})
       (let [rows (jdbc/execute! ds
-                   ["SELECT * FROM audit_logs ORDER BY timestamp ASC"]
+                   ["SELECT * FROM audit_logs ORDER BY seq_num ASC"]
                    {:builder-fn rs/as-unqualified-kebab-maps})
             [first-row second-row] rows]
         (is (= 2 (count rows)))
@@ -62,7 +62,7 @@
            :action (str "action-" i)
            :resource-type "test" :resource-id (str "r" i)}))
       (let [rows (jdbc/execute! ds
-                   ["SELECT * FROM audit_logs ORDER BY timestamp ASC"]
+                   ["SELECT * FROM audit_logs ORDER BY seq_num ASC"]
                    {:builder-fn rs/as-unqualified-kebab-maps})]
         (is (= 3 (count rows)))
         ;; Genesis entry

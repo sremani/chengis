@@ -2,7 +2,8 @@
   (:require [next.jdbc :as jdbc]
             [next.jdbc.result-set :as rs]
             [honey.sql :as sql]
-            [chengis.util :as util]))
+            [chengis.util :as util]
+            [chengis.db.pagination :as pagination]))
 
 (defn- row->job [row]
   (when row
@@ -58,15 +59,29 @@
       {:builder-fn rs/as-unqualified-kebab-maps})))
 
 (defn list-jobs
-  "List all jobs. When org-id is provided, only returns jobs in that org."
-  [ds & {:keys [org-id]}]
-  (mapv row->job
-    (jdbc/execute! ds
-      (sql/format (cond-> {:select :*
-                            :from :jobs
-                            :order-by [[:created-at :asc]]}
-                    org-id (assoc :where [:= :org-id org-id])))
-      {:builder-fn rs/as-unqualified-kebab-maps})))
+  "List all jobs. When org-id is provided, only returns jobs in that org.
+   Supports cursor-based pagination via :cursor, :limit, :cursor-mode kwargs.
+   When :cursor-mode is true, returns {:items [...] :has-more bool :next-cursor str}
+   Otherwise returns a plain vector (backward compat)."
+  [ds & {:keys [org-id cursor limit cursor-mode]}]
+  (let [limit (or limit 1000)
+        cursor-data (when cursor (pagination/decode-cursor cursor))
+        base-where (when org-id [:= :org-id org-id])
+        where (if cursor-data
+                (pagination/apply-cursor-where base-where cursor-data :created-at :id :asc)
+                base-where)
+        fetch-limit (if cursor-mode (inc limit) limit)
+        rows (mapv row->job
+               (jdbc/execute! ds
+                 (sql/format (cond-> {:select :*
+                                       :from :jobs
+                                       :order-by [[:created-at :asc] [:id :asc]]
+                                       :limit fetch-limit}
+                               where (assoc :where where)))
+                 {:builder-fn rs/as-unqualified-kebab-maps}))]
+    (if cursor-mode
+      (pagination/paginated-response rows limit :id :created-at)
+      rows)))
 
 (defn delete-job!
   "Delete a job by name. Returns true if a row was deleted.

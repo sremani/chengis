@@ -5,7 +5,8 @@
             [next.jdbc.result-set :as rs]
             [honey.sql :as sql]
             [clojure.string :as str]
-            [chengis.util :as util])
+            [chengis.util :as util]
+            [chengis.db.pagination :as pagination])
   (:import [java.security MessageDigest]))
 
 ;; ---------------------------------------------------------------------------
@@ -80,8 +81,10 @@
 
 (defn query-audits
   "Query audit logs with optional filters and pagination.
-   Options: :user-id, :action, :resource-type, :from-date, :to-date, :org-id, :limit, :offset"
-  [ds {:keys [user-id action resource-type from-date to-date org-id limit offset]
+   Options: :user-id, :action, :resource-type, :from-date, :to-date, :org-id, :limit, :offset
+   Cursor mode: when :cursor-mode is true, uses cursor-based pagination via :cursor key.
+   Returns {:items [...] :has-more bool :next-cursor str} in cursor mode."
+  [ds {:keys [user-id action resource-type from-date to-date org-id limit offset cursor cursor-mode]
        :or {limit 50 offset 0}}]
   (let [conditions (cond-> [:and]
                      user-id       (conj [:= :user-id user-id])
@@ -90,18 +93,25 @@
                      org-id        (conj [:= :org-id org-id])
                      from-date     (conj [:>= :timestamp from-date])
                      to-date       (conj [:<= :timestamp to-date]))
-        where (if (> (count conditions) 1) conditions nil)
+        base-where (if (> (count conditions) 1) conditions nil)
+        cursor-data (when (and cursor-mode cursor)
+                      (pagination/decode-cursor cursor))
+        where (if cursor-data
+                (pagination/apply-cursor-where base-where cursor-data :timestamp :id :desc)
+                base-where)
+        fetch-limit (if cursor-mode (inc limit) limit)
         query (cond-> {:select :*
                        :from :audit-logs
-                       :order-by [[:timestamp :desc]]
-                       :limit limit
-                       :offset offset}
-                where (assoc :where where))]
-    (mapv (fn [row]
-            (update row :detail util/deserialize-edn))
-          (jdbc/execute! ds
-            (sql/format query)
-            {:builder-fn rs/as-unqualified-kebab-maps}))))
+                       :order-by [[:timestamp :desc] [:id :desc]]
+                       :limit fetch-limit}
+                (and (not cursor-mode) (pos? offset)) (assoc :offset offset)
+                where (assoc :where where))
+        rows (mapv (fn [row] (update row :detail util/deserialize-edn))
+               (jdbc/execute! ds (sql/format query)
+                 {:builder-fn rs/as-unqualified-kebab-maps}))]
+    (if cursor-mode
+      (pagination/paginated-response rows limit :id :timestamp)
+      rows)))
 
 (defn query-audits-asc
   "Query audit logs in ascending timestamp order (for hash chain verification).

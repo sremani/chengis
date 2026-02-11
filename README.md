@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**1,187 tests | 3,876 assertions | 0 failures**
+**1,257 tests | 4,085 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -176,7 +176,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Policy engine** &mdash; Org-scoped build policies with priority ordering and short-circuit evaluation
 - **Artifact checksums** &mdash; SHA-256 integrity verification on collected artifacts
 - **Compliance reports** &mdash; Policy evaluation results tracked per build with admin dashboard
-- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (41 flags for safe rollout)
+- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (35 flags for safe rollout)
 - **Plugin trust** &mdash; External plugin allowlist with admin management UI
 - **Docker image policies** &mdash; Allow/deny rules for Docker registries and images per organization
 
@@ -190,6 +190,16 @@ Build #1 — SUCCESS (8.3 sec)
 - **Artifact signing** &mdash; cosign/GPG signatures for build artifacts and attestations with verification API
 - **Regulatory dashboards** &mdash; SOC 2 / ISO 27001 readiness scoring based on audit trail completeness and control categories
 - **External tool integration** &mdash; Trivy, Grype, Syft, cdxgen, cosign, GPG, and OPA integrate via shell with graceful degradation
+
+### Scale & Performance
+
+- **Build log streaming** &mdash; Chunked log storage (configurable chunk size, default 1000 lines) with streaming process execution and htmx infinite scroll
+- **Cursor-based API pagination** &mdash; Base64-encoded timestamp|id cursors for gap-free pagination on builds, jobs, and audit logs
+- **Database partitioning** &mdash; PostgreSQL monthly range partitions for builds, build_events, and audit_logs with automated maintenance
+- **Read replicas** &mdash; Query routing via `RoutedDatasource` for opt-in read splitting on dashboard/analytics queries
+- **Agent connection pooling** &mdash; Per-agent HTTP pool with keep-alive headers, health tracking, and configurable failure threshold
+- **Event bus backpressure** &mdash; Critical event classification with adaptive publish (timeout-based for critical, offer for non-critical)
+- **Multi-region support** &mdash; Region-aware agent scoring with configurable locality bonus for same-region dispatch preference
 
 ### Build Reliability
 
@@ -255,7 +265,7 @@ Build #1 — SUCCESS (8.3 sec)
 ### Persistence
 
 - **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
-- **58 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
+- **62 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -747,7 +757,15 @@ Chengis uses sensible defaults. Override via `resources/config.edn` or environme
                  :mfa-totp false
                  :cross-org-sharing false
                  :cloud-secret-backends false
-                 :secret-rotation false}
+                 :secret-rotation false
+                 ;; Phase 10: Scale & Performance
+                 :chunked-log-storage false
+                 :cursor-pagination false
+                 :db-partitioning false
+                 :read-replicas false
+                 :agent-connection-pooling false
+                 :event-bus-backpressure false
+                 :multi-region false}
 
  ;; Parallel stage execution (DAG mode)
  :parallel-stages {:max-concurrent 4}
@@ -904,6 +922,28 @@ All configuration can be overridden with `CHENGIS_*` environment variables. Nest
 | `CHENGIS_AZURE_KV_CLIENT_ID` | `[:azure-kv :client-id]` | — |
 | `CHENGIS_AZURE_KV_CLIENT_SECRET` | `[:azure-kv :client-secret]` | — |
 | `CHENGIS_FEATURE_SECRET_ROTATION` | `[:feature-flags :secret-rotation]` | `false` |
+| `CHENGIS_FEATURE_CHUNKED_LOG_STORAGE` | `[:feature-flags :chunked-log-storage]` | `false` |
+| `CHENGIS_LOG_STREAMING_CHUNK_SIZE` | `[:log-streaming :chunk-size]` | `1000` |
+| `CHENGIS_LOG_STREAMING_FLUSH_INTERVAL_MS` | `[:log-streaming :flush-interval-ms]` | `500` |
+| `CHENGIS_FEATURE_CURSOR_PAGINATION` | `[:feature-flags :cursor-pagination]` | `false` |
+| `CHENGIS_PAGINATION_DEFAULT_PAGE_SIZE` | `[:pagination :default-page-size]` | `50` |
+| `CHENGIS_PAGINATION_MAX_PAGE_SIZE` | `[:pagination :max-page-size]` | `200` |
+| `CHENGIS_FEATURE_DB_PARTITIONING` | `[:feature-flags :db-partitioning]` | `false` |
+| `CHENGIS_PARTITIONING_RETENTION_MONTHS` | `[:partitioning :retention-months]` | `12` |
+| `CHENGIS_PARTITIONING_FUTURE_PARTITIONS` | `[:partitioning :future-partitions]` | `3` |
+| `CHENGIS_FEATURE_READ_REPLICAS` | `[:feature-flags :read-replicas]` | `false` |
+| `CHENGIS_DATABASE_REPLICA_HOST` | `[:database :replica :host]` | — |
+| `CHENGIS_DATABASE_REPLICA_PORT` | `[:database :replica :port]` | — |
+| `CHENGIS_DATABASE_REPLICA_POOL_SIZE` | `[:database :replica :pool-size]` | — |
+| `CHENGIS_FEATURE_AGENT_CONNECTION_POOLING` | `[:feature-flags :agent-connection-pooling]` | `false` |
+| `CHENGIS_AGENT_POOL_CONNECTIONS_PER_AGENT` | `[:distributed :connection-pool :connections-per-agent]` | `4` |
+| `CHENGIS_AGENT_POOL_KEEPALIVE_MS` | `[:distributed :connection-pool :keepalive-ms]` | `60000` |
+| `CHENGIS_FEATURE_EVENT_BUS_BACKPRESSURE` | `[:feature-flags :event-bus-backpressure]` | `false` |
+| `CHENGIS_EVENT_BUS_BUFFER_SIZE` | `[:event-bus :buffer-size]` | `8192` |
+| `CHENGIS_EVENT_BUS_CRITICAL_TIMEOUT_MS` | `[:event-bus :critical-timeout-ms]` | `5000` |
+| `CHENGIS_FEATURE_MULTI_REGION` | `[:feature-flags :multi-region]` | `false` |
+| `CHENGIS_DISTRIBUTED_REGION` | `[:distributed :region]` | — |
+| `CHENGIS_REGION_LOCALITY_WEIGHT` | `[:distributed :region-locality-weight]` | `0.3` |
 
 Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings become integers.
 
@@ -1034,7 +1074,7 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # Database persistence layer (41 files)
+    db/                     # Database persistence layer (45 files)
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
@@ -1075,8 +1115,12 @@ chengis/
       shared_resource_store.clj # Cross-org shared resource grants
       rotation_store.clj    # Secret rotation policies and version history
       log_search_store.clj  # Build log full-text search
+      pagination.clj        # Cursor-based pagination (encode/decode/apply)
+      log_chunk_store.clj   # Chunked build log storage
+      partitioning.clj      # PostgreSQL monthly range partitioning
+      query_router.clj      # Read replica query routing (RoutedDatasource)
       backup.clj            # Database backup/restore
-    distributed/            # Distributed build coordination (9 files)
+    distributed/            # Distributed build coordination (11 files)
       agent_registry.clj    # Write-through agent registry (atom + DB)
       dispatcher.clj        # Build dispatch (local vs remote)
       master_api.clj        # Master API handlers
@@ -1086,6 +1130,8 @@ chengis/
       orphan_monitor.clj    # Orphaned build detection
       artifact_transfer.clj # Agent-to-master artifact upload
       leader_election.clj   # PostgreSQL advisory lock leader election
+      agent_http.clj        # Per-agent HTTP connection pooling
+      region.clj            # Multi-region agent scoring with locality bonus
     dsl/                    # Pipeline DSL and formats (6 files)
       core.clj              # defpipeline macro + DSL helpers
       chengisfile.clj       # EDN Pipeline as Code parser
@@ -1093,7 +1139,7 @@ chengis/
       yaml.clj              # YAML workflow parser
       expressions.clj       # ${{ }} expression resolver
       templates.clj         # Pipeline template DSL
-    engine/                 # Build execution engine (44 files)
+    engine/                 # Build execution engine (46 files)
       executor.clj          # Core pipeline runner (sequential + DAG modes)
       build_runner.clj      # Build lifecycle + thread pool + deduplication
       dag.clj               # DAG utilities (topological sort, ready-stages)
@@ -1138,6 +1184,8 @@ chengis/
       secret_rotation.clj   # Policy-driven secret rotation with schedules
       linter.clj            # Pipeline linter (structural, semantic, expression checks)
       build_compare.clj     # Build comparison engine (stage/step/artifact diff)
+      streaming_process.clj # Streaming process execution with line callbacks
+      event_backpressure.clj # Adaptive event bus backpressure
     model/                  # Data specs (1 file)
       spec.clj              # Clojure specs for validation
     plugin/                 # Plugin system (20 files)
@@ -1163,7 +1211,7 @@ chengis/
         aws_secrets.clj     # AWS Secrets Manager backend
         gcp_secrets.clj     # Google Cloud Secret Manager backend
         azure_keyvault.clj  # Azure Key Vault backend
-    web/                    # HTTP server and UI (49 files)
+    web/                    # HTTP server and UI (50 files)
       server.clj            # http-kit server startup + HA wiring
       routes.clj            # Reitit routes + middleware
       handlers.clj          # Request handlers
@@ -1220,13 +1268,14 @@ chengis/
         log_search.clj      # Build log search page with highlighting
         build_compare.clj   # Build comparison side-by-side diff views
         linter.clj          # Pipeline linter web UI with htmx results
+        log_stream.clj      # Chunked log viewer with htmx infinite scroll
     config.clj              # Configuration loading + env var overrides
     logging.clj             # Structured logging setup
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (~138 files)
-  resources/migrations/     # Database migrations (58 versions × 2 drivers)
+  test/chengis/             # Test suite (~147 files)
+  resources/migrations/     # Database migrations (62 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
@@ -1238,7 +1287,7 @@ chengis/
   docker-compose.ha.yml     # HA override: PostgreSQL + 2 masters for multi-master testing
 ```
 
-**Codebase:** ~33,000 lines source + ~22,000 lines tests across 330 files
+**Codebase:** ~35,000 lines source + ~24,000 lines tests across 350 files
 
 ## Technology Stack
 
@@ -1249,7 +1298,7 @@ chengis/
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
 | Connection pool | HikariCP | PostgreSQL connection pooling |
-| Migrations | Migratus | Schema evolution (58 versions × 2 drivers) |
+| Migrations | Migratus | Schema evolution (62 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -1314,7 +1363,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **1,067 tests, 3,564 assertions, 0 failures**
+Current test suite: **1,257 tests, 4,085 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
@@ -1387,6 +1436,18 @@ Test coverage spans:
 - Cross-org shared resources (agent label and template sharing, grant/revoke)
 - Cloud secret backends (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault)
 - Secret rotation (policy-driven schedules, version history, rotation notifications)
+- Cursor-based API pagination (encode/decode, WHERE clause generation, paginated stores)
+- Build log chunk storage (save/retrieve/delete chunks, pagination)
+- Event bus backpressure (critical event classification, adaptive publish, queue depth)
+- Multi-region agent scoring (locality bonus, score capping, blank region handling)
+- Read replica query routing (RoutedDatasource, read-ds/write-ds passthrough)
+- Agent connection pooling (per-agent pools, health tracking, pool lifecycle)
+- Database partitioning (monthly partitions, metadata tracking, maintenance cycle)
+- Streaming process execution (line-by-line callbacks, chunk accumulation)
+- Pipeline linter (structural, semantic, expression validation across 3 formats)
+- Pipeline DAG visualization (layout algorithm, SVG rendering)
+- Build log search (full-text search, line highlighting, filters)
+- Build comparison (stage/step/timing/artifact diff)
 
 ## Building an Uberjar
 

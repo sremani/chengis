@@ -70,7 +70,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |            dependencies, supply_chain, regulatory, signatures, |
 |            mfa, permissions, shared_resources,                 |
 |            secret_rotation, pipeline_viz, log_search,          |
-|            build_compare, linter)                              |
+|            build_compare, linter, log_stream)                  |
 |   distributed/master_api.clj                                  |
 +---------------------------------------------------------------+
 |                    Auth & Security Layer                       |
@@ -94,6 +94,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   opa.clj   license_scanner.clj   signing.clj                |
 |   regulatory.clj   secret_rotation.clj                        |
 |   linter.clj   build_compare.clj                              |
+|   streaming_process.clj   event_backpressure.clj             |
 +---------------------------------------------------------------+
 |                    Supply Chain Security Layer                 |
 |   engine/provenance.clj   engine/sbom.clj                    |
@@ -140,6 +141,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   distributed/orphan_monitor.clj                              |
 |   distributed/artifact_transfer.clj                           |
 |   distributed/leader_election.clj                             |
+|   distributed/agent_http.clj  (connection pooling)            |
+|   distributed/region.clj  (multi-region scoring)              |
 +---------------------------------------------------------------+
 |                        Data Layer                             |
 |   db/connection.clj   db/migrate.clj                          |
@@ -164,6 +167,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/scan_store.clj  db/opa_store.clj                        |
 |   db/license_store.clj  db/signature_store.clj               |
 |   db/regulatory_store.clj                                     |
+|   db/pagination.clj  db/log_chunk_store.clj                  |
+|   db/partitioning.clj  db/query_router.clj                   |
 |   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |
@@ -878,7 +883,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 58 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 62 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -1053,6 +1058,23 @@ build_logs        -- Structured log entries
 --       encrypted_value, created_at, created_by, active)
 ```
 
+### Scale & Performance Tables (Migrations 059-062)
+
+```sql
+-- 059: Chunked build logs (build_log_chunks table — build_id, step_id,
+--       chunk_index, source (stdout/stderr), line_start, line_count, content;
+--       UNIQUE(step_id, source, chunk_index);
+--       indexes: idx_blc_build_step, idx_blc_step_source)
+-- 060: Cursor pagination indexes
+--       idx_builds_cursor ON builds(created_at DESC, id DESC)
+--       idx_audit_cursor ON audit_logs(timestamp DESC, id DESC)
+--       idx_jobs_cursor ON jobs(created_at ASC, id ASC)
+-- 061: Partition metadata (partition_metadata table — table_name, partition_name,
+--       range_start, range_end, status; UNIQUE(table_name, partition_name);
+--       tracks PostgreSQL monthly range partitions)
+-- 062: Multi-region agents (region column on agents table)
+```
+
 ## Build Performance & Caching
 
 ### DAG-Based Parallel Stage Execution
@@ -1223,6 +1245,18 @@ Each supply chain feature is independently gated:
 | `:cross-org-sharing` | `shared_resource_store.clj` | None |
 | `:cloud-secret-backends` | `aws_secrets.clj`, `gcp_secrets.clj`, `azure_keyvault.clj` | AWS/GCP/Azure SDKs |
 | `:secret-rotation` | `secret_rotation.clj`, `rotation_store.clj` | None |
+
+### Scale & Performance Feature Flags
+
+| Flag | Component | External Dependency |
+|------|-----------|---------------------|
+| `:chunked-log-storage` | `log_chunk_store.clj`, `streaming_process.clj` | None |
+| `:cursor-pagination` | `pagination.clj` | None |
+| `:db-partitioning` | `partitioning.clj` | PostgreSQL (for actual partitioning) |
+| `:read-replicas` | `query_router.clj` | PostgreSQL replica |
+| `:agent-connection-pooling` | `agent_http.clj` | None |
+| `:event-bus-backpressure` | `event_backpressure.clj` | None |
+| `:multi-region` | `region.clj` | None |
 
 ## Enterprise Identity & Access
 

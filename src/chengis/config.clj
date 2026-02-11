@@ -238,7 +238,23 @@
                    :mfa-totp false
                    :cross-org-sharing false
                    :cloud-secret-backends false
-                   :secret-rotation false}
+                   :secret-rotation false
+                   ;; Phase 10: Scale & Performance
+                   :chunked-log-storage false
+                   :cursor-pagination false
+                   :db-partitioning false
+                   :read-replicas false
+                   :agent-connection-pooling false
+                   :event-bus-backpressure false
+                   :multi-region false}
+   :pagination {:default-page-size 50
+                :max-page-size 200}
+   :log-streaming {:chunk-size 1000
+                   :flush-interval-ms 500}
+   :partitioning {:retention-months 12
+                  :future-partitions 3}
+   :event-bus {:buffer-size 8192
+               :critical-timeout-ms 5000}
    :policies {:evaluation-timeout-ms 5000}
    :log {:level :info
          :format :text
@@ -394,7 +410,33 @@
    "CHENGIS_LDAP_USER_BASE_DN"                    [:ldap :user-base-dn]
    "CHENGIS_LDAP_USER_FILTER"                     [:ldap :user-filter]
    "CHENGIS_LDAP_DEFAULT_ROLE"                    [:ldap :default-role]
-   "CHENGIS_SECRET_ROTATION_INTERVAL_HOURS"       [:secret-rotation :check-interval-hours]})
+   "CHENGIS_SECRET_ROTATION_INTERVAL_HOURS"       [:secret-rotation :check-interval-hours]
+   ;; Phase 10: Scale & Performance
+   "CHENGIS_FEATURE_CHUNKED_LOG_STORAGE"        [:feature-flags :chunked-log-storage]
+   "CHENGIS_FEATURE_CURSOR_PAGINATION"           [:feature-flags :cursor-pagination]
+   "CHENGIS_FEATURE_DB_PARTITIONING"             [:feature-flags :db-partitioning]
+   "CHENGIS_FEATURE_READ_REPLICAS"               [:feature-flags :read-replicas]
+   "CHENGIS_FEATURE_AGENT_CONNECTION_POOLING"    [:feature-flags :agent-connection-pooling]
+   "CHENGIS_FEATURE_EVENT_BUS_BACKPRESSURE"      [:feature-flags :event-bus-backpressure]
+   "CHENGIS_FEATURE_MULTI_REGION"                [:feature-flags :multi-region]
+   "CHENGIS_PAGINATION_DEFAULT_PAGE_SIZE"        [:pagination :default-page-size]
+   "CHENGIS_PAGINATION_MAX_PAGE_SIZE"            [:pagination :max-page-size]
+   "CHENGIS_LOG_STREAMING_CHUNK_SIZE"            [:log-streaming :chunk-size]
+   "CHENGIS_LOG_STREAMING_FLUSH_INTERVAL_MS"     [:log-streaming :flush-interval-ms]
+   "CHENGIS_PARTITIONING_RETENTION_MONTHS"       [:partitioning :retention-months]
+   "CHENGIS_PARTITIONING_FUTURE_PARTITIONS"      [:partitioning :future-partitions]
+   "CHENGIS_DATABASE_REPLICA_HOST"               [:database :replica :host]
+   "CHENGIS_DATABASE_REPLICA_PORT"               [:database :replica :port]
+   "CHENGIS_DATABASE_REPLICA_DBNAME"             [:database :replica :dbname]
+   "CHENGIS_DATABASE_REPLICA_USER"               [:database :replica :user]
+   "CHENGIS_DATABASE_REPLICA_PASSWORD"           [:database :replica :password]
+   "CHENGIS_DATABASE_REPLICA_POOL_SIZE"          [:database :replica :pool :maximum-pool-size]
+   "CHENGIS_AGENT_POOL_CONNECTIONS_PER_AGENT"    [:distributed :connection-pool :max-connections-per-agent]
+   "CHENGIS_AGENT_POOL_KEEPALIVE_MS"             [:distributed :connection-pool :keepalive-ms]
+   "CHENGIS_EVENT_BUS_BUFFER_SIZE"               [:event-bus :buffer-size]
+   "CHENGIS_EVENT_BUS_CRITICAL_TIMEOUT_MS"       [:event-bus :critical-timeout-ms]
+   "CHENGIS_DISTRIBUTED_REGION"                  [:distributed :region]
+   "CHENGIS_REGION_LOCALITY_WEIGHT"              [:distributed :region-locality-weight]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.
