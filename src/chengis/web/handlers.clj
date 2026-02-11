@@ -2960,11 +2960,12 @@
     (let [ds (:db system)
           org-id (auth/current-org-id req)
           releases (release-store/list-releases ds :org-id org-id)
-          builds (build-store/list-builds ds {:org-id org-id :status "success" :limit 20})]
+          all-builds (build-store/list-builds ds {:org-id org-id :limit 50})
+          builds (filterv #(= :success (:status %)) all-builds)]
       (html-response
         (v-releases/render
           {:releases releases
-           :builds builds
+           :builds (take 20 builds)
            :csrf-token (csrf-token req)
            :user (auth/current-user req)})))))
 
@@ -3024,13 +3025,14 @@
                             [(:id env)
                              (promotion-store/get-current-artifact ds (:id env))]))
           promotions (promotion-store/list-promotions ds :org-id org-id)
-          builds (build-store/list-builds ds {:org-id org-id :status "success" :limit 20})]
+          all-builds (build-store/list-builds ds {:org-id org-id :limit 50})
+          builds (filterv #(= :success (:status %)) all-builds)]
       (html-response
         (v-promotions/render
           {:environments environments
            :env-artifacts env-artifacts
            :promotions promotions
-           :builds builds
+           :builds (take 20 builds)
            :csrf-token (csrf-token req)
            :user (auth/current-user req)})))))
 

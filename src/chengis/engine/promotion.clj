@@ -17,8 +17,8 @@
       (nil? build)
       {:eligible false :reason "Build not found"}
 
-      (not= "success" (name (or (:status build) "")))
-      {:eligible false :reason (str "Build status is " (name (or (:status build) "unknown"))
+      (not= :success (:status build))
+      {:eligible false :reason (str "Build status is " (name (or (:status build) :unknown))
                                     ", only successful builds can be promoted")}
 
       ;; Supply chain checks (soft dependency on Phase 7)

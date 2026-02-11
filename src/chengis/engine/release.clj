@@ -14,8 +14,8 @@
       (nil? build)
       {:success false :reason "Build not found"}
 
-      (not= "success" (name (or (:status build) "")))
-      {:success false :reason (str "Build status is " (name (or (:status build) "unknown"))
+      (not= :success (:status build))
+      {:success false :reason (str "Build status is " (name (or (:status build) :unknown))
                                    ", only successful builds can be released")}
 
       :else

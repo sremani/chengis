@@ -4,7 +4,7 @@
   (:require [chengis.db.health-check-store :as hc-store]
             [clojure.data.json :as json]
             [taoensso.timbre :as log])
-  (:import [java.net HttpURLConnection URL]))
+  (:import [java.net HttpURLConnection URI]))
 
 (defn- execute-http-check
   "Execute an HTTP health check. Returns result map."
@@ -14,13 +14,15 @@
         timeout-ms (or (:timeout-ms config) 5000)
         start-ms (System/currentTimeMillis)]
     (try
-      (let [url (URL. url-str)
+      (let [url (.toURL (URI. url-str))
             conn (doto ^HttpURLConnection (.openConnection url)
                    (.setRequestMethod (or (:method config) "GET"))
                    (.setConnectTimeout timeout-ms)
                    (.setReadTimeout timeout-ms))
             status (.getResponseCode conn)
             duration-ms (- (System/currentTimeMillis) start-ms)]
+        ;; Drain response stream to allow connection reuse, then disconnect
+        (try (slurp (.getInputStream conn)) (catch Exception _))
         (.disconnect conn)
         {:status (if (= expected-status status) "healthy" "unhealthy")
          :response-time-ms duration-ms
@@ -42,16 +44,21 @@
         expected-exit (or (:expected-exit-code config) 0)
         start-ms (System/currentTimeMillis)]
     (try
-      (let [proc (.start (ProcessBuilder. ["sh" "-c" command]))
+      (let [pb (doto (ProcessBuilder. ["sh" "-c" command])
+                 (.redirectErrorStream true))
+            proc (.start pb)
+            ;; Read output concurrently to avoid deadlock on large outputs
+            output-future (future (try (slurp (.getInputStream proc)) (catch Exception _ "")))
             finished (.waitFor proc timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
             duration-ms (- (System/currentTimeMillis) start-ms)]
         (if finished
           (let [exit-code (.exitValue proc)
-                output (slurp (.getInputStream proc))]
+                output (deref output-future 1000 "")]
             {:status (if (= expected-exit exit-code) "healthy" "unhealthy")
              :response-time-ms duration-ms
              :output (subs output 0 (min (count output) 1000))})
           (do (.destroyForcibly proc)
+              (future-cancel output-future)
               {:status "timeout"
                :response-time-ms duration-ms
                :output "Command timed out"})))

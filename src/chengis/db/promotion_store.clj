@@ -102,11 +102,12 @@
                        :set {:status "promoted"
                              :promoted-at [:raw "CURRENT_TIMESTAMP"]}
                        :where [:= :id id]}))
-        ;; Supersede previous active artifacts in target environment
+        ;; Supersede previous active artifacts in target environment (org-scoped)
         (jdbc/execute-one! tx
           (sql/format {:update :environment-artifacts
                        :set {:status "superseded"}
                        :where [:and
+                               [:= :org-id (:org-id promo)]
                                [:= :environment-id (:to-environment-id promo)]
                                [:= :status "active"]]}))
         ;; Insert new active artifact
