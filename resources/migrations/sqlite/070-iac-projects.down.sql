@@ -1,0 +1,11 @@
+DROP INDEX IF EXISTS idx_iac_plans_build;
+--;;
+DROP INDEX IF EXISTS idx_iac_plans_org;
+--;;
+DROP INDEX IF EXISTS idx_iac_plans_project;
+--;;
+DROP TABLE IF EXISTS iac_plans;
+--;;
+DROP INDEX IF EXISTS idx_iac_projects_org;
+--;;
+DROP TABLE IF EXISTS iac_projects;

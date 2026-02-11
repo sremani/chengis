@@ -254,7 +254,32 @@
                    :deployment-strategies false
                    :deployment-execution false
                    :environment-health-checks false
-                   :deployment-dashboard false}
+                   :deployment-dashboard false
+                   ;; Phase 12: Infrastructure-as-Code
+                   :infrastructure-as-code false
+                   :terraform-execution false
+                   :pulumi-execution false
+                   :cloudformation-execution false
+                   :iac-state-management false
+                   :iac-cost-estimation false
+                   :iac-policy-enforcement false}
+   ;; Phase 12: Infrastructure-as-Code
+   :iac {:terraform {:binary-path "terraform"
+                     :timeout-ms 600000
+                     :auto-init true
+                     :parallelism 10}
+         :pulumi {:binary-path "pulumi"
+                  :timeout-ms 600000
+                  :backend-url nil}
+         :cloudformation {:binary-path "aws"
+                          :timeout-ms 900000
+                          :region nil
+                          :capabilities ["CAPABILITY_IAM" "CAPABILITY_NAMED_IAM"]}
+         :state {:lock-timeout-ms 300000
+                 :max-state-size-bytes 10485760
+                 :history-limit 50}
+         :plan {:require-approval false
+                :max-plan-size-bytes 5242880}}
    :pagination {:default-page-size 50
                 :max-page-size 200}
    :log-streaming {:chunk-size 1000
@@ -462,7 +487,27 @@
    "CHENGIS_DEPLOYMENT_HEALTH_CHECK_INTERVAL_MS" [:deployment :health-check :interval-ms]
    "CHENGIS_DEPLOYMENT_HEALTH_CHECK_RETRIES"     [:deployment :health-check :retries]
    "CHENGIS_DEPLOYMENT_AUTO_ROLLBACK"            [:deployment :rollback :auto-on-health-failure]
-   "CHENGIS_DEPLOYMENT_CONCURRENT_LIMIT"         [:deployment :concurrent-limit]})
+   "CHENGIS_DEPLOYMENT_CONCURRENT_LIMIT"         [:deployment :concurrent-limit]
+   ;; Phase 12: Infrastructure-as-Code
+   "CHENGIS_FEATURE_INFRASTRUCTURE_AS_CODE"      [:feature-flags :infrastructure-as-code]
+   "CHENGIS_FEATURE_TERRAFORM_EXECUTION"         [:feature-flags :terraform-execution]
+   "CHENGIS_FEATURE_PULUMI_EXECUTION"            [:feature-flags :pulumi-execution]
+   "CHENGIS_FEATURE_CLOUDFORMATION_EXECUTION"    [:feature-flags :cloudformation-execution]
+   "CHENGIS_FEATURE_IAC_STATE_MANAGEMENT"        [:feature-flags :iac-state-management]
+   "CHENGIS_FEATURE_IAC_COST_ESTIMATION"         [:feature-flags :iac-cost-estimation]
+   "CHENGIS_FEATURE_IAC_POLICY_ENFORCEMENT"      [:feature-flags :iac-policy-enforcement]
+   "CHENGIS_IAC_TERRAFORM_BINARY"                [:iac :terraform :binary-path]
+   "CHENGIS_IAC_TERRAFORM_TIMEOUT_MS"            [:iac :terraform :timeout-ms]
+   "CHENGIS_IAC_TERRAFORM_AUTO_INIT"             [:iac :terraform :auto-init]
+   "CHENGIS_IAC_TERRAFORM_PARALLELISM"           [:iac :terraform :parallelism]
+   "CHENGIS_IAC_PULUMI_BINARY"                   [:iac :pulumi :binary-path]
+   "CHENGIS_IAC_PULUMI_TIMEOUT_MS"               [:iac :pulumi :timeout-ms]
+   "CHENGIS_IAC_PULUMI_BACKEND_URL"              [:iac :pulumi :backend-url]
+   "CHENGIS_IAC_CLOUDFORMATION_BINARY"           [:iac :cloudformation :binary-path]
+   "CHENGIS_IAC_CLOUDFORMATION_TIMEOUT_MS"       [:iac :cloudformation :timeout-ms]
+   "CHENGIS_IAC_CLOUDFORMATION_REGION"           [:iac :cloudformation :region]
+   "CHENGIS_IAC_STATE_LOCK_TIMEOUT_MS"           [:iac :state :lock-timeout-ms]
+   "CHENGIS_IAC_PLAN_REQUIRE_APPROVAL"           [:iac :plan :require-approval]})
 
 (defn coerce-env-value
   "Coerce a string environment variable value to the appropriate type.

@@ -110,6 +110,11 @@
             [chengis.web.views.strategies :as v-strategies]
             [chengis.web.views.deployments :as v-deployments]
             [chengis.web.views.deploy-dashboard :as v-deploy-dashboard]
+            [chengis.db.iac-store :as iac-store]
+            [chengis.db.iac-cost-store :as iac-cost-store]
+            [chengis.engine.iac-state :as iac-state]
+            [chengis.web.views.iac :as v-iac]
+            [chengis.web.views.iac-plans :as v-iac-plans]
             [chengis.web.sse :as sse]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -3151,3 +3156,184 @@
     (let [dep-id (get-in req [:path-params :id])]
       (deployment-engine/rollback-deployment! system dep-id)
       {:status 302 :headers {"Location" "/deploy/deployments"}})))
+
+;; ---------------------------------------------------------------------------
+;; Phase 12: Infrastructure as Code
+;; ---------------------------------------------------------------------------
+
+;; IaC Dashboard
+(defn iac-dashboard-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          projects (iac-store/list-projects ds :org-id org-id)
+          latest-plans (iac-store/list-plans ds :org-id org-id :limit 10)
+          stats (iac-store/count-plans-by-status ds org-id)]
+      (html-response
+        (v-iac/render-dashboard
+          {:projects projects
+           :latest-plans latest-plans
+           :plan-stats stats
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)})))))
+
+;; IaC Projects
+(defn iac-project-detail-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          project-id (get-in req [:path-params :id])
+          project (iac-store/get-project ds project-id :org-id org-id)]
+      (if project
+        (let [plans (iac-store/list-plans ds :project-id project-id :org-id org-id)
+              states (iac-state/list-state-versions ds project-id)
+              cost-estimates (iac-cost-store/list-estimates ds :org-id org-id)]
+          (html-response
+            (v-iac/render-project-detail
+              {:project project
+               :plans plans
+               :states states
+               :cost-estimates cost-estimates
+               :csrf-token (csrf-token req)
+               :user (auth/current-user req)})))
+        (not-found "IaC project not found")))))
+
+(defn iac-create-project-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          params (:form-params req)
+          user (auth/current-user req)]
+      (iac-store/create-project! ds
+        {:org-id org-id
+         :job-id (get params "job_id")
+         :tool-type (or (get params "tool_type") "terraform")
+         :working-dir (or (get params "working_dir") ".")
+         :auto-detect true})
+      {:status 302 :headers {"Location" "/iac"}})))
+
+(defn iac-update-project-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          project-id (get-in req [:path-params :id])
+          params (:form-params req)]
+      (iac-store/update-project! ds project-id
+        {:tool-type (get params "tool_type")
+         :working-dir (get params "working_dir")}
+        :org-id org-id)
+      {:status 302 :headers {"Location" (str "/iac/projects/" project-id)}})))
+
+(defn iac-delete-project-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          project-id (get-in req [:path-params :id])]
+      (iac-store/delete-project! ds project-id :org-id org-id)
+      {:status 302 :headers {"Location" "/iac"}})))
+
+;; IaC Plans
+(defn iac-plans-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          plans (iac-store/list-plans ds :org-id org-id)]
+      (html-response
+        (v-iac/render-dashboard
+          {:projects []
+           :latest-plans plans
+           :stats {}
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)})))))
+
+(defn iac-plan-detail-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          plan-id (get-in req [:path-params :id])
+          plan (iac-store/get-plan ds plan-id :org-id org-id)]
+      (if plan
+        (let [cost-estimate (iac-cost-store/get-estimate ds plan-id)]
+          (html-response
+            (v-iac/render-plan-detail
+              {:plan plan
+               :cost-estimate cost-estimate
+               :csrf-token (csrf-token req)
+               :user (auth/current-user req)})))
+        (not-found "IaC plan not found")))))
+
+(defn iac-approve-plan-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          plan-id (get-in req [:path-params :id])
+          user (auth/current-user req)]
+      (iac-store/approve-plan! ds plan-id (:username user) :org-id org-id)
+      {:status 302 :headers {"Location" (str "/iac/plans/" plan-id)}})))
+
+(defn iac-reject-plan-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          plan-id (get-in req [:path-params :id])
+          params (:form-params req)]
+      (iac-store/update-plan! ds plan-id
+        {:status "rejected"
+         :error-output (or (get params "reason") "Rejected")})
+      {:status 302 :headers {"Location" (str "/iac/plans/" plan-id)}})))
+
+;; IaC States
+(defn iac-states-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          project-id (get-in req [:query-params "project_id"])
+          states (when project-id (iac-state/list-state-versions ds project-id))]
+      (html-response
+        (v-iac-plans/render-states-page
+          {:states (or states [])
+           :project (when project-id
+                      (iac-store/get-project ds project-id :org-id org-id))
+           :csrf-token (csrf-token req)
+           :user (auth/current-user req)})))))
+
+(defn iac-state-detail-page [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          state-id (get-in req [:path-params :id])
+          ;; State ID lookup — try finding by querying project states
+          state nil]  ;; State detail requires project-id+version, stub for now
+      (if state
+        (html-response
+          (v-iac-plans/render-state-detail
+            {:state state
+             :csrf-token (csrf-token req)
+             :user (auth/current-user req)}))
+        (not-found "IaC state not found")))))
+
+(defn iac-force-unlock-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          state-id (get-in req [:path-params :id])
+          user (auth/current-user req)]
+      (iac-state/force-unlock! ds state-id)
+      {:status 302 :headers {"Location" "/iac"}})))
+
+;; IaC Execute (trigger plan/apply)
+(defn iac-execute-handler [system]
+  (fn [req]
+    (let [ds (:db system)
+          org-id (auth/current-org-id req)
+          project-id (get-in req [:path-params :id])
+          params (:form-params req)
+          user (auth/current-user req)
+          action (get params "action" "plan")]
+      (iac-store/create-plan! ds
+        {:org-id org-id
+         :project-id project-id
+         :action action
+         :status "pending"
+         :initiated-by (:username user)})
+      {:status 302 :headers {"Location" (str "/iac/projects/" project-id)}})))

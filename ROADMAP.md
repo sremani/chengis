@@ -289,6 +289,25 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 
 ---
 
+### Phase 12: Infrastructure-as-Code Integration
+
+- IaC project detection and configuration for Terraform, Pulumi, and CloudFormation (`iac.clj`, `iac_store.clj`)
+- Step executor plugins for all three IaC tools: Terraform init/plan/apply, Pulumi preview/up/destroy, CloudFormation create/update/delete (`terraform.clj`, `pulumi.clj`, `cloudformation.clj`)
+- State management with compressed snapshots, versioning, locking, and conflict detection (`iac_state.clj`)
+- Plan parsing with resource change extraction and visualization
+- Cost estimation from IaC plans with per-resource pricing (`iac_cost.clj`, `iac_cost_store.clj`)
+- IaC dashboard with project listing, plan visualization, state history, and cost trends (`views/iac.clj`, `views/iac_plans.clj`)
+- Policy integration points hooking IaC plans into existing OPA policy engine
+- 7 new feature flags (49 total): infrastructure-as-code, terraform-execution, pulumi-execution, cloudformation-execution, iac-state-management, iac-cost-estimation, iac-policy-enforcement
+- 20 builtin plugins (was 17): added Terraform, Pulumi, CloudFormation step executors
+- 5 new tables: iac_projects, iac_plans, iac_states, iac_state_locks, iac_cost_estimates
+- New routes: `/iac`, `/iac/projects`, `/iac/plans`, `/iac/states`
+- 10 new source files, 8 new test files, 4 new migrations (070-073)
+- Migrations 070-073 (73 total migration versions)
+- **1,445 tests, 4,687 assertions — all passing**
+
+---
+
 ## Future Exploration
 
 These items are under consideration but not yet scheduled:
@@ -299,7 +318,6 @@ These items are under consideration but not yet scheduled:
 - **Chengis Cloud** — Managed SaaS offering with per-org isolation, auto-scaling agents, and usage-based billing
 - **GitHub Actions compatibility layer** — Run GitHub Actions YAML workflows natively on Chengis agents
 - **Build federation** — Cross-instance build triggers for multi-team, multi-region CI/CD
-- **Terraform/Pulumi integration** — Infrastructure provisioning as pipeline steps with state management
 
 ---
 
@@ -329,3 +347,4 @@ These items are under consideration but not yet scheduled:
 | Phase 9 | Developer Experience | Pipeline linter, DAG visualization, Log search, Responsive UI, Theme toggle, Build comparison | **1,187** | — |
 | Phase 10 | Scale & Performance | Chunked logs, Cursor pagination, Partitioning, Read replicas, Connection pooling, Backpressure, Multi-region | **1,257** | 59-62 |
 | Phase 11 | Deployment & Release | Environments, Releases, Artifact promotion, Deployment strategies, Execution engine, Health checks, Dashboard | **1,352** | 63-69 |
+| Phase 12 | Infrastructure as Code | IaC detection, Terraform/Pulumi/CloudFormation plugins, State management, Plan parsing, Cost estimation, IaC dashboard, Policy integration | **1,445** | 70-73 |

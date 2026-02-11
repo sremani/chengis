@@ -2,7 +2,76 @@
 
 All notable changes to Chengis are documented in this file.
 
-## [Unreleased] — Phase 11: Deployment & Release Orchestration
+## [Unreleased] — Phase 12: Infrastructure-as-Code Integration
+
+### Feature 12a: IaC Project Detection & Configuration
+
+- **Project detection** — Auto-detect Terraform (`.tf` files), Pulumi (`Pulumi.yaml`), and CloudFormation (`template.yaml`/`.json`) projects
+- **Project configuration** — Per-project settings with org-scoped isolation, repo path, and JSON config
+- **Multi-tool support** — Unified IaC project model supporting Terraform, Pulumi, and CloudFormation
+- **New source**: `src/chengis/db/iac_store.clj`, `src/chengis/engine/iac.clj`
+- **Migration 070**: `iac_projects` and `iac_plans` tables with org/project indexes
+
+### Feature 12b: IaC Step Executor Plugins
+
+- **Terraform plugin** — `StepExecutor` for Terraform init/plan/apply/destroy with workspace and variable support
+- **Pulumi plugin** — `StepExecutor` for Pulumi preview/up/destroy with stack management
+- **CloudFormation plugin** — `StepExecutor` for CloudFormation create/update/delete with template validation
+- **Graceful degradation** — Tool availability detection at runtime with clear error messages
+- **New source**: `src/chengis/plugin/builtin/terraform.clj`, `src/chengis/plugin/builtin/pulumi.clj`, `src/chengis/plugin/builtin/cloudformation.clj`
+
+### Feature 12c: IaC State Management
+
+- **State snapshots** — Compressed state storage with versioning and checksum verification
+- **State locking** — Atomic lock/unlock to prevent concurrent state modifications
+- **Conflict detection** — Detect conflicting state changes before apply
+- **Version history** — Full state version history with rollback capability
+- **New source**: `src/chengis/engine/iac_state.clj`
+- **Migration 071**: `iac_states` and `iac_state_locks` tables
+
+### Feature 12d: Plan Parsing & Cost Estimation
+
+- **Plan parsing** — Parse Terraform/Pulumi/CloudFormation plan output for resource change extraction
+- **Resource change visualization** — Categorize changes as create/update/delete with resource details
+- **Cost estimation** — Estimate monthly infrastructure costs from plan resource changes
+- **Per-resource pricing** — Detailed per-resource cost breakdown with currency support
+- **New source**: `src/chengis/db/iac_cost_store.clj`, `src/chengis/engine/iac_cost.clj`
+- **Migration 072**: `iac_cost_estimates` table
+
+### Feature 12e: IaC Dashboard
+
+- **Dashboard overview** — IaC project listing with status, recent plans, and cost trends
+- **Plan visualization** — Resource change visualization with create/update/delete breakdown
+- **State history** — State version timeline with compression details
+- **Cost trends** — Monthly cost estimates per project
+- **New source**: `src/chengis/web/views/iac.clj`, `src/chengis/web/views/iac_plans.clj`
+- **Migration 073**: Dashboard performance indexes
+
+### Feature 12f: Policy Integration
+
+- **OPA integration** — Hook IaC plans into existing OPA policy engine for compliance checks
+- **Pre-apply checks** — Policy evaluation before infrastructure changes are applied
+- **Feature flag gated** — `:iac-policy-enforcement` flag controls policy integration
+
+### Modified Existing Files
+
+- **config.clj** — IaC feature flags and configuration options
+- **handlers.clj** — IaC handler functions for projects, plans, states, and dashboard
+- **routes.clj** — IaC route tree under `/iac`
+- **layout.clj** — "IaC" navigation link
+
+### Infrastructure
+
+- **7 new feature flags** (49 total): `infrastructure-as-code`, `terraform-execution`, `pulumi-execution`, `cloudformation-execution`, `iac-state-management`, `iac-cost-estimation`, `iac-policy-enforcement`
+- **4 new migrations** (070-073), 73 total migration versions
+- **10 new source files**, 8 new test files
+- **20 builtin plugins** (was 17): added Terraform, Pulumi, CloudFormation step executors
+- **5 new tables**: `iac_projects`, `iac_plans`, `iac_states`, `iac_state_locks`, `iac_cost_estimates`
+- **1,445 tests, 4,687 assertions — all passing**
+
+---
+
+## Phase 11: Deployment & Release Orchestration
 
 ### Feature 11a: Environment Definitions
 

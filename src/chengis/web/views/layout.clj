@@ -82,6 +82,7 @@
            [:a {:href "/agents" :class "hover:text-blue-300 transition w-full md:w-auto py-1 md:py-0"} "Agents"]
            [:a {:href "/analytics" :class "hover:text-blue-300 transition w-full md:w-auto py-1 md:py-0"} "Analytics"]
            [:a {:href "/deploy" :class "hover:text-blue-300 transition w-full md:w-auto py-1 md:py-0"} "Deploy"]
+           [:a {:href "/iac" :class "hover:text-blue-300 transition w-full md:w-auto py-1 md:py-0"} "Infra"]
            [:a {:href "/search/logs" :class "hover:text-blue-300 transition w-full md:w-auto py-1 md:py-0"} "Search"]
            (when (and auth-enabled user)
              [:a {:href "/settings/tokens" :class "hover:text-blue-300 transition w-full md:w-auto py-1 md:py-0"} "Settings"])

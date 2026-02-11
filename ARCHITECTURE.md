@@ -72,7 +72,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |            secret_rotation, pipeline_viz, log_search,          |
 |            build_compare, linter, log_stream,                  |
 |            environments, releases, promotions, strategies,     |
-|            deployments, deploy_dashboard)                      |
+|            deployments, deploy_dashboard,                      |
+|            iac, iac_plans)                                     |
 |   distributed/master_api.clj                                  |
 +---------------------------------------------------------------+
 |                    Auth & Security Layer                       |
@@ -97,6 +98,15 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   regulatory.clj   secret_rotation.clj                        |
 |   linter.clj   build_compare.clj                              |
 |   streaming_process.clj   event_backpressure.clj             |
+|   iac.clj   iac_state.clj   iac_cost.clj                    |
++---------------------------------------------------------------+
+|                    Infrastructure as Code Layer                |
+|   engine/iac.clj   engine/iac_state.clj                      |
+|   engine/iac_cost.clj                                         |
+|   db/iac_store.clj   db/iac_cost_store.clj                   |
+|   plugin/builtin/terraform.clj                                |
+|   plugin/builtin/pulumi.clj                                   |
+|   plugin/builtin/cloudformation.clj                           |
 +---------------------------------------------------------------+
 |                    Deployment & Release Layer                  |
 |   engine/release.clj   engine/promotion.clj                  |
@@ -125,7 +135,8 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |              email, git, local-artifacts, local-secrets,       |
 |              vault-secrets, aws-secrets, gcp-secrets,          |
 |              azure-keyvault, yaml-format, github-status,       |
-|              gitlab-status, gitea-status, bitbucket-status)    |
+|              gitlab-status, gitea-status, bitbucket-status,    |
+|              terraform, pulumi, cloudformation)                |
 +---------------------------------------------------------------+
 |                        DSL Layer                              |
 |   dsl/core.clj (defpipeline macro)                            |
@@ -181,6 +192,7 @@ This document describes the internal architecture of Chengis, a CI/CD engine wri
 |   db/environment_store.clj  db/release_store.clj             |
 |   db/promotion_store.clj  db/strategy_store.clj              |
 |   db/deployment_store.clj  db/health_check_store.clj         |
+|   db/iac_store.clj  db/iac_cost_store.clj                    |
 |   db/backup.clj                                               |
 +---------------------------------------------------------------+
 |                        Foundation                             |
@@ -334,6 +346,9 @@ Build Runner: Finalization
 |  :plugins          name → descriptor      |
 |  :step-executors   :shell → ShellExec     |
 |                    :docker → DockerExec   |
+|                    :terraform → TFExec    |
+|                    :pulumi → PulumiExec   |
+|                    :cloudformation → CFExec|
 |  :pipeline-formats "yaml" → YamlFormat   |
 |  :notifiers        :console → ConsoleN   |
 |                    :slack → SlackN        |
@@ -463,6 +478,9 @@ Glob patterns use `Pattern/quote` for safe regex conversion, preventing injectio
 | GitLab Status | ScmStatusReporter | `:gitlab` |
 | Gitea Status | ScmStatusReporter | `:gitea` |
 | Bitbucket Status | ScmStatusReporter | `:bitbucket` |
+| Terraform | StepExecutor | `:terraform` |
+| Pulumi | StepExecutor | `:pulumi` |
+| CloudFormation | StepExecutor | `:cloudformation` |
 
 ## Authentication & Security
 
@@ -895,7 +913,7 @@ In distributed mode, agents stream events to the master via HTTP POST, and the m
 
 ## Database Schema
 
-Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 62 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
+Chengis supports dual-driver persistence — **SQLite** (default, zero-config) and **PostgreSQL** (production, HikariCP-pooled). Both drivers share 73 migration versions maintained in separate directories (`migrations/sqlite/` and `migrations/postgresql/`):
 
 ### Core Tables (Migration 001)
 
@@ -1087,6 +1105,24 @@ build_logs        -- Structured log entries
 -- 062: Multi-region agents (region column on agents table)
 ```
 
+### Infrastructure as Code Tables (Migrations 070-073)
+
+```sql
+-- 070: IaC projects and plans
+--       iac_projects — id, org_id, name, iac_type (terraform/pulumi/cloudformation),
+--         repo_path, config, enabled
+--       iac_plans — id, project_id, build_id, plan_type, plan_output,
+--         resource_changes, org_id
+-- 071: IaC state management
+--       iac_states — id, project_id, state_data (compressed), version,
+--         checksum, org_id
+--       iac_state_locks — id, project_id, locked_by, locked_at, lock_reason
+-- 072: IaC cost estimates
+--       iac_cost_estimates — id, plan_id, project_id, total_monthly_cost,
+--         resource_costs, currency, org_id
+-- 073: IaC indexes for dashboard performance
+```
+
 ## Build Performance & Caching
 
 ### DAG-Based Parallel Stage Execution
@@ -1269,6 +1305,18 @@ Each supply chain feature is independently gated:
 | `:agent-connection-pooling` | `agent_http.clj` | None |
 | `:event-bus-backpressure` | `event_backpressure.clj` | None |
 | `:multi-region` | `region.clj` | None |
+
+### Infrastructure as Code Feature Flags
+
+| Flag | Component | External Dependency |
+|------|-----------|---------------------|
+| `:infrastructure-as-code` | `iac.clj`, `iac_store.clj` | None |
+| `:terraform-execution` | `terraform.clj` | Terraform CLI |
+| `:pulumi-execution` | `pulumi.clj` | Pulumi CLI |
+| `:cloudformation-execution` | `cloudformation.clj` | AWS CLI |
+| `:iac-state-management` | `iac_state.clj` | None |
+| `:iac-cost-estimation` | `iac_cost.clj`, `iac_cost_store.clj` | None |
+| `:iac-policy-enforcement` | `iac.clj` (OPA integration) | OPA (optional) |
 
 ## Enterprise Identity & Access
 
@@ -1562,19 +1610,86 @@ Web UI:
   GET /analytics → trends, slowest stages, flaky stages
 ```
 
+## Infrastructure as Code
+
+### Architecture
+
+```
+Build Executor                  IaC Layer
+  |                                    |
+  |-- step type :terraform         IaC Engine (iac.clj)
+  |   or :pulumi or :cloudformation    |-- detect IaC project type
+  |                                    |-- parse plan output
+  |                                    |-- extract resource changes
+  |                                    |
+  |                                 State Manager (iac_state.clj)
+  |                                    |-- compress state snapshots
+  |                                    |-- version tracking
+  |                                    |-- lock/unlock for concurrency
+  |                                    |-- conflict detection
+  |                                    |
+  |                                 Cost Estimator (iac_cost.clj)
+  |                                    |-- parse plan resource changes
+  |                                    |-- estimate per-resource costs
+  |                                    |-- store in iac_cost_estimates
+  |                                    |
+  |                                 Step Executor Plugins
+  |                                    |-- terraform.clj (init/plan/apply)
+  |                                    |-- pulumi.clj (preview/up/destroy)
+  |                                    |-- cloudformation.clj (create/update/delete)
+  |                                    |
+  |                                 Policy Integration
+  |                                    |-- hook plans into OPA engine
+  |                                    |-- compliance checks before apply
+```
+
+### Data Flow
+
+```
+IaC Project (iac_projects)
+  |
+  +---> Plan Execution ---------> iac_plans
+  |         |                        |
+  |         v                        v
+  |     Plan Parsing            Cost Estimation
+  |     (resource changes)      (iac_cost_estimates)
+  |         |
+  |         v
+  |     Policy Check (OPA) -----> allow/deny
+  |
+  +---> State Snapshots --------> iac_states
+  |                                  |
+  |                              Compression + Versioning
+  |
+  +---> Locking ----------------> iac_state_locks
+                                  (concurrency control)
+```
+
+### IaC Step Executor Plugins
+
+Three step executor plugins implement the `StepExecutor` protocol for IaC tools:
+
+| Plugin | Step Type | Operations | External Tool |
+|--------|-----------|------------|---------------|
+| Terraform | `:terraform` | init, plan, apply, destroy | `terraform` CLI |
+| Pulumi | `:pulumi` | preview, up, destroy, stack select | `pulumi` CLI |
+| CloudFormation | `:cloudformation` | create-stack, update-stack, delete-stack, validate | AWS CLI |
+
+All IaC plugins follow the same graceful degradation pattern as supply chain tools: detect tool availability at runtime, provide clear error messages when tools are not installed.
+
 ## File Organization Rationale
 
 | Directory | Responsibility | Key Principle | Files |
 |-----------|---------------|---------------|-------|
 | `agent/` | Agent node lifecycle | Separate process entry point | 5 |
 | `cli/` | User-facing CLI commands | Thin layer over engine | 3 |
-| `db/` | Data access (stores) | One file per table/concern | 40 |
-| `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability, HA | 9 |
+| `db/` | Data access (stores) | One file per table/concern | 47 |
+| `distributed/` | Master-side coordination | Registry, dispatch, queue, reliability, HA | 11 |
 | `dsl/` | Pipeline definition | Macros and parsers produce data | 6 |
-| `engine/` | Build orchestration | Core business logic | 42 |
+| `engine/` | Build orchestration | Core business logic | 49 |
 | `model/` | Data validation (specs) | Schema definitions | 1 |
-| `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 20 |
+| `plugin/` | Extension infrastructure | Protocols + registry + loader + builtins | 23 |
 | `web/` | HTTP handling | Handlers + middleware | 16 |
-| `web/views/` | Hiccup templates | One file per page/component | 36 |
+| `web/views/` | Hiccup templates | One file per page/component | 42 |
 
 Dependencies flow downward: `web` -> `engine` -> `db` -> `util`. The engine layer never imports web concerns, and the database layer never imports engine concerns. The plugin layer is cross-cutting but only depends on foundation. The auth/security layer wraps web handlers and is applied via middleware composition in `routes.clj`.

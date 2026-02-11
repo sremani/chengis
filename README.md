@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**1,352 tests | 4,368 assertions | 0 failures**
+**1,445 tests | 4,687 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -114,7 +114,7 @@ Build #1 — SUCCESS (8.3 sec)
 
 - **Protocol-based** &mdash; Extension points: `StepExecutor`, `PipelineFormat`, `Notifier`, `ArtifactHandler`, `ScmProvider`, `ScmStatusReporter`, `SecretBackend`
 - **Central registry** &mdash; Register/lookup/introspect plugins at runtime
-- **Builtin plugins** &mdash; Shell, Docker (includes Docker Compose), Git, Console, Slack, Email, Local Artifacts, Local Secrets, Vault Secrets, AWS Secrets, GCP Secrets, Azure Key Vault, YAML Format, GitHub Status, GitLab Status, Gitea Status, Bitbucket Status
+- **Builtin plugins** &mdash; Shell, Docker (includes Docker Compose), Git, Console, Slack, Email, Local Artifacts, Local Secrets, Vault Secrets, AWS Secrets, GCP Secrets, Azure Key Vault, YAML Format, GitHub Status, GitLab Status, Gitea Status, Bitbucket Status, Terraform, Pulumi, CloudFormation
 - **External plugins** &mdash; Load `.clj` files from plugins directory with lifecycle management
 - **Plugin trust** &mdash; External plugins gated by DB-backed allowlist; untrusted plugins blocked with admin UI management
 
@@ -176,7 +176,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Policy engine** &mdash; Org-scoped build policies with priority ordering and short-circuit evaluation
 - **Artifact checksums** &mdash; SHA-256 integrity verification on collected artifacts
 - **Compliance reports** &mdash; Policy evaluation results tracked per build with admin dashboard
-- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (35 flags for safe rollout)
+- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (49 flags for safe rollout)
 - **Plugin trust** &mdash; External plugin allowlist with admin management UI
 - **Docker image policies** &mdash; Allow/deny rules for Docker registries and images per organization
 
@@ -190,6 +190,18 @@ Build #1 — SUCCESS (8.3 sec)
 - **Artifact signing** &mdash; cosign/GPG signatures for build artifacts and attestations with verification API
 - **Regulatory dashboards** &mdash; SOC 2 / ISO 27001 readiness scoring based on audit trail completeness and control categories
 - **External tool integration** &mdash; Trivy, Grype, Syft, cdxgen, cosign, GPG, and OPA integrate via shell with graceful degradation
+
+### Infrastructure as Code
+
+- **IaC project detection** &mdash; Auto-detect Terraform, Pulumi, and CloudFormation projects with configurable settings per org
+- **Terraform execution** &mdash; Step executor plugin for Terraform init/plan/apply with workspace and variable support
+- **Pulumi execution** &mdash; Step executor plugin for Pulumi preview/up/destroy with stack management
+- **CloudFormation execution** &mdash; Step executor plugin for CloudFormation create/update/delete with template validation
+- **State management** &mdash; Compressed state snapshots with versioning, locking, and conflict detection
+- **Plan parsing** &mdash; Parse Terraform/Pulumi/CloudFormation plan output for resource change visualization
+- **Cost estimation** &mdash; Estimate infrastructure costs from IaC plans with per-resource pricing
+- **IaC dashboard** &mdash; Plan visualization, state history, cost trends, and policy integration points
+- **Policy integration** &mdash; Hook IaC plans into existing OPA policy engine for compliance checks
 
 ### Scale & Performance
 
@@ -265,7 +277,7 @@ Build #1 — SUCCESS (8.3 sec)
 ### Persistence
 
 - **Dual-driver database** &mdash; SQLite (default, zero-config) or PostgreSQL (production, with HikariCP connection pooling) — config-driven switch via `:database {:type "postgresql"}` or `CHENGIS_DATABASE_TYPE=postgresql`
-- **62 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
+- **73 migration versions** &mdash; Separate migration directories per database type (`migrations/sqlite/` and `migrations/postgresql/`)
 - **Artifact collection** &mdash; Glob-based artifact patterns, persistent storage, download via UI
 - **Webhook logging** &mdash; All incoming webhooks logged with provider, status, and payload size
 - **Secret access audit** &mdash; Track all secret reads with timestamp and user info
@@ -300,6 +312,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Pipeline visualization** &mdash; DAG-style graphical pipeline view with SVG arrows and status-colored nodes
 - **Build log search** &mdash; Full-text search across build logs with line highlighting and filters at `/search/logs`
 - **Build comparison** &mdash; Side-by-side diff of two builds showing stage/step/timing/artifact differences
+- **IaC dashboard** &mdash; Infrastructure-as-Code project management with plan visualization, state history, and cost estimates
 
 ## Quick Start
 
@@ -765,7 +778,15 @@ Chengis uses sensible defaults. Override via `resources/config.edn` or environme
                  :read-replicas false
                  :agent-connection-pooling false
                  :event-bus-backpressure false
-                 :multi-region false}
+                 :multi-region false
+                 ;; Phase 12: Infrastructure as Code
+                 :infrastructure-as-code false
+                 :terraform-execution false
+                 :pulumi-execution false
+                 :cloudformation-execution false
+                 :iac-state-management false
+                 :iac-cost-estimation false
+                 :iac-policy-enforcement false}
 
  ;; Parallel stage execution (DAG mode)
  :parallel-stages {:max-concurrent 4}
@@ -1058,6 +1079,10 @@ Type coercion is automatic: `"true"`/`"false"` become booleans, numeric strings 
 | `GET /compare` | Build comparison page |
 | `GET /admin/linter` | Pipeline linter web UI |
 | `POST /admin/linter/check` | Lint pipeline content (htmx) |
+| `GET /iac` | IaC dashboard overview |
+| `GET /iac/projects` | IaC project listing and management |
+| `GET /iac/plans` | IaC plan visualization and history |
+| `GET /iac/states` | IaC state management and history |
 
 ## Project Structure
 
@@ -1074,7 +1099,7 @@ chengis/
       core.clj              # CLI dispatcher
       commands.clj          # Job, build, secret, pipeline commands
       output.clj            # Formatted output helpers
-    db/                     # Database persistence layer (45 files)
+    db/                     # Database persistence layer (47 files)
       connection.clj        # SQLite + PostgreSQL (HikariCP) connection pool
       migrate.clj           # Migratus migration runner
       job_store.clj         # Job CRUD
@@ -1119,6 +1144,8 @@ chengis/
       log_chunk_store.clj   # Chunked build log storage
       partitioning.clj      # PostgreSQL monthly range partitioning
       query_router.clj      # Read replica query routing (RoutedDatasource)
+      iac_store.clj         # IaC project and plan persistence
+      iac_cost_store.clj    # IaC cost estimation records
       backup.clj            # Database backup/restore
     distributed/            # Distributed build coordination (11 files)
       agent_registry.clj    # Write-through agent registry (atom + DB)
@@ -1139,7 +1166,7 @@ chengis/
       yaml.clj              # YAML workflow parser
       expressions.clj       # ${{ }} expression resolver
       templates.clj         # Pipeline template DSL
-    engine/                 # Build execution engine (46 files)
+    engine/                 # Build execution engine (49 files)
       executor.clj          # Core pipeline runner (sequential + DAG modes)
       build_runner.clj      # Build lifecycle + thread pool + deduplication
       dag.clj               # DAG utilities (topological sort, ready-stages)
@@ -1186,13 +1213,16 @@ chengis/
       build_compare.clj     # Build comparison engine (stage/step/artifact diff)
       streaming_process.clj # Streaming process execution with line callbacks
       event_backpressure.clj # Adaptive event bus backpressure
+      iac.clj               # IaC project detection and plan parsing
+      iac_state.clj         # IaC state management with compression and locking
+      iac_cost.clj          # IaC cost estimation engine
     model/                  # Data specs (1 file)
       spec.clj              # Clojure specs for validation
-    plugin/                 # Plugin system (20 files)
+    plugin/                 # Plugin system (23 files)
       protocol.clj          # Plugin protocols (7 protocols)
       registry.clj          # Central plugin registry
       loader.clj            # Plugin discovery + lifecycle
-      builtin/              # 17 builtin plugins
+      builtin/              # 20 builtin plugins
         shell.clj           # Shell step executor
         docker.clj          # Docker step executor
         docker_compose.clj  # Docker Compose step executor
@@ -1211,7 +1241,10 @@ chengis/
         aws_secrets.clj     # AWS Secrets Manager backend
         gcp_secrets.clj     # Google Cloud Secret Manager backend
         azure_keyvault.clj  # Azure Key Vault backend
-    web/                    # HTTP server and UI (50 files)
+        terraform.clj       # Terraform step executor plugin
+        pulumi.clj          # Pulumi step executor plugin
+        cloudformation.clj  # CloudFormation step executor plugin
+    web/                    # HTTP server and UI (52 files)
       server.clj            # http-kit server startup + HA wiring
       routes.clj            # Reitit routes + middleware
       handlers.clj          # Request handlers
@@ -1228,7 +1261,7 @@ chengis/
       rate_limit.clj        # Request rate limiting
       account_lockout.clj   # Account lockout logic
       metrics_middleware.clj # HTTP request metrics
-      views/                # Hiccup view templates (40 files)
+      views/                # Hiccup view templates (42 files)
         layout.clj          # Base HTML layout
         dashboard.clj       # Home page
         jobs.clj            # Job list + detail
@@ -1269,13 +1302,15 @@ chengis/
         build_compare.clj   # Build comparison side-by-side diff views
         linter.clj          # Pipeline linter web UI with htmx results
         log_stream.clj      # Chunked log viewer with htmx infinite scroll
+        iac.clj             # IaC dashboard and project management views
+        iac_plans.clj       # IaC plan visualization views
     config.clj              # Configuration loading + env var overrides
     logging.clj             # Structured logging setup
     metrics.clj             # Prometheus metrics registry
     util.clj                # Shared utilities
     core.clj                # Entry point
-  test/chengis/             # Test suite (~147 files)
-  resources/migrations/     # Database migrations (62 versions × 2 drivers)
+  test/chengis/             # Test suite (~167 files)
+  resources/migrations/     # Database migrations (73 versions × 2 drivers)
     sqlite/                 # SQLite-dialect migrations
     postgresql/             # PostgreSQL-dialect migrations
   pipelines/                # Example pipeline definitions (5 files)
@@ -1287,7 +1322,7 @@ chengis/
   docker-compose.ha.yml     # HA override: PostgreSQL + 2 masters for multi-master testing
 ```
 
-**Codebase:** ~35,000 lines source + ~24,000 lines tests across 350 files
+**Codebase:** ~37,000 lines source + ~26,000 lines tests across ~392 files
 
 ## Technology Stack
 
@@ -1298,7 +1333,7 @@ chengis/
 | Process execution | babashka/process | Shell command runner |
 | Database | SQLite + PostgreSQL + next.jdbc + HoneySQL | Persistence (dual-driver) |
 | Connection pool | HikariCP | PostgreSQL connection pooling |
-| Migrations | Migratus | Schema evolution (62 versions × 2 drivers) |
+| Migrations | Migratus | Schema evolution (73 versions × 2 drivers) |
 | Web server | http-kit | Async HTTP + SSE |
 | Routing | Reitit | Ring-compatible routing |
 | HTML | Hiccup 2 | Server-side rendering |
@@ -1327,7 +1362,7 @@ chengis/
 | Runtime | Single JVM, optional agent nodes | Master + optional agent nodes |
 | Storage | SQLite (default) or PostgreSQL | XML files on filesystem |
 | UI rendering | Server-side (Hiccup + htmx) | Server-side (Jelly/Groovy) + client JS |
-| Plugin system | Protocol-based (17 builtin plugins) | 1800+ plugins, complex classloader |
+| Plugin system | Protocol-based (20 builtin plugins) | 1800+ plugins, complex classloader |
 | Pipeline formats | Clojure DSL + EDN + YAML | Groovy DSL (scripted/declarative) |
 | Container support | Docker steps (built-in) | Docker Pipeline plugin |
 | Distributed | HTTP master/agent (built-in) | JNLP/SSH agents |
@@ -1363,7 +1398,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **1,257 tests, 4,085 assertions, 0 failures**
+Current test suite: **1,445 tests, 4,687 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
@@ -1448,6 +1483,14 @@ Test coverage spans:
 - Pipeline DAG visualization (layout algorithm, SVG rendering)
 - Build log search (full-text search, line highlighting, filters)
 - Build comparison (stage/step/timing/artifact diff)
+- IaC project detection and configuration (Terraform, Pulumi, CloudFormation)
+- IaC plan parsing and resource change visualization
+- IaC state management (compression, versioning, locking)
+- IaC cost estimation and pricing
+- Terraform step executor plugin
+- Pulumi step executor plugin
+- IaC store persistence (projects, plans, states, locks, cost estimates)
+- IaC dashboard views
 
 ## Building an Uberjar
 

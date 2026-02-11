@@ -317,6 +317,24 @@
          ["/:id/execute" {:post {:handler (auth/wrap-require-role :developer (h/execute-deployment-handler system))}}]
          ["/:id/cancel" {:post {:handler (auth/wrap-require-role :developer (h/cancel-deployment-handler system))}}]
          ["/:id/rollback" {:post {:handler (auth/wrap-require-role :developer (h/rollback-deployment-handler system))}}]]]
+       ;; Phase 12: IaC routes (developer+)
+       ["/iac"
+        ["" {:get {:handler (auth/wrap-require-role :developer (h/iac-dashboard-page system))}}]
+        ["/projects"
+         ["" {:post {:handler (auth/wrap-require-role :developer (h/iac-create-project-handler system))}}]
+         ["/:id" {:get {:handler (auth/wrap-require-role :developer (h/iac-project-detail-page system))}
+                  :post {:handler (auth/wrap-require-role :developer (h/iac-update-project-handler system))}}]
+         ["/:id/delete" {:post {:handler (auth/wrap-require-role :developer (h/iac-delete-project-handler system))}}]
+         ["/:id/execute" {:post {:handler (auth/wrap-require-role :developer (h/iac-execute-handler system))}}]]
+        ["/plans"
+         ["" {:get {:handler (auth/wrap-require-role :developer (h/iac-plans-page system))}}]
+         ["/:id" {:get {:handler (auth/wrap-require-role :developer (h/iac-plan-detail-page system))}}]
+         ["/:id/approve" {:post {:handler (auth/wrap-require-role :developer (h/iac-approve-plan-handler system))}}]
+         ["/:id/reject" {:post {:handler (auth/wrap-require-role :developer (h/iac-reject-plan-handler system))}}]]
+        ["/states"
+         ["" {:get {:handler (auth/wrap-require-role :developer (h/iac-states-page system))}}]
+         ["/:id" {:get {:handler (auth/wrap-require-role :developer (h/iac-state-detail-page system))}}]
+         ["/:id/unlock" {:post {:handler (auth/wrap-require-role :developer (h/iac-force-unlock-handler system))}}]]]
        ;; Analytics (viewer+)
        ["/analytics" {:get {:handler (auth/wrap-require-role :viewer (h/analytics-page system))}}]
        ["/analytics/flaky-tests" {:get {:handler (auth/wrap-require-role :viewer (h/flaky-tests-page system))}}]
