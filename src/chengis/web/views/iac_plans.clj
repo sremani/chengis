@@ -94,12 +94,12 @@
        [:div {:class "grid grid-cols-2 gap-4"}
         [:div {:class "bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4 text-center"}
          [:p {:class "text-2xl font-bold text-blue-600 dark:text-blue-400"}
-          (str "$" (:monthly-cost cost-estimate))]
+          (str "$" (:total-monthly cost-estimate))]
          [:p {:class "text-xs text-gray-500 dark:text-gray-400 mt-1"}
           (str "Monthly (" currency ")")]]
         [:div {:class "bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4 text-center"}
          [:p {:class "text-2xl font-bold text-blue-600 dark:text-blue-400"}
-          (str "$" (:hourly-cost cost-estimate))]
+          (str "$" (:total-hourly cost-estimate))]
          [:p {:class "text-xs text-gray-500 dark:text-gray-400 mt-1"}
           (str "Hourly (" currency ")")]]]
        ;; Per-resource breakdown
@@ -117,9 +117,9 @@
                [:td {:class "py-2 px-4 text-sm font-mono text-gray-700 dark:text-gray-300"}
                 (escape-html (str (:name rc)))]
                [:td {:class "py-2 px-4 text-sm text-right text-gray-700 dark:text-gray-300"}
-                (str "$" (:monthly-cost rc))]
+                (str "$" (:monthly rc))]
                [:td {:class "py-2 px-4 text-sm text-right text-gray-700 dark:text-gray-300"}
-                (str "$" (:hourly-cost rc))]])]]])])
+                (str "$" (format "%.4f" (/ (or (:monthly rc) 0.0) 730.0)))]])]]])])
     [:p {:class "text-sm text-gray-500 dark:text-gray-400"} "No cost estimate available."]))
 
 (defn render-approval-form
@@ -181,13 +181,13 @@
                [:td {:class "py-3 px-4 text-sm font-mono text-gray-500 dark:text-gray-400"}
                 (escape-html (subs (str (:state-hash s)) 0 (min 12 (count (str (:state-hash s))))))]
                [:td {:class "py-3 px-4 text-sm text-gray-500 dark:text-gray-400"}
-                (when (:size-bytes s)
-                  (let [kb (quot (:size-bytes s) 1024)]
-                    (if (pos? kb) (str kb " KB") (str (:size-bytes s) " B"))))]
+                (when (:state-size s)
+                  (let [kb (quot (:state-size s) 1024)]
+                    (if (pos? kb) (str kb " KB") (str (:state-size s) " B"))))]
                [:td {:class "py-3 px-4 text-sm"}
-                (if (:workspace s)
+                (if (:workspace-name s)
                   [:span {:class "px-1.5 py-0.5 rounded text-xs bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200"}
-                   (escape-html (str (:workspace s)))]
+                   (escape-html (str (:workspace-name s)))]
                   [:span {:class "text-gray-400 dark:text-gray-500 text-xs"} "default"])]
                [:td {:class "py-3 px-4 text-sm text-gray-500 dark:text-gray-400"}
                 (escape-html (str (:created-by s)))]
@@ -239,15 +239,15 @@
          [:div
           [:span {:class "text-gray-500 dark:text-gray-400 block"} "Size"]
           [:span {:class "font-medium"}
-           (if (:size-bytes state)
-             (let [kb (quot (:size-bytes state) 1024)]
-               (if (pos? kb) (str kb " KB") (str (:size-bytes state) " B")))
+           (if (:state-size state)
+             (let [kb (quot (:state-size state) 1024)]
+               (if (pos? kb) (str kb " KB") (str (:state-size state) " B")))
              "N/A")]]
          [:div
           [:span {:class "text-gray-500 dark:text-gray-400 block"} "Workspace"]
           [:span {:class "font-medium"}
-           (if (:workspace state)
-             (escape-html (str (:workspace state)))
+           (if (:workspace-name state)
+             (escape-html (str (:workspace-name state)))
              "default")]]
          [:div
           [:span {:class "text-gray-500 dark:text-gray-400 block"} "Created By"]
@@ -271,16 +271,16 @@
             [:span {:class "text-red-600 dark:text-red-400 block"} "Locked By"]
             [:span {:class "font-medium text-red-800 dark:text-red-200"}
              (escape-html (str (:locked-by lock)))]]
-           (when (:reason lock)
+           (when (:lock-reason lock)
              [:div
               [:span {:class "text-red-600 dark:text-red-400 block"} "Reason"]
               [:span {:class "font-medium text-red-800 dark:text-red-200"}
-               (escape-html (str (:reason lock)))]])
-           (when (:created-at lock)
+               (escape-html (str (:lock-reason lock)))]])
+           (when (:locked-at lock)
              [:div
               [:span {:class "text-red-600 dark:text-red-400 block"} "Locked At"]
               [:span {:class "font-medium text-red-800 dark:text-red-200"}
-               (escape-html (str (:created-at lock)))]])
+               (escape-html (str (:locked-at lock)))]])
            (when (:expires-at lock)
              [:div
               [:span {:class "text-red-600 dark:text-red-400 block"} "Expires At"]

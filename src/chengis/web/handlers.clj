@@ -3167,7 +3167,11 @@
     (let [ds (:db system)
           org-id (auth/current-org-id req)
           projects (iac-store/list-projects ds :org-id org-id)
-          latest-plans (iac-store/list-plans ds :org-id org-id :limit 10)
+          ;; Build a map of project-id -> latest plan for the view
+          latest-plans (into {}
+                         (map (fn [p]
+                                [(:id p) (iac-store/get-latest-plan ds (:id p))]))
+                         projects)
           stats (iac-store/count-plans-by-status ds org-id)]
       (html-response
         (v-iac/render-dashboard
@@ -3237,12 +3241,13 @@
   (fn [req]
     (let [ds (:db system)
           org-id (auth/current-org-id req)
-          plans (iac-store/list-plans ds :org-id org-id)]
+          plans (iac-store/list-plans ds :org-id org-id)
+          stats (iac-store/count-plans-by-status ds org-id)]
       (html-response
         (v-iac/render-dashboard
           {:projects []
-           :latest-plans plans
-           :stats {}
+           :latest-plans {}
+           :plan-stats stats
            :csrf-token (csrf-token req)
            :user (auth/current-user req)})))))
 
@@ -3302,14 +3307,16 @@
     (let [ds (:db system)
           org-id (auth/current-org-id req)
           state-id (get-in req [:path-params :id])
-          ;; State ID lookup — try finding by querying project states
-          state nil]  ;; State detail requires project-id+version, stub for now
+          state (iac-state/get-state-by-id ds state-id)]
       (if state
-        (html-response
-          (v-iac-plans/render-state-detail
-            {:state state
-             :csrf-token (csrf-token req)
-             :user (auth/current-user req)}))
+        (let [lock (iac-state/get-lock ds (:project-id state)
+                     :workspace-name (or (:workspace-name state) "default"))]
+          (html-response
+            (v-iac-plans/render-state-detail
+              {:state state
+               :lock lock
+               :csrf-token (csrf-token req)
+               :user (auth/current-user req)})))
         (not-found "IaC state not found")))))
 
 (defn iac-force-unlock-handler [system]
@@ -3317,8 +3324,12 @@
     (let [ds (:db system)
           org-id (auth/current-org-id req)
           state-id (get-in req [:path-params :id])
-          user (auth/current-user req)]
-      (iac-state/force-unlock! ds state-id)
+          user (auth/current-user req)
+          ;; Look up the state to get its project-id and workspace-name
+          state (iac-state/get-state-by-id ds state-id)]
+      (when state
+        (iac-state/force-unlock! ds (:project-id state)
+          :workspace-name (or (:workspace-name state) "default")))
       {:status 302 :headers {"Location" "/iac"}})))
 
 ;; IaC Execute (trigger plan/apply)

@@ -72,19 +72,19 @@
        [:span {:class "text-xs text-gray-500 dark:text-gray-400"} "Latest plan:"]
        (status-badge (:status latest-plan))
        (plan-action-badge (:action latest-plan))]
-      (when (or (:resources-to-add latest-plan)
-                (:resources-to-change latest-plan)
-                (:resources-to-destroy latest-plan))
+      (when (or (:resources-add latest-plan)
+                (:resources-change latest-plan)
+                (:resources-destroy latest-plan))
         [:div {:class "flex gap-3 mt-1 text-xs"}
-         (when (pos? (or (:resources-to-add latest-plan) 0))
+         (when (pos? (or (:resources-add latest-plan) 0))
            [:span {:class "text-green-600 dark:text-green-400 font-medium"}
-            (str "+" (:resources-to-add latest-plan))])
-         (when (pos? (or (:resources-to-change latest-plan) 0))
+            (str "+" (:resources-add latest-plan))])
+         (when (pos? (or (:resources-change latest-plan) 0))
            [:span {:class "text-yellow-600 dark:text-yellow-400 font-medium"}
-            (str "~" (:resources-to-change latest-plan))])
-         (when (pos? (or (:resources-to-destroy latest-plan) 0))
+            (str "~" (:resources-change latest-plan))])
+         (when (pos? (or (:resources-destroy latest-plan) 0))
            [:span {:class "text-red-600 dark:text-red-400 font-medium"}
-            (str "-" (:resources-to-destroy latest-plan))])])
+            (str "-" (:resources-destroy latest-plan))])])
       [:p {:class "text-xs text-gray-400 dark:text-gray-500 mt-1"}
        (escape-html (str (:created-at latest-plan)))]]
      [:p {:class "text-xs text-gray-400 dark:text-gray-500 mt-3 italic"} "No plans yet"])
@@ -113,18 +113,18 @@
    [:td {:class "py-3 px-4"} (status-badge (:status plan))]
    [:td {:class "py-3 px-4 text-sm"}
     [:div {:class "flex gap-2"}
-     (when (pos? (or (:resources-to-add plan) 0))
+     (when (pos? (or (:resources-add plan) 0))
        [:span {:class "text-green-600 dark:text-green-400 font-medium"}
-        (str "+" (:resources-to-add plan))])
-     (when (pos? (or (:resources-to-change plan) 0))
+        (str "+" (:resources-add plan))])
+     (when (pos? (or (:resources-change plan) 0))
        [:span {:class "text-yellow-600 dark:text-yellow-400 font-medium"}
-        (str "~" (:resources-to-change plan))])
-     (when (pos? (or (:resources-to-destroy plan) 0))
+        (str "~" (:resources-change plan))])
+     (when (pos? (or (:resources-destroy plan) 0))
        [:span {:class "text-red-600 dark:text-red-400 font-medium"}
-        (str "-" (:resources-to-destroy plan))])
-     (when (and (not (pos? (or (:resources-to-add plan) 0)))
-                (not (pos? (or (:resources-to-change plan) 0)))
-                (not (pos? (or (:resources-to-destroy plan) 0))))
+        (str "-" (:resources-destroy plan))])
+     (when (and (not (pos? (or (:resources-add plan) 0)))
+                (not (pos? (or (:resources-change plan) 0)))
+                (not (pos? (or (:resources-destroy plan) 0))))
        [:span {:class "text-gray-400 dark:text-gray-500"} "no changes"])]]
    [:td {:class "py-3 px-4 text-sm text-gray-500 dark:text-gray-400"}
     (when (:duration-ms plan)
@@ -266,9 +266,9 @@
                 (str "v" (:version s))]
                [:span {:class "text-xs font-mono text-gray-500 dark:text-gray-400"}
                 (escape-html (subs (str (:state-hash s)) 0 (min 12 (count (str (:state-hash s))))))]
-               (when (:workspace s)
+               (when (:workspace-name s)
                  [:span {:class "text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-200"}
-                  (escape-html (str (:workspace s)))])]
+                  (escape-html (str (:workspace-name s)))])]
               [:div {:class "flex items-center gap-3"}
                [:span {:class "text-xs text-gray-400 dark:text-gray-500"}
                 (escape-html (str (:created-at s)))]
@@ -286,7 +286,7 @@
                [:span {:class "text-sm font-mono text-blue-600 dark:text-blue-400"}
                 (escape-html (subs (str (:plan-id ce)) 0 (min 8 (count (str (:plan-id ce))))))]
                [:span {:class "text-sm font-medium text-gray-900 dark:text-white"}
-                (str "$" (:monthly-cost ce) "/mo")]]
+                (str "$" (:total-monthly ce) "/mo")]]
               [:span {:class "text-xs text-gray-400 dark:text-gray-500"}
                (escape-html (str (:created-at ce)))]])]])
        ;; Delete project
@@ -344,11 +344,11 @@
           [:h2 {:class "text-lg font-semibold mb-3 text-gray-900 dark:text-white"} "Resource Summary"]
           [:div {:class "flex gap-6 text-lg"}
            [:span {:class "text-green-600 dark:text-green-400 font-bold"}
-            (str "+" (or (:resources-to-add plan) 0) " to add")]
+            (str "+" (or (:resources-add plan) 0) " to add")]
            [:span {:class "text-yellow-600 dark:text-yellow-400 font-bold"}
-            (str "~" (or (:resources-to-change plan) 0) " to change")]
+            (str "~" (or (:resources-change plan) 0) " to change")]
            [:span {:class "text-red-600 dark:text-red-400 font-bold"}
-            (str "-" (or (:resources-to-destroy plan) 0) " to destroy")]]]
+            (str "-" (or (:resources-destroy plan) 0) " to destroy")]]]
          ;; Resource diff table
          (when (seq resources)
            [:div {:class "bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden mb-6"}
@@ -393,11 +393,11 @@
             [:div {:class "grid grid-cols-2 gap-4 mb-4"}
              [:div {:class "bg-blue-50 dark:bg-blue-900/20 rounded p-4 text-center"}
               [:p {:class "text-2xl font-bold text-blue-600 dark:text-blue-400"}
-               (str "$" (:monthly-cost cost-estimate))]
+               (str "$" (:total-monthly cost-estimate))]
               [:p {:class "text-xs text-gray-500 dark:text-gray-400 mt-1"} "Monthly"]]
              [:div {:class "bg-blue-50 dark:bg-blue-900/20 rounded p-4 text-center"}
               [:p {:class "text-2xl font-bold text-blue-600 dark:text-blue-400"}
-               (str "$" (:hourly-cost cost-estimate))]
+               (str "$" (:total-hourly cost-estimate))]
               [:p {:class "text-xs text-gray-500 dark:text-gray-400 mt-1"} "Hourly"]]]
             (when-let [resources-cost (:resources cost-estimate)]
               [:table {:class "min-w-full divide-y divide-gray-200 dark:divide-gray-700"}
@@ -410,8 +410,9 @@
                 (for [rc resources-cost]
                   [:tr {:class "border-b border-gray-100 dark:border-gray-700"}
                    [:td {:class "py-2 px-4 text-sm font-mono"} (escape-html (str (:name rc)))]
-                   [:td {:class "py-2 px-4 text-sm text-right"} (str "$" (:monthly-cost rc))]
-                   [:td {:class "py-2 px-4 text-sm text-right"} (str "$" (:hourly-cost rc))]])]])])
+                   [:td {:class "py-2 px-4 text-sm text-right"} (str "$" (:monthly rc))]
+                   [:td {:class "py-2 px-4 text-sm text-right"}
+                    (str "$" (format "%.4f" (/ (or (:monthly rc) 0.0) 730.0)))]])]])])
          ;; Approval buttons
          (when (= "awaiting-approval" (str (:status plan)))
            [:div {:class "bg-yellow-50 dark:bg-yellow-900/20 rounded-lg shadow p-6 mb-6"}

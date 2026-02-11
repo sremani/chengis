@@ -7,6 +7,7 @@
             [honey.sql :as sql]
             [chengis.util :as util]
             [clojure.data.json :as json]
+            [clojure.set :as set]
             [taoensso.timbre :as log])
   (:import [java.security MessageDigest]
            [java.util Base64]
@@ -147,6 +148,23 @@
                                          nil))))
           (dissoc :state-data)))))
 
+(defn get-state-by-id
+  "Get a state by its ID. Returns state with decompressed :state-content."
+  [ds state-id]
+  (let [row (jdbc/execute-one! ds
+              (sql/format {:select :*
+                           :from :iac-states
+                           :where [:= :id state-id]})
+              {:builder-fn rs/as-unqualified-kebab-maps})]
+    (when row
+      (-> row
+          (assoc :state-content (when (:state-data row)
+                                  (try (decompress (:state-data row))
+                                       (catch Exception e
+                                         (log/warn "Failed to decompress state:" (.getMessage e))
+                                         nil))))
+          (dissoc :state-data)))))
+
 (defn list-state-versions
   "List state version metadata (without state_data) for a project.
    Returns versions ordered by version desc."
@@ -191,9 +209,9 @@
           b-resources (extract-resources b-parsed)
           a-keys (set (keys a-resources))
           b-keys (set (keys b-resources))
-          added (vec (clojure.set/difference b-keys a-keys))
-          removed (vec (clojure.set/difference a-keys b-keys))
-          common (clojure.set/intersection a-keys b-keys)
+          added (vec (set/difference b-keys a-keys))
+          removed (vec (set/difference a-keys b-keys))
+          common (set/intersection a-keys b-keys)
           changed (vec (filter (fn [k]
                                  (not= (get a-resources k) (get b-resources k)))
                                common))]
@@ -226,12 +244,17 @@
   ;; Try to insert a new lock
   (let [id (util/generate-id)
         timeout-seconds (/ timeout-ms 1000)
+        ;; Compute expires-at in Clojure for cross-database compatibility
+        expires-at (let [now (java.time.Instant/now)
+                         future (.plusSeconds now (long timeout-seconds))
+                         fmt (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss")]
+                     (.format fmt (.atZone future (java.time.ZoneOffset/UTC))))
         row {:id id
              :project-id project-id
              :workspace-name workspace-name
              :locked-by user-id
              :lock-reason reason
-             :expires-at [:raw (str "datetime(CURRENT_TIMESTAMP, '+" (int timeout-seconds) " seconds')")]}
+             :expires-at expires-at}
         result (jdbc/execute-one! ds
                  (sql/format {:insert-into :iac-state-locks
                               :values [row]

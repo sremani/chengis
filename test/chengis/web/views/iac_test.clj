@@ -45,8 +45,8 @@
                              {:id "p3" :job-id "cf-deploy" :tool-type "cloudformation"
                               :working-dir "./cf" :auto-detect false}]
                   :latest-plans {"p1" {:status "succeeded" :action "plan"
-                                        :resources-to-add 2 :resources-to-change 1
-                                        :resources-to-destroy 0 :created-at "2025-01-15"}}
+                                        :resources-add 2 :resources-change 1
+                                        :resources-destroy 0 :created-at "2025-01-15"}}
                   :csrf-token "tok"
                   :user {:username "admin" :role :admin}})]
       (is (string? html))
@@ -68,7 +68,7 @@
                  {:project {:id "p1" :job-id "my-project" :tool-type "terraform"
                             :working-dir "./infra" :auto-detect true :org-id "org-1"}
                   :plans [{:id "plan-1" :action "plan" :status "succeeded"
-                           :resources-to-add 3 :resources-to-change 1 :resources-to-destroy 0
+                           :resources-add 3 :resources-change 1 :resources-destroy 0
                            :created-at "2025-01-15" :initiated-by "user-1" :duration-ms 5000}]
                   :states [{:version 1 :state-hash "abc123def456" :size-bytes 1024
                             :created-by "user-1" :created-at "2025-01-15"}]
@@ -91,8 +91,8 @@
     (let [html (iac-views/render-plan-detail
                  {:plan {:id "plan-1" :project-id "p1" :action "plan"
                          :status "succeeded" :initiated-by "user-1"
-                         :resources-to-add 3 :resources-to-change 1
-                         :resources-to-destroy 2 :created-at "2025-01-15"
+                         :resources-add 3 :resources-change 1
+                         :resources-destroy 2 :created-at "2025-01-15"
                          :duration-ms 5000}
                   :csrf-token "tok"
                   :user {:username "admin" :role :admin}})]
@@ -111,8 +111,8 @@
                                                    :name "web" :action "create"}
                                                   {:resource-type "aws_s3_bucket"
                                                    :name "logs" :action "delete"}]}
-                         :resources-to-add 1 :resources-to-change 0
-                         :resources-to-destroy 1 :created-at "2025-01-15"
+                         :resources-add 1 :resources-change 0
+                         :resources-destroy 1 :created-at "2025-01-15"
                          :initiated-by "user-1"}
                   :csrf-token "tok"
                   :user {:username "admin" :role :admin}})]
@@ -128,11 +128,11 @@
     (let [html (iac-views/render-plan-detail
                  {:plan {:id "plan-3" :project-id "p1" :action "plan"
                          :status "succeeded" :initiated-by "user-1"
-                         :resources-to-add 1 :resources-to-change 0
-                         :resources-to-destroy 0 :created-at "2025-01-15"}
-                  :cost-estimate {:monthly-cost 125.50 :hourly-cost 0.17
+                         :resources-add 1 :resources-change 0
+                         :resources-destroy 0 :created-at "2025-01-15"}
+                  :cost-estimate {:total-monthly 125.50 :total-hourly 0.17
                                   :resources [{:name "web-server"
-                                               :monthly-cost 50.0 :hourly-cost 0.07}]}
+                                               :monthly 50.0}]}
                   :csrf-token "tok"
                   :user {:username "admin" :role :admin}})]
       (is (string? html))
@@ -164,8 +164,8 @@
     (let [html (iac-views/render-plan-detail
                  {:plan {:id "plan-approval" :project-id "p1" :action "apply"
                          :status "awaiting-approval" :initiated-by "user-1"
-                         :resources-to-add 5 :resources-to-change 2
-                         :resources-to-destroy 1 :created-at "2025-01-15"}
+                         :resources-add 5 :resources-change 2
+                         :resources-destroy 1 :created-at "2025-01-15"}
                   :csrf-token "tok"
                   :user {:username "admin" :role :admin}})]
       (is (string? html))
