@@ -141,7 +141,9 @@
                :rules nil :created-by "admin"})]
       ;; rules nil → json/write-str nil → "null" → read back as nil
       (let [fetched (policy-store/get-policy ds (:id p))]
-        (is (some? fetched))))))
+        (is (some? fetched))
+        (is (nil? (:rules fetched))
+            "nil rules should round-trip through JSON as nil")))))
 
 (deftest toggle-policy-flips-enabled-test
   (testing "toggle-policy! flips enabled from true to false"

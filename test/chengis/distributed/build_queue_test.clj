@@ -256,10 +256,10 @@
   (testing "item at max-retries goes to dead-letter (< not <=)"
     (let [ds *ds*]
       (bq/enqueue! ds "retry-boundary" "job-1"
-        {:pipeline {:stages []} :build-id "retry-boundary"} nil)
-      ;; Fail it max-retries times (default max-retries=3)
-      ;; After 3 calls to record-failure!, retry-count will be 3 (= max)
-      ;; so (< 3 3) is false → dead-letter
+        {:pipeline {:stages []} :build-id "retry-boundary"} nil
+        {:max-retries 3})
+      ;; Fail it max-retries times: retry-count 0→1→2→3
+      ;; After 3 calls, retry-count=3, (< 3 3) is false → dead-letter
       (let [item (bq/get-queue-item-by-build-id ds "retry-boundary")]
         (bq/mark-failed! ds (:id item) "fail-1")
         (bq/mark-failed! ds (:id item) "fail-2")
@@ -270,7 +270,8 @@
   (testing "item below max-retries is retried (< retry-count max-retries)"
     (let [ds *ds*]
       (bq/enqueue! ds "retry-ok" "job-1"
-        {:pipeline {:stages []} :build-id "retry-ok"} nil)
+        {:pipeline {:stages []} :build-id "retry-ok"} nil
+        {:max-retries 3})
       (let [item (bq/get-queue-item-by-build-id ds "retry-ok")
             result (bq/mark-failed! ds (:id item) "fail-1")]
         (is (= :retrying result)

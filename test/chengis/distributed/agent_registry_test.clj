@@ -1,5 +1,6 @@
 (ns chengis.distributed.agent-registry-test
   (:require [clojure.test :refer :all]
+            [clojure.string :as str]
             [chengis.distributed.agent-registry :as agent-reg]))
 
 (use-fixtures :each
@@ -178,7 +179,7 @@
     (agent-reg/register-agent! {:name "offline-a" :url "http://ofa:9090"
                                  :labels #{} :max-builds 2})
     (let [agents (agent-reg/list-agents)
-          offline-id (:id (second agents))]
+          offline-id (:id (first (filter #(= "offline-a" (:name %)) agents)))]
       ;; Set one agent offline manually
       (swap! @(resolve 'chengis.distributed.agent-registry/agents)
              update offline-id assoc :status :offline)

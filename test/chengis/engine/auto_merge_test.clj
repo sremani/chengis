@@ -415,7 +415,11 @@
   (testing "extracts GitLab project path from HTTPS URL"
     (let [result (#'auto-merge/extract-project-path
                    "https://gitlab.com/mygroup/myrepo.git")]
-      (is (some? result))
-      (is (string? result))))
+      (is (= "mygroup/myrepo" result)
+          "Should extract 'mygroup/myrepo' from GitLab HTTPS URL")))
+  (testing "extracts project path without .git suffix"
+    (let [result (#'auto-merge/extract-project-path
+                   "https://gitlab.com/mygroup/myrepo")]
+      (is (= "mygroup/myrepo" result))))
   (testing "nil URL returns nil"
     (is (nil? (#'auto-merge/extract-project-path nil)))))
