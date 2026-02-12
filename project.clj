@@ -36,7 +36,7 @@
                  [com.google.cloud/google-cloud-secretmanager "2.37.0"]
                  [com.azure/azure-security-keyvault-secrets "4.8.0"]
                  [com.azure/azure-identity "1.12.0"]]
-  :plugins [[io.github.sremani/cljest "0.1.0-SNAPSHOT"]]
+  :plugins [[org.clojars.sremani/cljest "0.1.0"]]
   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
   :main chengis.core
   :target-path "target/%s"
