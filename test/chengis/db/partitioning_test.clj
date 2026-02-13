@@ -71,3 +71,24 @@
     (testing "detach-partition! returns false on SQLite (no partition to detach)"
       (let [result (part/detach-partition! *ds* "builds" "builds_2025_01")]
         (is (false? result))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 4 mutation testing remediation: or-fallback defaults
+;; ---------------------------------------------------------------------------
+
+(deftest maintenance-cycle-default-config-test
+  (with-test-db
+    (testing "maintenance-cycle! uses defaults when config keys are missing"
+      ;; Empty config should fall back to retention-months=12, future-partitions=3
+      (is (nil? (part/maintenance-cycle! *ds* {}))))))
+
+(deftest validate-table-name-rejects-invalid-test
+  (with-test-db
+    (testing "invalid table name throws ex-info"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid table"
+            (part/create-monthly-partition! *ds* "injected_table" 2025 1))))
+    (testing "valid table names are accepted"
+      ;; Will fail on SQLite DDL but won't throw validation error
+      (is (false? (part/create-monthly-partition! *ds* "builds" 2025 1)))
+      (is (false? (part/create-monthly-partition! *ds* "build_events" 2025 1)))
+      (is (false? (part/create-monthly-partition! *ds* "audit_logs" 2025 1))))))

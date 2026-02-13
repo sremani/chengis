@@ -96,3 +96,30 @@
             id2 (template-store/create-template! ds {:name "unique" :content "{:v2 true}" :format "edn"})]
         (is (some? id1))
         (is (nil? id2))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 4 mutation testing remediation: or-fallback defaults
+;; ---------------------------------------------------------------------------
+
+(deftest create-template-nil-format-fallback-test
+  (let [ds (conn/create-datasource test-db-path)]
+    (testing "create-template! defaults format to 'edn' when nil"
+      (let [id (template-store/create-template! ds
+                 {:name "no-format"
+                  :content "{:stages []}"
+                  :format nil
+                  :created-by "test"})]
+        (is (some? id))
+        (let [t (template-store/get-template ds id)]
+          (is (= "edn" (:format t)))))))
+
+  (let [ds (conn/create-datasource test-db-path)]
+    (testing "create-template! uses explicit format when provided"
+      (let [id (template-store/create-template! ds
+                 {:name "yaml-template"
+                  :content "stages: []"
+                  :format "yaml"
+                  :created-by "test"})]
+        (is (some? id))
+        (let [t (template-store/get-template ds id)]
+          (is (= "yaml" (:format t))))))))

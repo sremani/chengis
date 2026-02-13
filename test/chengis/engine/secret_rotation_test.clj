@@ -190,3 +190,40 @@
       ;; Stop it
       (secret-rotation/stop-rotation-scheduler!)
       (is (not (secret-rotation/running?*))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 4 mutation testing remediation: or-fallback and scope defaults
+;; ---------------------------------------------------------------------------
+
+(deftest rotate-secret-nil-scope-fallback-test
+  (let [system (test-system)
+        ds (:db system)
+        config (:config system)]
+    (testing "rotate-secret! uses 'global' when secret-scope is nil"
+      ;; Set up a secret with global scope
+      (secret-store/set-secret! ds config "SCOPE_KEY" "scope-value"
+        :scope "global" :org-id "org-1")
+      (let [policy (rotation-store/create-policy! ds
+                     {:org-id "org-1"
+                      :secret-name "SCOPE_KEY"
+                      :secret-scope nil  ;; nil scope — should fall back to "global"
+                      :rotation-interval-days 30
+                      :max-versions 5})
+            result (secret-rotation/rotate-secret! system policy)]
+        (is (= :success (:status result)))
+        ;; Verify version was recorded with scope "global"
+        (let [versions (rotation-store/list-versions ds "org-1" "SCOPE_KEY")]
+          (is (= 1 (count versions)))
+          (is (= "global" (:secret-scope (first versions)))))))))
+
+(deftest check-notifications-disabled-test
+  (let [system (test-system :rotation-enabled false)]
+    (testing "check-notifications! returns nil when feature flag is off"
+      (is (nil? (secret-rotation/check-notifications! system))))))
+
+(deftest check-notifications-enabled-no-upcoming-test
+  (let [system (test-system)]
+    (testing "check-notifications! returns success with no upcoming"
+      (let [result (secret-rotation/check-notifications! system)]
+        (is (= :success (:status result)))
+        (is (= 0 (:upcoming-count result)))))))

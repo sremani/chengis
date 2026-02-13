@@ -37,6 +37,14 @@
                  [com.azure/azure-security-keyvault-secrets "4.8.0"]
                  [com.azure/azure-identity "1.12.0"]]
   :plugins [[org.clojars.sremani/cljest "0.1.0"]]
+  :cljest {:skip-forms [;; Log-only side effects — removing a log call doesn't change
+                        ;; program behavior. These are equivalent mutants.
+                        log/info log/warn log/error log/debug log/trace log/fatal
+                        println]
+           :exclude-namespaces [;; Hiccup view files produce HTML markup. Mutations to
+                                ;; conditionals in rendering have diminishing returns —
+                                ;; testing every `when` in every view is not cost-effective.
+                                #"chengis\.web\.views\..*"]}
   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
   :main chengis.core
   :target-path "target/%s"

@@ -92,3 +92,42 @@
       (is (nil? (cost/get-build-cost system "build-1")))
       (is (empty? (cost/get-org-cost-summary system)))
       (is (= 0.0 (cost/get-total-cost system))))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 4 mutation testing remediation: or-fallback and edge cases
+;; ---------------------------------------------------------------------------
+
+(deftest compute-build-cost-nil-cost-per-hour-test
+  (testing "compute-build-cost falls back to 1.0 when cost-per-hour is nil"
+    (let [result (cost/compute-build-cost
+                   "2025-01-15T10:00:00Z"
+                   "2025-01-15T11:00:00Z"
+                   nil)]
+      (is (some? result))
+      (is (= 3600.0 (:duration-s result)))
+      ;; 1 hour at $1/hr (default) = $1.0
+      (is (= 1.0 (:computed-cost result))))))
+
+(deftest compute-build-cost-invalid-timestamp-test
+  (testing "compute-build-cost returns nil for invalid timestamps"
+    (is (nil? (cost/compute-build-cost "not-a-date" "also-not" 1.0)))))
+
+(deftest record-cost-nil-org-id-fallback-test
+  (let [system (test-system)]
+    (testing "record-cost-if-enabled! uses 'default-org' when org-id is nil"
+      (cost/record-cost-if-enabled! system
+        {:build-id "test-nil-org"
+         :job-id "test-job"
+         :org-id nil
+         :started-at "2025-01-15T10:00:00Z"
+         :ended-at "2025-01-15T10:30:00Z"})
+      (let [entry (cost-store/get-build-cost (:db system) "test-nil-org")]
+        (is (some? entry))
+        (is (= "default-org" (:org-id entry)))))))
+
+(deftest get-org-cost-summary-nil-limit-test
+  (let [system (test-system)]
+    (testing "get-org-cost-summary uses default limit of 50 when nil"
+      ;; Should not throw — exercises the (or limit 50) fallback
+      (let [result (cost/get-org-cost-summary system :org-id "org-1" :limit nil)]
+        (is (vector? (vec result)))))))

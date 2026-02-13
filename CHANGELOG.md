@@ -2,6 +2,21 @@
 
 All notable changes to Chengis are documented in this file.
 
+## [Unreleased] — Mutation Testing Remediation Phase 4
+
+### Phase 4: Low-Value Acceptances & Exclusions
+
+- **cljest skip-forms** — Configured `:skip-forms` for equivalent log-statement mutants (`log/info`, `log/warn`, `log/error`, `log/debug`, `log/trace`, `log/fatal`, `println`) that don't change program behavior
+- **cljest exclude-namespaces** — Excluded 48 `chengis.web.views.*` Hiccup view namespaces from mutation testing (diminishing returns on HTML rendering conditionals)
+- **Config edge-case tests** — 6 new tests for `deep-merge` map detection, `resolve-path` absolute/relative, `warn-insecure-defaults` nil/blank JWT paths, numeric and string default assertions
+- **Cost module tests** — 4 new tests for nil `cost-per-hour` fallback, invalid timestamps, nil `org-id` → "default-org" fallback, nil `limit` → 50 fallback
+- **Template store tests** — 2 new tests for nil `format` → "edn" or-fallback default
+- **Partitioning tests** — 2 new tests for missing config or-fallback defaults, table name injection validation
+- **Secret rotation tests** — 3 new tests for nil `secret-scope` → "global" fallback, `check-notifications!` disabled/enabled paths
+- **Test suite**: 1,937 tests, 5,438 assertions, 0 failures
+
+---
+
 ## [Unreleased] — Phase 12: Infrastructure-as-Code Integration
 
 ### Feature 12a: IaC Project Detection & Configuration

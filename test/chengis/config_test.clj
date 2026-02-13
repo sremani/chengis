@@ -267,6 +267,157 @@
     (is (= config/default-config
            (config/warn-insecure-defaults config/default-config)))))
 
+;; ---------------------------------------------------------------------------
+;; Phase 4 mutation testing remediation: config edge cases
+;; ---------------------------------------------------------------------------
+
+(deftest deep-merge-map-detection-test
+  (testing "deep-merge: non-map overwrites map (exercises map? check)"
+    (is (= {:a "string"}
+           (config/deep-merge {:a {:nested true}} {:a "string"})))
+    (is (= {:a {:nested true}}
+           (config/deep-merge {:a "string"} {:a {:nested true}}))))
+
+  (testing "deep-merge with empty maps"
+    ;; When both sides are maps, they merge — empty map doesn't clear keys
+    (is (= {:a {:x 1}}
+           (config/deep-merge {:a {:x 1}} {:a {}})))
+    (is (= {}
+           (config/deep-merge {} {}))))
+
+  (testing "deep-merge: both nil returns empty map"
+    (is (= {} (config/deep-merge nil nil)))))
+
+(deftest resolve-path-test
+  (testing "absolute path is returned as-is"
+    (let [result (config/resolve-path "/base" "/absolute/path")]
+      (is (= "/absolute/path" result))))
+
+  (testing "relative path is resolved against base"
+    (let [result (config/resolve-path "/base/dir" "relative/path")]
+      (is (str/ends-with? result "relative/path"))
+      (is (str/includes? result "base/dir")))))
+
+(deftest warn-insecure-defaults-custom-password-test
+  (testing "no admin password warning when custom password is set"
+    (let [cfg (-> config/default-config
+                  (assoc-in [:auth :enabled] true)
+                  (assoc-in [:auth :seed-admin-password] "secure-pass-123")
+                  (assoc-in [:auth :jwt-secret] "my-jwt-secret"))
+          output (with-out-str
+                   (binding [*err* *out*]
+                     (config/warn-insecure-defaults cfg)))]
+      (is (not (str/includes? output "admin password")))))
+
+  (testing "no distributed warning when auth token is set"
+    (let [cfg (-> config/default-config
+                  (assoc-in [:distributed :enabled] true)
+                  (assoc-in [:distributed :auth-token] "secret-token"))
+          output (with-out-str
+                   (binding [*err* *out*]
+                     (config/warn-insecure-defaults cfg)))]
+      (is (not (str/includes? output "auth-token")))))
+
+  (testing "warn-insecure-defaults with auth enabled but blank jwt secret"
+    (let [cfg (-> config/default-config
+                  (assoc-in [:auth :enabled] true)
+                  (assoc-in [:auth :seed-admin-password] "secure-pass")
+                  (assoc-in [:auth :jwt-secret] ""))
+          output (with-out-str
+                   (binding [*err* *out*]
+                     (config/warn-insecure-defaults cfg)))]
+      (is (str/includes? output "JWT secret"))))
+
+  (testing "warn-insecure-defaults with auth enabled and nil jwt secret"
+    (let [cfg (-> config/default-config
+                  (assoc-in [:auth :enabled] true)
+                  (assoc-in [:auth :seed-admin-password] "secure-pass")
+                  (assoc-in [:auth :jwt-secret] nil))
+          output (with-out-str
+                   (binding [*err* *out*]
+                     (config/warn-insecure-defaults cfg)))]
+      (is (str/includes? output "JWT secret")))))
+
+(deftest default-config-numeric-defaults-test
+  (let [cfg config/default-config]
+    (testing "server defaults"
+      (is (= 8080 (get-in cfg [:server :port])))
+      (is (= "0.0.0.0" (get-in cfg [:server :host]))))
+
+    (testing "database pool defaults"
+      (is (= 2 (get-in cfg [:database :pool :minimum-idle])))
+      (is (= 10 (get-in cfg [:database :pool :maximum-pool-size]))))
+
+    (testing "distributed numeric defaults"
+      (is (= 90000 (get-in cfg [:distributed :heartbeat-timeout-ms])))
+      (is (= 3 (get-in cfg [:distributed :dispatch :max-retries])))
+      (is (= 1000 (get-in cfg [:distributed :dispatch :retry-backoff-ms])))
+      (is (= 5 (get-in cfg [:distributed :dispatch :circuit-breaker-threshold])))
+      (is (= 60000 (get-in cfg [:distributed :dispatch :circuit-breaker-reset-ms])))
+      (is (= 120000 (get-in cfg [:distributed :dispatch :orphan-check-interval-ms]))))
+
+    (testing "auth numeric defaults"
+      (is (= 24 (get-in cfg [:auth :jwt-expiry-hours])))
+      (is (= 86400 (get-in cfg [:auth :session-max-age])))
+      (is (= 5 (get-in cfg [:auth :lockout :max-attempts])))
+      (is (= 30 (get-in cfg [:auth :lockout :lockout-minutes]))))
+
+    (testing "rate-limit defaults"
+      (is (= 60 (get-in cfg [:rate-limit :requests-per-minute])))
+      (is (= 10 (get-in cfg [:rate-limit :auth-requests-per-minute])))
+      (is (= 120 (get-in cfg [:rate-limit :webhook-requests-per-minute]))))
+
+    (testing "pagination defaults"
+      (is (= 50 (get-in cfg [:pagination :default-page-size])))
+      (is (= 200 (get-in cfg [:pagination :max-page-size]))))
+
+    (testing "event-bus defaults"
+      (is (= 8192 (get-in cfg [:event-bus :buffer-size])))
+      (is (= 5000 (get-in cfg [:event-bus :critical-timeout-ms]))))
+
+    (testing "partitioning defaults"
+      (is (= 12 (get-in cfg [:partitioning :retention-months])))
+      (is (= 3 (get-in cfg [:partitioning :future-partitions]))))
+
+    (testing "IaC numeric defaults"
+      (is (= 600000 (get-in cfg [:iac :terraform :timeout-ms])))
+      (is (= 10 (get-in cfg [:iac :terraform :parallelism])))
+      (is (= 300000 (get-in cfg [:iac :state :lock-timeout-ms])))
+      (is (= 50 (get-in cfg [:iac :state :history-limit]))))))
+
+(deftest default-config-string-defaults-test
+  (let [cfg config/default-config]
+    (testing "database string defaults"
+      (is (= "sqlite" (get-in cfg [:database :type])))
+      (is (= "chengis.db" (get-in cfg [:database :path])))
+      (is (= "localhost" (get-in cfg [:database :host])))
+      (is (= "chengis" (get-in cfg [:database :dbname]))))
+
+    (testing "secrets defaults"
+      (is (= "local" (get-in cfg [:secrets :backend])))
+      (is (= "secret" (get-in cfg [:secrets :vault :mount])))
+      (is (= "chengis/" (get-in cfg [:secrets :vault :prefix]))))
+
+    (testing "docker defaults"
+      (is (= "unix:///var/run/docker.sock" (get-in cfg [:docker :host])))
+      (is (= :if-not-present (get-in cfg [:docker :pull-policy]))))
+
+    (testing "auto-merge string defaults"
+      (is (= "merge" (get-in cfg [:auto-merge :merge-method]))))
+
+    (testing "oidc string defaults"
+      (is (= "openid profile email" (get-in cfg [:oidc :scopes])))
+      (is (= "viewer" (get-in cfg [:oidc :default-role]))))
+
+    (testing "saml/ldap default roles"
+      (is (= "viewer" (get-in cfg [:saml :default-role])))
+      (is (= "viewer" (get-in cfg [:ldap :default-role]))))
+
+    (testing "IaC binary defaults"
+      (is (= "terraform" (get-in cfg [:iac :terraform :binary-path])))
+      (is (= "pulumi" (get-in cfg [:iac :pulumi :binary-path])))
+      (is (= "aws" (get-in cfg [:iac :cloudformation :binary-path]))))))
+
 (deftest sqlite-postgresql-detection-test
   (testing "sqlite? returns true for default config"
     (is (true? (config/sqlite? config/default-config))))
