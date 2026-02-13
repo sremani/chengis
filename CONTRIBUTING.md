@@ -236,7 +236,7 @@ lein test chengis.engine.executor-test
 lein test chengis.dsl.chengisfile-test
 ```
 
-The test suite currently has **678 tests with 2,529 assertions**. All tests must pass before submitting a PR.
+The test suite currently has **1,937 tests with 5,438 assertions**. All tests must pass before submitting a PR.
 
 ### Test Organization
 
@@ -314,6 +314,29 @@ Tests use `clojure.test`. Test helpers are in `test/chengis/test_helpers.clj`:
   (testing "basic behavior"
     (is (= expected actual))))
 ```
+
+### Property-Based Testing
+
+Property-based tests live in `test/chengis/properties/` and use `clojure.test.check`. Shared generators are in `test/chengis/generators.clj`. Key patterns:
+
+- Private functions tested via `#'namespace/fn-name` var refs
+- Never use `when` in `defspec` body — always return a boolean
+- Never use `rand-int` in generators — use `gen/choose`
+- Generators aliased as `cgen` from `chengis.generators`
+
+### Mutation Testing
+
+Run mutation testing with [cljest](https://github.com/sremani/cljest):
+
+```bash
+# Fast preset for CI feedback
+lein cljest --operators fast --threshold 70
+
+# Full analysis
+lein cljest --operators standard
+```
+
+The `:cljest` config in `project.clj` skips logging forms (equivalent mutants) and excludes Hiccup view namespaces.
 
 ## Database Migrations
 

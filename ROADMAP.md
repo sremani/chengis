@@ -306,6 +306,16 @@ This document outlines the product roadmap for Chengis. It reflects completed wo
 - Migrations 070-073 (73 total migration versions)
 - **1,445 tests, 4,687 assertions — all passing**
 
+### Mutation Testing Remediation (Post-Phase 12)
+
+- Custom [cljest](https://github.com/sremani/cljest) mutation testing plugin (56 operators, 8 categories) — extracted to independent Clojars package
+- Baseline mutation score: 49.5% (1,722 mutations, 853 killed, 835 survived)
+- Four remediation phases: config defaults, boundary/collection tests, missing code paths, or-fallback edge cases
+- cljest configuration: `:skip-forms` for equivalent log mutants, `:exclude-namespaces` for 48 Hiccup view files
+- 121 new tests across 20 files, mutation score improved to 78%+
+- 418 property-based specs across 31 files using `clojure.test.check` (4 waves)
+- **1,937 tests, 5,438 assertions — all passing**
+
 ---
 
 ## Future Exploration
@@ -348,3 +358,4 @@ These items are under consideration but not yet scheduled:
 | Phase 10 | Scale & Performance | Chunked logs, Cursor pagination, Partitioning, Read replicas, Connection pooling, Backpressure, Multi-region | **1,257** | 59-62 |
 | Phase 11 | Deployment & Release | Environments, Releases, Artifact promotion, Deployment strategies, Execution engine, Health checks, Dashboard | **1,352** | 63-69 |
 | Phase 12 | Infrastructure as Code | IaC detection, Terraform/Pulumi/CloudFormation plugins, State management, Plan parsing, Cost estimation, IaC dashboard, Policy integration | **1,445** | 70-73 |
+| Mutation Testing | Test Quality | cljest plugin, 4 remediation phases, PBT Wave 1-4, skip-forms/exclusions | **1,937** | — |

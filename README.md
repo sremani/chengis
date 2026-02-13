@@ -12,7 +12,7 @@
 
 Chengis is a lightweight, extensible CI/CD system inspired by Jenkins but built from scratch in Clojure. It features a powerful DSL for defining build pipelines, GitHub Actions-style YAML workflows, Docker container support, a distributed master/agent architecture, a plugin system, and a real-time web UI powered by htmx and Server-Sent Events.
 
-**1,445 tests | 4,687 assertions | 0 failures**
+**1,937 tests | 5,438 assertions | 0 failures**
 
 ## Why Chengis?
 
@@ -176,7 +176,7 @@ Build #1 — SUCCESS (8.3 sec)
 - **Policy engine** &mdash; Org-scoped build policies with priority ordering and short-circuit evaluation
 - **Artifact checksums** &mdash; SHA-256 integrity verification on collected artifacts
 - **Compliance reports** &mdash; Policy evaluation results tracked per build with admin dashboard
-- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (49 flags for safe rollout)
+- **Feature flags** &mdash; Runtime feature toggling via config or `CHENGIS_FEATURE_*` environment variables (66 flags for safe rollout)
 - **Plugin trust** &mdash; External plugin allowlist with admin management UI
 - **Docker image policies** &mdash; Allow/deny rules for Docker registries and images per organization
 
@@ -1398,7 +1398,7 @@ lein test chengis.engine.executor-test
 lein test 2>&1 | tee test-output.log
 ```
 
-Current test suite: **1,445 tests, 4,687 assertions, 0 failures**
+Current test suite: **1,937 tests, 5,438 assertions, 0 failures**
 
 Test coverage spans:
 - DSL parsing and pipeline construction
@@ -1491,6 +1491,22 @@ Test coverage spans:
 - Pulumi step executor plugin
 - IaC store persistence (projects, plans, states, locks, cost estimates)
 - IaC dashboard views
+
+### Property-Based Testing
+
+418 property specs across 31 test files using `clojure.test.check`. Shared generators in `test/chengis/generators.clj` (~80 generators). Covers DSL round-trips, auth/RBAC invariants, injection safety, idempotence, structural preservation, and resilience to arbitrary input.
+
+### Mutation Testing
+
+Mutation testing with [cljest](https://github.com/sremani/cljest) (56 mutation operators across 8 categories). Four remediation phases brought the mutation score from 49.5% to 78%+:
+
+| Phase | Focus | Tests Added |
+|-------|-------|-------------|
+| Phase 1 | Boolean & config defaults | 18 |
+| Phase 2+3 | Boundaries, collections, missing paths | 86 |
+| Phase 4 | Or-fallback edge cases, log/view exclusions | 17 |
+
+Configuration: `:skip-forms` for equivalent log mutants, `:exclude-namespaces` for 48 Hiccup view files.
 
 ## Building an Uberjar
 
