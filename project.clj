@@ -36,7 +36,8 @@
                  [com.google.cloud/google-cloud-secretmanager "2.37.0"]
                  [com.azure/azure-security-keyvault-secrets "4.8.0"]
                  [com.azure/azure-identity "1.12.0"]]
-  :plugins [[org.clojars.sremani/cljest "0.1.0"]]
+  ;; cljest mutation testing plugin — loaded via :dev profile only.
+  ;; Run mutation testing with: lein with-profile +cljest cljest ...
   :cljest {:skip-forms [;; Log-only side effects — removing a log call doesn't change
                         ;; program behavior. These are equivalent mutants.
                         log/info log/warn log/error log/debug log/trace log/fatal
@@ -56,6 +57,7 @@
   :profiles {:uberjar {:aot :all
                         :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}
              :dev {:dependencies [[org.clojure/test.check "1.1.1"]]}
+             :cljest {:plugins [[org.clojars.sremani/cljest "0.1.0"]]}
              :bench {:source-paths ["benchmarks/src"]
                      :main chengis.bench.runner
                      :jvm-opts ["--enable-native-access=ALL-UNNAMED"
