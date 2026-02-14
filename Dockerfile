@@ -7,7 +7,7 @@
 # ============================================================================
 
 # --- Stage 1: Build the uberjar ---
-FROM clojure:temurin-21-lein-jammy AS builder
+FROM clojure:temurin-25-lein-bookworm AS builder
 WORKDIR /build
 
 # Cache dependencies first (layer caching optimization)
@@ -20,7 +20,7 @@ COPY resources/ resources/
 RUN lein uberjar
 
 # --- Stage 2: Runtime image ---
-FROM eclipse-temurin:21-jre-jammy
+FROM eclipse-temurin:25-jre-noble
 
 LABEL maintainer="chengis" \
       description="Chengis CI/CD Engine" \
