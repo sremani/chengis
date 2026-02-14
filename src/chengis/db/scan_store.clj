@@ -82,28 +82,23 @@
 
 (defn get-scan-summary
   "Get aggregate summary: total scans, passed, failed in last N days.
+   Uses a single query with conditional aggregation instead of 3 separate queries.
    Returns {:total n :passed n :failed n}."
   [ds & {:keys [org-id days]
          :or {days 30}}]
   (let [cutoff (format-cutoff (.minus (Instant/now) (Duration/ofDays days)))
         conditions (cond-> [:and [:>= :created-at cutoff]]
                      org-id (conj [:= :org-id org-id]))
-        total-query {:select [[[:count :*] :total]]
-                     :from :vulnerability-scans
-                     :where conditions}
-        passed-query {:select [[[:count :*] :passed]]
-                      :from :vulnerability-scans
-                      :where (conj conditions [:= :passed 1])}
-        failed-query {:select [[[:count :*] :failed]]
-                      :from :vulnerability-scans
-                      :where (conj conditions [:= :passed 0])}
-        total (or (:total (jdbc/execute-one! ds (sql/format total-query)
-                            {:builder-fn rs/as-unqualified-kebab-maps})) 0)
-        passed (or (:passed (jdbc/execute-one! ds (sql/format passed-query)
-                              {:builder-fn rs/as-unqualified-kebab-maps})) 0)
-        failed (or (:failed (jdbc/execute-one! ds (sql/format failed-query)
-                              {:builder-fn rs/as-unqualified-kebab-maps})) 0)]
-    {:total total :passed passed :failed failed}))
+        query {:select [[[:count :*] :total]
+                        [[:sum [:case [:= :passed 1] 1 :else 0]] :passed]
+                        [[:sum [:case [:= :passed 0] 1 :else 0]] :failed]]
+               :from :vulnerability-scans
+               :where conditions}
+        result (jdbc/execute-one! ds (sql/format query)
+                 {:builder-fn rs/as-unqualified-kebab-maps})]
+    {:total (or (:total result) 0)
+     :passed (or (:passed result) 0)
+     :failed (or (:failed result) 0)}))
 
 (defn cleanup-old-scans!
   "Delete vulnerability scans older than retention-days. Returns count deleted."

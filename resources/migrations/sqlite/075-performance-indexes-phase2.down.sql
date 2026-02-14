@@ -1,0 +1,11 @@
+DROP INDEX IF EXISTS idx_provenance_attestations_pagination;
+--;;
+DROP INDEX IF EXISTS idx_vulnerability_scans_pagination;
+--;;
+DROP INDEX IF EXISTS idx_sbom_reports_pagination;
+--;;
+DROP INDEX IF EXISTS idx_build_events_build_created;
+--;;
+CREATE INDEX IF NOT EXISTS idx_build_events_build ON build_events(build_id);
+--;;
+DROP INDEX IF EXISTS idx_audit_logs_org_id;

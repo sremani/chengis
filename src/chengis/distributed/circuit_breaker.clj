@@ -75,15 +75,15 @@
    Returns false if circuit is :open and cooldown hasn't elapsed.
    The half-open transition is atomic to prevent multiple concurrent probes."
   [agent-id reset-ms]
-  (let [now (Instant/now)
+  (let [^Instant now (Instant/now)
         [old-state new-state]
         (swap-vals! breakers
                     (fn [state]
                       (let [current (get state agent-id default-breaker)]
                         (if (and (= :open (:state current))
                                  (:opened-at current)
-                                 (>= (.toMillis (Duration/between (:opened-at current) now))
-                                     reset-ms))
+                                 (>= (.toMillis (Duration/between ^Instant (:opened-at current) now))
+                                     (long reset-ms)))
                           ;; Atomically transition to half-open
                           (assoc-in state [agent-id :state] :half-open)
                           state))))
@@ -123,6 +123,21 @@
 ;; ---------------------------------------------------------------------------
 ;; Admin / testing
 ;; ---------------------------------------------------------------------------
+
+(defn cleanup-deregistered!
+  "Remove circuit breaker state for agents that are no longer registered.
+   Accepts a set of currently registered agent IDs. Any breaker entry whose
+   agent-id is NOT in the set is removed. Returns the number of entries removed."
+  [registered-agent-ids]
+  (let [registered-set (set registered-agent-ids)
+        before (count @breakers)]
+    (swap! breakers
+      (fn [state]
+        (into {} (filter (fn [[agent-id _]] (contains? registered-set agent-id)) state))))
+    (let [removed (- before (count @breakers))]
+      (when (pos? removed)
+        (log/info "Circuit breaker cleanup: removed" removed "entries for deregistered agents"))
+      removed)))
 
 (defn reset-agent!
   "Reset the circuit breaker for a specific agent to :closed."

@@ -45,6 +45,20 @@
                    :order-by [[:control-id :asc]]})
       {:builder-fn rs/as-unqualified-kebab-maps})))
 
+(defn get-all-framework-checks
+  "Fetch all checks for all frameworks in a single query, optionally scoped to org.
+   Returns a map of framework-name -> [check ...]."
+  [ds & {:keys [org-id]}]
+  (let [where-clause (when org-id [:= :org-id org-id])
+        query (cond-> {:select :*
+                       :from :regulatory-checks
+                       :order-by [[:framework :asc] [:control-id :asc]]}
+                where-clause (assoc :where where-clause))
+        rows (jdbc/execute! ds
+               (sql/format query)
+               {:builder-fn rs/as-unqualified-kebab-maps})]
+    (group-by :framework rows)))
+
 (defn get-readiness-summary
   "Aggregate readiness summary: for each framework, count passing/failing/not-assessed.
    Returns [{:framework \"soc2\" :total n :passing n :failing n :not-assessed n :percentage pct}]."

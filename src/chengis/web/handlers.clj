@@ -33,6 +33,7 @@
             [chengis.feature-flags :as feature-flags]
             [chengis.web.account-lockout :as lockout]
             [chengis.db.approval-store :as approval-store]
+            [chengis.engine.approval :as approval-engine]
             [chengis.db.template-store :as template-store]
             [chengis.db.org-store :as org-store]
             [chengis.db.backup :as backup]
@@ -131,10 +132,15 @@
   [_req]
   (force anti-forgery/*anti-forgery-token*))
 
-(defn- html-response [body]
-  {:status 200
-   :headers {"Content-Type" "text/html; charset=utf-8"}
-   :body body})
+(defn- html-response
+  "Build an HTML 200 response. Accepts optional :cache-control for Cache-Control header."
+  ([body]
+   (html-response body nil))
+  ([body {:keys [cache-control]}]
+   {:status 200
+    :headers (cond-> {"Content-Type" "text/html; charset=utf-8"}
+               cache-control (assoc "Cache-Control" cache-control))
+    :body body}))
 
 (defn- not-found [msg]
   {:status 404
@@ -151,10 +157,10 @@
     (let [ds (:db system)
           org-id (auth/current-org-id req)
           jobs (job-store/list-jobs ds :org-id org-id)
-          builds (build-store/list-builds ds {:org-id org-id})
-          running (count (filter #(= :running (:status %)) builds))
-          queued (count (filter #(= :queued (:status %)) builds))
+          ;; Stats now includes running/queued counts via SQL aggregation,
+          ;; eliminating the need for a separate list-builds call just for counting.
           stats (build-store/get-build-stats ds {:org-id org-id})
+          builds (build-store/list-builds ds {:org-id org-id})
           recent-history (build-store/get-recent-build-history ds {:org-id org-id} 30)
           current-alerts (try (alerts/check-alerts system :org-id org-id)
                               (catch Exception e
@@ -163,8 +169,8 @@
       (html-response
         (v-dashboard/render {:jobs jobs
                              :builds builds
-                             :running-count running
-                             :queued-count queued
+                             :running-count (:running stats)
+                             :queued-count (:queued stats)
                              :stats stats
                              :recent-history recent-history
                              :alerts current-alerts
@@ -176,7 +182,8 @@
           org-id (auth/current-org-id req)
           jobs (job-store/list-jobs ds :org-id org-id)]
       (html-response (v-jobs/render-list {:jobs jobs
-                                          :csrf-token (csrf-token req)})))))
+                                          :csrf-token (csrf-token req)})
+                     {:cache-control "private, max-age=15"}))))
 
 (defn job-detail-page [system]
   (fn [req]
@@ -186,8 +193,8 @@
           job (job-store/get-job ds job-name :org-id org-id)]
       (if-not job
         (not-found (str "Job not found: " job-name))
-        (let [builds (build-store/list-builds ds {:job-id (:id job) :org-id org-id})
-              stats (build-store/get-build-stats ds {:job-id (:id job) :org-id org-id})
+        (let [stats (build-store/get-build-stats ds {:job-id (:id job) :org-id org-id})
+              builds (build-store/list-builds ds {:job-id (:id job) :org-id org-id})
               recent-history (build-store/get-recent-build-history ds {:job-id (:id job) :org-id org-id} 30)
               secret-names (concat
                              (secret-store/list-secret-names ds :scope "global" :org-id org-id)
@@ -1182,12 +1189,15 @@
           org-id (auth/current-org-id req)
           gates (try (approval-store/list-pending-gates ds :org-id org-id) (catch Exception _ []))
           pending-count (try (approval-store/count-pending-gates ds :org-id org-id) (catch Exception _ 0))
-          ;; Enrich gates with response data for multi-approver display
+          ;; Batch-fetch responses for all multi-approver gates in a single query
+          multi-gate-ids (mapv :id (filter #(and (:min-approvals %) (> (:min-approvals %) 1)) gates))
+          responses-by-gate (if (seq multi-gate-ids)
+                              (try (approval-store/get-gate-responses-batch ds multi-gate-ids)
+                                   (catch Exception _ {}))
+                              {})
           gates-with-responses (mapv (fn [gate]
                                        (if (and (:min-approvals gate) (> (:min-approvals gate) 1))
-                                         (assoc gate :responses
-                                                (try (approval-store/get-gate-responses ds (:id gate))
-                                                     (catch Exception _ [])))
+                                         (assoc gate :responses (get responses-by-gate (:id gate) []))
                                          gate))
                                      gates)]
       (html-response
@@ -1222,6 +1232,7 @@
         :else
         (do
           (approval-store/approve-gate! ds gate-id (:username user))
+          (approval-engine/notify-gate-resolved! gate-id)
           (log/info "Approval gate" gate-id "approved by" (:username user))
           {:status 303
            :headers {"Location" "/approvals"}})))))
@@ -1251,6 +1262,7 @@
         :else
         (do
           (approval-store/reject-gate! ds gate-id (:username user))
+          (approval-engine/notify-gate-resolved! gate-id)
           (log/info "Approval gate" gate-id "rejected by" (:username user))
           {:status 303
            :headers {"Location" "/approvals"}})))))
@@ -1278,7 +1290,8 @@
         (v-templates/render {:templates templates
                              :csrf-token (csrf-token req)
                              :user (auth/current-user req)
-                             :auth-enabled (get-in config [:auth :enabled] false)})))))
+                             :auth-enabled (get-in config [:auth :enabled] false)})
+        {:cache-control "private, max-age=30"}))))
 
 (defn template-new-page [system]
   (fn [req]
@@ -1422,7 +1435,8 @@
                               :runs runs
                               :csrf-token (csrf-token req)
                               :user (auth/current-user req)
-                              :auth-enabled (get-in config [:auth :enabled] false)})))))
+                              :auth-enabled (get-in config [:auth :enabled] false)})
+        {:cache-control "private, max-age=30"}))))
 
 (defn generate-compliance-report [system]
   (fn [req]
@@ -1511,7 +1525,8 @@
         (v-policies/render {:policies policies
                             :csrf-token (csrf-token req)
                             :user (auth/current-user req)
-                            :auth-enabled (get-in config [:auth :enabled] false)})))))
+                            :auth-enabled (get-in config [:auth :enabled] false)})
+        {:cache-control "private, max-age=30"}))))
 
 (defn policy-new-page [system]
   (fn [req]
@@ -1692,7 +1707,8 @@
            :flash flash
            :csrf-token (csrf-token req)
            :user (auth/current-user req)
-           :auth-enabled (get-in config [:auth :enabled] false)})))))
+           :auth-enabled (get-in config [:auth :enabled] false)})
+        {:cache-control "private, max-age=30"}))))
 
 (defn set-plugin-policy-handler [system]
   (fn [req]
@@ -1735,7 +1751,8 @@
            :flash flash
            :csrf-token (csrf-token req)
            :user (auth/current-user req)
-           :auth-enabled (get-in config [:auth :enabled] false)})))))
+           :auth-enabled (get-in config [:auth :enabled] false)})
+        {:cache-control "private, max-age=30"}))))
 
 (defn create-docker-policy-handler [system]
   (fn [req]
@@ -2089,10 +2106,10 @@
   (fn [req]
     (let [ds (:db system)
           org-id (auth/current-org-id req)
-          framework-names (regulatory-store/list-frameworks ds :org-id org-id)
-          frameworks (mapv (fn [fw]
-                             (let [checks (regulatory-store/get-framework-checks ds fw :org-id org-id)
-                                   passing (count (filter #(= "passing" (:status %)) checks))
+          ;; Single batch query instead of N+1 per framework
+          all-checks-by-fw (regulatory-store/get-all-framework-checks ds :org-id org-id)
+          frameworks (mapv (fn [[fw checks]]
+                             (let [passing (count (filter #(= "passing" (:status %)) checks))
                                    total (count checks)]
                                {:framework fw
                                 :checks checks
@@ -2101,7 +2118,7 @@
                                         :percentage (if (pos? total)
                                                       (* 100.0 (/ (double passing) (double total)))
                                                       0.0)}}))
-                           framework-names)]
+                           (sort-by key all-checks-by-fw))]
       (html-response
         (str (h/html
           (v-regulatory/regulatory-dashboard
@@ -2792,13 +2809,13 @@
           build-a-id (get params "a")
           build-b-id (get params "b")
           job-name (get params "job")
-          ;; Get list of recent builds for selection
+          ;; Get list of recent builds for selection (capped at 100 for dropdown)
           builds-list (if (and job-name (not (str/blank? job-name)))
                         (let [job (job-store/get-job ds job-name :org-id org-id)]
                           (if job
-                            (build-store/list-builds ds {:job-id (:id job) :org-id org-id})
+                            (build-store/list-builds ds {:job-id (:id job) :org-id org-id :limit 100})
                             []))
-                        (build-store/list-builds ds {:org-id org-id}))
+                        (build-store/list-builds ds {:org-id org-id :limit 100}))
           ;; If both builds selected, compute comparison
           comparison (when (and build-a-id build-b-id
                                 (not (str/blank? build-a-id))
@@ -2858,10 +2875,8 @@
     (let [ds (:db system)
           org-id (auth/current-org-id req)
           environments (env-store/list-environments ds :org-id org-id)
-          env-artifacts (into {}
-                          (for [env environments]
-                            [(:id env)
-                             (promotion-store/get-current-artifact ds (:id env))]))
+          env-artifacts (promotion-store/get-current-artifacts-batch
+                          ds (mapv :id environments))
           recent-deployments (deployment-store/list-deployments ds :org-id org-id :limit 20)
           pending-promotions (promotion-store/list-promotions ds :org-id org-id :status "pending")
           deployment-stats (deployment-store/count-deployments-by-status ds org-id)]
@@ -3025,10 +3040,8 @@
     (let [ds (:db system)
           org-id (auth/current-org-id req)
           environments (env-store/list-environments ds :org-id org-id)
-          env-artifacts (into {}
-                          (for [env environments]
-                            [(:id env)
-                             (promotion-store/get-current-artifact ds (:id env))]))
+          env-artifacts (promotion-store/get-current-artifacts-batch
+                          ds (mapv :id environments))
           promotions (promotion-store/list-promotions ds :org-id org-id)
           all-builds (build-store/list-builds ds {:org-id org-id :limit 50})
           builds (filterv #(= :success (:status %)) all-builds)]

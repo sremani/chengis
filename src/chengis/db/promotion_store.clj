@@ -138,6 +138,23 @@
                  :limit 1})
     {:builder-fn rs/as-unqualified-kebab-maps}))
 
+(defn get-current-artifacts-batch
+  "Fetch the current active artifact for multiple environments in a single query.
+   Returns a map of environment-id -> artifact-map."
+  [ds environment-ids]
+  (if (empty? environment-ids)
+    {}
+    (let [rows (jdbc/execute! ds
+                 (sql/format {:select :*
+                              :from :environment-artifacts
+                              :where [:and
+                                      [:in :environment-id environment-ids]
+                                      [:= :status "active"]]})
+                 {:builder-fn rs/as-unqualified-kebab-maps})]
+      (into {} (map (fn [[env-id arts]]
+                      [env-id (first arts)])
+                    (group-by :environment-id rows))))))
+
 (defn list-environment-history
   "List all artifacts deployed to an environment, ordered by deployed_at desc."
   [ds environment-id & {:keys [limit offset] :or {limit 50 offset 0}}]

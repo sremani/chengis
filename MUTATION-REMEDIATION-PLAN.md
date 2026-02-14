@@ -365,7 +365,7 @@ Start with the highest kills-per-hour:
 | After Phase 1 | ≥ 58% | ✅ Achieved |
 | After Phase 2 | ≥ 65% | ✅ Achieved |
 | After Phase 3 | ≥ 74% | ✅ Achieved |
-| After Phase 4 | ≥ 78% | ✅ Achieved |
+| After Phase 4 | ≥ 78% | ✅ Estimated (re-run `lein cljest` to confirm) |
 | Stretch goal | ≥ 80% | Next: run with standard operators |
 
 ---

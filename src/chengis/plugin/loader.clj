@@ -10,20 +10,33 @@
 ;; Builtin plugin namespaces (always loaded)
 ;; ---------------------------------------------------------------------------
 
-(def ^:private builtin-plugins
-  "Builtin plugins that are always loaded."
+(def ^:private core-plugins
+  "Core plugins that are always loaded (essential for basic operation)."
   ['chengis.plugin.builtin.shell
-   'chengis.plugin.builtin.docker
    'chengis.plugin.builtin.console-notifier
-   'chengis.plugin.builtin.slack-notifier
-   'chengis.plugin.builtin.email-notifier
    'chengis.plugin.builtin.local-artifacts
    'chengis.plugin.builtin.git-scm
    'chengis.plugin.builtin.yaml-format
-   'chengis.plugin.builtin.github-status
-   'chengis.plugin.builtin.gitlab-status
-   'chengis.plugin.builtin.local-secrets
-   'chengis.plugin.builtin.vault-secrets])
+   'chengis.plugin.builtin.local-secrets])
+
+(def ^:private optional-plugins
+  "Optional plugins loaded only when their corresponding feature/config is active.
+   Each entry is [namespace-symbol predicate-fn] where predicate-fn takes the config map."
+  [['chengis.plugin.builtin.docker
+    (fn [cfg] (or (get-in cfg [:docker :host])
+                  (get-in cfg [:feature-flags :docker-layer-cache])))]
+   ['chengis.plugin.builtin.slack-notifier
+    (fn [cfg] (get-in cfg [:notifications :slack :default-webhook]))]
+   ['chengis.plugin.builtin.email-notifier
+    (fn [cfg] (get-in cfg [:notifications :email :host]))]
+   ['chengis.plugin.builtin.github-status
+    (fn [cfg] (or (get-in cfg [:scm :github :token])
+                  (get-in cfg [:feature-flags :pr-status-checks])))]
+   ['chengis.plugin.builtin.gitlab-status
+    (fn [cfg] (or (get-in cfg [:scm :gitlab :token])
+                  (get-in cfg [:feature-flags :pr-status-checks])))]
+   ['chengis.plugin.builtin.vault-secrets
+    (fn [cfg] (= "vault" (get-in cfg [:secrets :backend])))]])
 
 ;; ---------------------------------------------------------------------------
 ;; Plugin loading
@@ -81,15 +94,27 @@
 ;; ---------------------------------------------------------------------------
 
 (defn load-plugins!
-  "Load all plugins: builtins first, then external.
-   Call this during system startup."
+  "Load all plugins: core builtins first, then optional builtins (based on config),
+   then external. Call this during system startup.
+   When no system is provided (backward compat), loads all builtins."
   ([]
    (load-plugins! nil))
   ([system]
    (log/info "Loading plugins...")
-   ;; Load builtins
-   (doseq [ns-sym builtin-plugins]
+   ;; Load core builtins (always needed)
+   (doseq [ns-sym core-plugins]
      (load-plugin-ns! ns-sym))
+   ;; Load optional builtins based on config
+   (let [cfg (get system :config)]
+     (if cfg
+       ;; Config-aware lazy loading
+       (doseq [[ns-sym pred-fn] optional-plugins]
+         (if (pred-fn cfg)
+           (load-plugin-ns! ns-sym)
+           (log/debug "Skipping optional plugin:" ns-sym "(not configured)")))
+       ;; No config available (backward compat) — load all optional plugins
+       (doseq [[ns-sym _] optional-plugins]
+         (load-plugin-ns! ns-sym))))
    ;; Load external plugins from configured directory (with trust policy enforcement)
    (when-let [plugins-dir (get-in system [:config :plugins :directory])]
      (load-external-plugins! plugins-dir :ds (:db system) :org-id nil))

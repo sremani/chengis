@@ -9,10 +9,29 @@
 ;; SQLite datasource (zero-config, file-based)
 ;; ---------------------------------------------------------------------------
 
+(defn- apply-sqlite-pragmas!
+  "Apply SQLite performance pragmas to a datasource.
+   - WAL mode: allows concurrent readers + single writer (major concurrency improvement)
+   - busy_timeout: wait up to 5 seconds for locked DB instead of failing immediately
+   - cache_size: 32 MB in-memory page cache (default is ~2 MB)
+   - synchronous NORMAL: safe with WAL, much faster than FULL"
+  [ds]
+  (try
+    (jdbc/execute-one! ds ["PRAGMA journal_mode=WAL"])
+    (jdbc/execute-one! ds ["PRAGMA busy_timeout=5000"])
+    (jdbc/execute-one! ds ["PRAGMA cache_size=-32000"])
+    (jdbc/execute-one! ds ["PRAGMA synchronous=NORMAL"])
+    (log/info "SQLite pragmas applied: WAL, busy_timeout=5000, cache_size=32MB, synchronous=NORMAL")
+    (catch Exception e
+      (log/warn "Failed to apply SQLite pragmas:" (.getMessage e)))))
+
 (defn- create-sqlite-datasource
-  "Create a SQLite datasource from a database file path."
+  "Create a SQLite datasource from a database file path.
+   Applies performance pragmas (WAL, busy_timeout, cache_size)."
   [db-path]
-  (jdbc/get-datasource {:dbtype "sqlite" :dbname db-path}))
+  (let [ds (jdbc/get-datasource {:dbtype "sqlite" :dbname db-path})]
+    (apply-sqlite-pragmas! ds)
+    ds))
 
 ;; ---------------------------------------------------------------------------
 ;; PostgreSQL datasource (HikariCP-pooled)

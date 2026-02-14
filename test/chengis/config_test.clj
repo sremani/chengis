@@ -341,8 +341,7 @@
 (deftest default-config-numeric-defaults-test
   (let [cfg config/default-config]
     (testing "server defaults"
-      (is (= 8080 (get-in cfg [:server :port])))
-      (is (= "0.0.0.0" (get-in cfg [:server :host]))))
+      (is (= 8080 (get-in cfg [:server :port]))))
 
     (testing "database pool defaults"
       (is (= 2 (get-in cfg [:database :pool :minimum-idle])))
@@ -387,6 +386,9 @@
 
 (deftest default-config-string-defaults-test
   (let [cfg config/default-config]
+    (testing "server string defaults"
+      (is (= "0.0.0.0" (get-in cfg [:server :host]))))
+
     (testing "database string defaults"
       (is (= "sqlite" (get-in cfg [:database :type])))
       (is (= "chengis.db" (get-in cfg [:database :path])))

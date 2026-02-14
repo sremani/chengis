@@ -17,7 +17,10 @@
                      :maximum-pool-size 10}}
    :workspace {:root "workspaces"}
    :scheduler {:enabled false}
-   :server {:port 8080 :host "0.0.0.0"}
+   :server {:port 8080 :host "0.0.0.0"
+             :worker-threads 8        ;; http-kit worker thread pool size (default 8)
+             :queue-size 20480        ;; http-kit request queue capacity
+             :max-body 8388608}       ;; max request body size (8MB)
    :secrets {:master-key nil
              :backend "local"      ;; "local" (AES-256-GCM in DB) or "vault" (HashiCorp Vault)
              :fallback-to-local false  ;; When true, Vault errors fall back to local store (NOT recommended for production)
@@ -131,6 +134,10 @@
                :max-depth 3}
    :matrix {:max-combinations 25}
    :parallel-stages {:max-concurrent 4}
+   :thread-pools {:build-executor-threads 8     ;; core.async thread pool for parallel steps
+                  :max-parallel-steps 8          ;; max concurrent steps within a stage
+                  :queue-processor-threads 1     ;; queue processor daemon threads
+                  :subscriber-cleanup-interval-ms 1800000}  ;; 30 min
    :cache {:root "cache"
            :max-size-gb 10
            :retention-days 30}
@@ -316,6 +323,9 @@
    "CHENGIS_ARTIFACTS_ROOT"                     [:artifacts :root]
    "CHENGIS_SERVER_PORT"                        [:server :port]
    "CHENGIS_SERVER_HOST"                        [:server :host]
+   "CHENGIS_SERVER_WORKER_THREADS"              [:server :worker-threads]
+   "CHENGIS_SERVER_QUEUE_SIZE"                  [:server :queue-size]
+   "CHENGIS_SERVER_MAX_BODY"                    [:server :max-body]
    "CHENGIS_AUTH_ENABLED"                       [:auth :enabled]
    "CHENGIS_AUTH_JWT_SECRET"                    [:auth :jwt-secret]
    "CHENGIS_AUTH_SESSION_SECRET"                [:auth :session-secret]
@@ -368,6 +378,8 @@
    ;; Phase 4: Build Performance & Caching
    "CHENGIS_FEATURE_PARALLEL_STAGES"            [:feature-flags :parallel-stage-execution]
    "CHENGIS_PARALLEL_STAGES_MAX"                [:parallel-stages :max-concurrent]
+   "CHENGIS_BUILD_EXECUTOR_THREADS"             [:thread-pools :build-executor-threads]
+   "CHENGIS_MAX_PARALLEL_STEPS"                 [:thread-pools :max-parallel-steps]
    "CHENGIS_FEATURE_DOCKER_LAYER_CACHE"         [:feature-flags :docker-layer-cache]
    "CHENGIS_FEATURE_ARTIFACT_CACHE"             [:feature-flags :artifact-cache]
    "CHENGIS_CACHE_ROOT"                         [:cache :root]

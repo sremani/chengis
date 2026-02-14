@@ -150,11 +150,24 @@
           []
           steps))
 
+(def ^:private ^:const default-max-parallel-steps
+  "Default maximum number of steps that can run concurrently within a stage.
+   Prevents thread pool exhaustion from large parallel step counts (e.g. matrix builds)."
+  8)
+
 (defn- run-steps-parallel
-  "Run steps concurrently using core.async threads. Waits for all to complete."
+  "Run steps concurrently using core.async threads. Waits for all to complete.
+   Uses a semaphore to limit concurrent execution and prevent thread pool exhaustion."
   [build-ctx steps]
-  (let [result-chans (mapv (fn [step-def]
-                             (thread (run-step build-ctx step-def)))
+  (let [max-concurrent (or (:max-parallel-steps build-ctx) default-max-parallel-steps)
+        sem (Semaphore. (int max-concurrent))
+        result-chans (mapv (fn [step-def]
+                             (thread
+                               (.acquire sem)
+                               (try
+                                 (run-step build-ctx step-def)
+                                 (finally
+                                   (.release sem)))))
                            steps)
         results (mapv <!! result-chans)]
     results))
@@ -401,7 +414,7 @@
   [system build-ctx stages]
   (let [dag-map (dag/build-dag stages)
         max-concurrent (get-in system [:config :parallel-stages :max-concurrent] 4)
-        semaphore (Semaphore. max-concurrent)
+        ^java.util.concurrent.Semaphore semaphore (Semaphore. (int max-concurrent))
         ;; Track results and state
         completed (atom #{})       ;; set of completed stage names
         failed (atom #{})          ;; set of failed/aborted stage names
@@ -441,12 +454,14 @@
                   (Thread/sleep 50)
                   (recur))))
             (when (seq runnable)
-              ;; Launch ready stages in parallel (bounded by semaphore)
+              ;; Launch ready stages in parallel (bounded by semaphore).
+              ;; Acquire semaphore BEFORE spawning thread to avoid consuming
+              ;; core.async thread pool slots for stages that would just block.
               (let [futures (doall
                               (map (fn [stage-name]
                                      (let [stage-def (get stage-map stage-name)]
+                                       (.acquire semaphore)
                                        (thread
-                                         (.acquire semaphore)
                                          (try
                                            (let [result (execute-stage-with-checks
                                                           system build-ctx stage-def)]
@@ -627,6 +642,9 @@
                            :cancelled? (:cancelled? params)
                            :mask-values secret-values
                            :docker-config (get-in system [:config :docker])
+                           :max-parallel-steps (or (get-in system [:config :thread-pools :max-parallel-steps])
+                                                  (get-in system [:config :parallel-steps :max-concurrent])
+                                                  default-max-parallel-steps)
                            :metrics-registry (:metrics system)
                            :db (:db system)
                            :org-id org-id}

@@ -197,11 +197,10 @@
 
 (deftest rotate-secret-nil-scope-fallback-test
   (let [system (test-system)
-        ds (:db system)
-        config (:config system)]
+        ds (:db system)]
     (testing "rotate-secret! uses 'global' when secret-scope is nil"
       ;; Set up a secret with global scope
-      (secret-store/set-secret! ds config "SCOPE_KEY" "scope-value"
+      (secret-store/set-secret! ds (:config system) "SCOPE_KEY" "scope-value"
         :scope "global" :org-id "org-1")
       (let [policy (rotation-store/create-policy! ds
                      {:org-id "org-1"

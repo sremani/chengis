@@ -165,6 +165,20 @@
                  :order-by [[:created-at :asc]]})
     {:builder-fn rs/as-unqualified-kebab-maps}))
 
+(defn get-gate-responses-batch
+  "Fetch responses for multiple gates in a single query.
+   Returns a map of gate-id -> [response ...]."
+  [ds gate-ids]
+  (if (empty? gate-ids)
+    {}
+    (let [rows (jdbc/execute! ds
+                 (sql/format {:select :*
+                              :from :approval-responses
+                              :where [:in :gate-id gate-ids]
+                              :order-by [[:gate-id :asc] [:created-at :asc]]})
+                 {:builder-fn rs/as-unqualified-kebab-maps})]
+      (group-by :gate-id rows))))
+
 (defn count-approvals
   "Count the number of 'approved' responses for a gate."
   [ds gate-id]

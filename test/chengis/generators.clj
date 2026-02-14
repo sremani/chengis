@@ -808,7 +808,8 @@
             v2 gen/nat
             k3 gen/keyword
             inner (gen/map gen/keyword gen/nat {:max-elements 2})]
-    {k1 v1 k2 {k3 v2} :nested inner}))
+    ;; Use assoc to avoid duplicate key error when k1 = k2
+    (assoc {k1 v1 :nested inner} k2 {k3 v2})))
 
 (def gen-env-var-value
   "Environment variable value strings for coerce testing."

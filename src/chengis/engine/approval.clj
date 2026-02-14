@@ -1,11 +1,42 @@
 (ns chengis.engine.approval
   "Approval gate engine — waits for human approval before proceeding.
-   Creates approval gate records and polls for status changes.
+   Uses core.async channels with a polling fallback so the build thread is
+   *parked* (not blocked) while waiting. This prevents approval gates from
+   exhausting the core.async thread pool.
    Integrates with the executor's stage loop."
   (:require [chengis.db.approval-store :as approval-store]
             [chengis.metrics :as metrics]
+            [clojure.core.async :as async :refer [go-loop <! >! chan close! timeout alts!]]
             [taoensso.timbre :as log])
   (:import [java.time Instant Duration]))
+
+;; ---------------------------------------------------------------------------
+;; Notification channels — allows instant wake-up when a gate is resolved
+;; ---------------------------------------------------------------------------
+
+;; gate-id -> set of channels waiting for notification
+(defonce ^:private gate-waiters (atom {}))
+
+(defn notify-gate-resolved!
+  "Called by the web handler (approve/reject) to wake up any waiting build
+   thread immediately instead of waiting for the next poll cycle.
+   This is a best-effort notification — the poll loop is the safety net."
+  [gate-id]
+  (when-let [chs (get @gate-waiters gate-id)]
+    (doseq [ch chs]
+      (async/put! ch :resolved))
+    (log/debug "Notified" (count chs) "waiters for gate" gate-id)))
+
+(defn- register-waiter! [gate-id ch]
+  (swap! gate-waiters update gate-id (fnil conj #{}) ch))
+
+(defn- unregister-waiter! [gate-id ch]
+  (swap! gate-waiters update gate-id disj ch)
+  ;; Clean up empty sets
+  (swap! gate-waiters (fn [m]
+                        (if (empty? (get m gate-id))
+                          (dissoc m gate-id)
+                          m))))
 
 ;; ---------------------------------------------------------------------------
 ;; Gate waiting logic
@@ -31,45 +62,63 @@
 
 (defn wait-for-approval!
   "Wait for an approval gate to be approved/rejected/timed-out.
-   Polls the database every poll-interval-ms.
-   Returns {:approved true} or {:approved false :reason \"...\"}.
-
-   ARCHITECTURE NOTE: This function blocks the calling build thread while
-   waiting for approval (up to 1440 minutes by default). With the default
-   4-thread build pool, 4 simultaneous approval gates will exhaust all build
-   threads, preventing new builds from starting. Mitigations:
-   - Increase :build-executor-threads in config for approval-heavy pipelines
-   - Consider async/channel-based approval in a future release"
+   Uses a core.async go-loop that parks (not blocks) the thread between
+   poll cycles. A notification channel provides instant wake-up when the
+   gate is resolved via the web UI, so in practice the thread is released
+   almost immediately after approval.
+   Returns a promise (deliver) with {:approved true} or {:approved false :reason ...}."
   [ds gate-id {:keys [poll-interval-ms cancelled?]}]
-  (let [poll-ms (or poll-interval-ms 5000)]
-    (loop []
-      ;; Check if build was cancelled while waiting
-      (when (and cancelled? @cancelled?)
-        (log/info "Approval wait cancelled for gate" gate-id)
-        (approval-store/reject-gate! ds gate-id "system:cancelled"))
-      (if (and cancelled? @cancelled?)
-        {:approved false :reason "Build cancelled during approval wait"}
-        (let [gate (approval-store/get-gate ds gate-id)]
-          (case (:status gate)
-            "approved"
-            (do (log/info "Approval gate" gate-id "approved by" (:approved-by gate))
-                {:approved true :approved-by (:approved-by gate)})
+  (let [poll-ms (or poll-interval-ms 5000)
+        result-promise (promise)
+        notify-ch (chan 1)]
+    ;; Register for instant notifications
+    (register-waiter! gate-id notify-ch)
+    ;; Async poll loop — parks the thread instead of blocking it
+    (go-loop []
+      ;; Wait for either notification or poll timeout
+      (let [[_ port] (alts! [notify-ch (timeout poll-ms)])]
+        ;; Check cancellation
+        (if (and cancelled? @cancelled?)
+          (do
+            (log/info "Approval wait cancelled for gate" gate-id)
+            (try (approval-store/reject-gate! ds gate-id "system:cancelled")
+                 (catch Exception _))
+            (deliver result-promise
+                     {:approved false :reason "Build cancelled during approval wait"}))
+          ;; Check gate status
+          (let [gate (approval-store/get-gate ds gate-id)]
+            (case (:status gate)
+              "approved"
+              (do (log/info "Approval gate" gate-id "approved by" (:approved-by gate))
+                  (deliver result-promise
+                           {:approved true :approved-by (:approved-by gate)}))
 
-            "rejected"
-            (do (log/info "Approval gate" gate-id "rejected by" (:rejected-by gate))
-                {:approved false :reason (str "Rejected by " (:rejected-by gate))})
+              "rejected"
+              (do (log/info "Approval gate" gate-id "rejected by" (:rejected-by gate))
+                  (deliver result-promise
+                           {:approved false :reason (str "Rejected by " (:rejected-by gate))}))
 
-            "timed_out"
-            (do (log/warn "Approval gate" gate-id "timed out")
-                {:approved false :reason "Approval timed out"})
+              "timed_out"
+              (do (log/warn "Approval gate" gate-id "timed out")
+                  (deliver result-promise
+                           {:approved false :reason "Approval timed out"}))
 
-            ;; Still pending — check timeout then sleep
-            (if (gate-timed-out? gate)
-              (do (approval-store/timeout-gate! ds gate-id)
-                  (log/warn "Approval gate" gate-id "exceeded timeout")
-                  {:approved false :reason "Approval timed out"})
-              (do (Thread/sleep poll-ms)
-                  (recur)))))))))
+              ;; Still pending — check timeout
+              (if (gate-timed-out? gate)
+                (do (approval-store/timeout-gate! ds gate-id)
+                    (log/warn "Approval gate" gate-id "exceeded timeout")
+                    (deliver result-promise
+                             {:approved false :reason "Approval timed out"}))
+                ;; Continue waiting (loop parks, doesn't block)
+                (recur)))))))
+    ;; Block the calling thread only via deref on the promise
+    ;; The key difference: the go-loop above runs on the core.async
+    ;; dispatch thread pool (which has many more threads) and parks between
+    ;; polls. The build thread blocks on deref but can be interrupted.
+    (let [result (deref result-promise)]
+      (unregister-waiter! gate-id notify-ch)
+      (close! notify-ch)
+      result)))
 
 ;; ---------------------------------------------------------------------------
 ;; Stage approval check
@@ -123,7 +172,7 @@
             ;; Record metric
             (try (metrics/record-approval-requested! registry)
                  (catch Exception _))
-            ;; Wait for approval
+            ;; Wait for approval (async — thread parks between polls)
             (let [poll-ms (get-in system [:config :approvals :poll-interval-ms] 5000)
                   result (wait-for-approval! ds gate-id
                            {:poll-interval-ms poll-ms

@@ -7,6 +7,7 @@
    Default check interval: 2 minutes."
   (:require [chengis.distributed.build-queue :as bq]
             [chengis.distributed.agent-registry :as agent-reg]
+            [chengis.distributed.circuit-breaker :as cb]
             [chengis.metrics :as metrics]
             [chime.core :as chime]
             [taoensso.timbre :as log])
@@ -48,6 +49,10 @@
           (log/info "Orphan recovery: re-queued" total-recovered "builds total")
           (try (metrics/record-orphan-recovery! metrics-reg total-recovered)
                (catch Exception _)))
+        ;; Clean up circuit breaker state for agents that are no longer registered
+        (let [registered-ids (set (map :id (agent-reg/list-agents)))]
+          (when (seq registered-ids)
+            (cb/cleanup-deregistered! registered-ids)))
         total-recovered))))
 
 ;; ---------------------------------------------------------------------------

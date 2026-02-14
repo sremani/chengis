@@ -7,9 +7,9 @@
    build queue instead of dispatched directly. The queue processor handles
    actual dispatch with circuit breaker protection and retry logic."
   (:require [chengis.distributed.agent-registry :as agent-reg]
+            [chengis.distributed.agent-http :as agent-http]
             [chengis.distributed.build-queue :as bq]
             [clojure.data.json :as json]
-            [org.httpkit.client :as http]
             [taoensso.timbre :as log]))
 
 ;; ---------------------------------------------------------------------------
@@ -18,15 +18,14 @@
 
 (defn- dispatch-to-agent!
   "Send a build to a remote agent for execution.
+   Uses agent-http connection pooling for TCP reuse and health tracking.
    Returns {:dispatched? bool :agent-id :error}."
   [agent build-payload auth-token]
   (try
-    (let [url (str (:url agent) "/builds")
-          resp @(http/post url
-                  {:headers (cond-> {"Content-Type" "application/json"}
-                              auth-token (assoc "Authorization" (str "Bearer " auth-token)))
-                   :body (json/write-str build-payload)
-                   :timeout 30000})
+    (let [headers (cond-> {}
+                    auth-token (assoc "Authorization" (str "Bearer " auth-token)))
+          resp @(agent-http/post! (:id agent) (:url agent) "/builds"
+                                  (json/write-str build-payload) headers)
           status (or (:status resp) 500)]
       (if (< status 300)
         (do

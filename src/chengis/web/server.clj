@@ -15,6 +15,7 @@
             [chengis.engine.retention :as retention]
             [chengis.plugin.loader :as plugin-loader]
             [chengis.web.audit :as audit]
+            [chengis.web.rate-limit :as rate-limit]
             [chengis.web.routes :as routes]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
@@ -68,6 +69,8 @@
                              (catch Exception e
                                (log/error "Failed to initialize metrics registry — metrics disabled:" (.getMessage e))
                                nil)))
+        ;; Initialize event bus buffer from config (must be before subscribers)
+        _ (events/init-event-bus! cfg)
         ;; Set metrics registry on event bus
         _ (events/set-metrics-registry! metrics-registry)
         ;; Set database reference on event bus for durable persistence
@@ -180,6 +183,25 @@
                         poll-ms)))
                 (do (log/info "Starting secret rotation scheduler")
                     (start-fn system)))))
+        ;; Start periodic event subscriber cleanup (every 30 minutes).
+        ;; Daemon thread — stops automatically on JVM shutdown.
+        _ (doto (Thread.
+                  (fn []
+                    (log/info "Event subscriber cleanup thread started")
+                    (while (not (.isInterrupted (Thread/currentThread)))
+                      (try
+                        (Thread/sleep (* 30 60 1000))
+                        (events/cleanup-stale-subscribers!)
+                        (catch InterruptedException _
+                          (.interrupt (Thread/currentThread)))
+                        (catch Exception e
+                          (log/warn "Subscriber cleanup error:" (.getMessage e))))))
+                  "chengis-subscriber-cleanup")
+            (.setDaemon true)
+            (.start))
+        ;; Start background rate-limit cleanup timer (runs even when no requests arrive)
+        _ (when (get-in cfg [:rate-limit :enabled])
+            (rate-limit/start-cleanup-timer!))
         ;; Seed admin user when auth is enabled
         _ (when (get-in cfg [:auth :enabled])
             (user-store/seed-admin! ds (get-in cfg [:auth :seed-admin-password] "admin")))
@@ -208,7 +230,14 @@
     (let [http-handler (if (and https-enabled? (get-in cfg [:https :redirect-http] true))
                          (redirect-handler https-port)
                          app)
-          stop-fn (http/run-server http-handler {:port port :ip host})]
+          worker-threads (get-in cfg [:server :worker-threads] 8)
+          queue-size (get-in cfg [:server :queue-size] 20480)
+          max-body (get-in cfg [:server :max-body] 8388608)
+          stop-fn (http/run-server http-handler
+                    {:port port :ip host
+                     :thread worker-threads
+                     :queue-size queue-size
+                     :max-body max-body})]
       (reset! server-instance stop-fn)
       (if (and https-enabled? keystore)
         (log/info (str "HTTP→HTTPS redirect on http://" host ":" port))
@@ -278,6 +307,8 @@
   (when (analytics/running?*)
     (log/info "Stopping analytics scheduler...")
     (analytics/stop-analytics!))
+  ;; Stop rate-limit cleanup timer
+  (rate-limit/stop-cleanup-timer!)
 
   ;; 2. Stop HTTP/HTTPS servers — allow 15s for in-flight requests to complete
   (when-let [stop-fn @server-instance]

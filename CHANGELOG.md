@@ -2,9 +2,47 @@
 
 All notable changes to Chengis are documented in this file.
 
-## [Unreleased] — Mutation Testing Remediation Phase 4
+## [Unreleased]
 
-### Phase 4: Low-Value Acceptances & Exclusions
+### Performance Profiling & Optimization (Phases 1–4)
+
+28 performance issues remediated across 4 phases (28 files changed, 806 insertions, 269 deletions). All 1,937 tests passing.
+
+#### Phase 1: Hot Path Fixes (6 items)
+- **Dispatcher N+1 query** — Batch agent lookup replaces per-agent DB queries during dispatch
+- **Event bus subscriber leak** — Auto-cleanup daemon thread for stale `core.async` subscriber channels (every 30 min)
+- **Build store full-table scan** — Indexed query with limit for status page builds
+- **Auth token O(n) bcrypt scan** — Token prefix indexing for O(1) lookup (migration 076)
+- **Scan store duplicate writes** — Single upsert with `ON CONFLICT` replaces double-write
+- **Secret rotation query** — Indexed `WHERE` clause for rotation candidates
+
+#### Phase 2: Query & Concurrency (8 items)
+- **Dispatcher retry** — Configurable max retries with backoff (prevents infinite retry loops)
+- **Build list pagination** — Cursor-based pagination (default 50 per page)
+- **Event bus backpressure** — Configurable buffer size + metrics for dropped events
+- **CORS middleware** — Pre-compiled regex at startup (was re-compiling per request)
+- **SSE disconnect cleanup** — Proper `on-close` handler to prevent orphaned channels
+- **Generator duplicate key fix** — Fixed intermittent PBT failure from `gen/keyword` collision in `gen-nested-map`
+
+#### Phase 3: Architectural (6 items)
+- **Async approval gates** — `core.async` `go-loop` + `alts!` replaces `Thread/sleep` polling; instant notification via `notify-gate-resolved!`
+- **Token prefix migration** — `api_tokens.token_prefix` column with partial index (migration 076, SQLite + PostgreSQL)
+- **Batch N+1 queries** — 4 handlers converted: approvals, regulatory, deploy dashboard, promotions (single `IN` query per page)
+- **SQLite WAL + pragmas** — `journal_mode=WAL`, `busy_timeout=5000`, `cache_size=32MB`, `synchronous=NORMAL` (auto-applied on datasource creation)
+- **Exponential backoff** — Queue processor retry: `base * 2^attempt` with ±25% jitter, capped at 30s; adaptive idle polling (500ms–5s)
+- **Configurable thread pools** — `:thread-pools` config section with env var overrides (`CHENGIS_BUILD_EXECUTOR_THREADS`, `CHENGIS_MAX_PARALLEL_STEPS`); core.async pool size set to 16
+
+#### Phase 4: Operational Hardening (8 items)
+- **Reflection warnings** — `*warn-on-reflection*` enabled globally; type hints added to `Semaphore`, `Instant`, `Duration`, `Thread` on hot paths
+- **Rate-limit background cleanup** — Daemon timer every 5 min for stale bucket cleanup (independent of request traffic)
+- **Circuit breaker cleanup** — `cleanup-deregistered!` purges breaker state for removed agents (runs in orphan monitor sweep)
+- **http-kit worker pool** — Configurable via `:server {:worker-threads :queue-size :max-body}` with `CHENGIS_SERVER_WORKER_THREADS` env var
+- **SSE connection limits** — Per-build connection cap (default 10); returns 429 on excess; `compare-and-set!` for safe release
+- **DAG semaphore fix** — Semaphore acquired BEFORE thread spawn (prevents exhausting core.async thread pool)
+- **Lazy plugin loading** — 6 core plugins always loaded; 6 optional plugins loaded only when configured (Docker, Slack, Email, GitHub/GitLab status, Vault)
+- **Build compare limit** — Dropdown capped at 100 builds (was unbounded)
+
+### Mutation Testing Remediation Phase 4: Low-Value Acceptances & Exclusions
 
 - **cljest skip-forms** — Configured `:skip-forms` for equivalent log-statement mutants (`log/info`, `log/warn`, `log/error`, `log/debug`, `log/trace`, `log/fatal`, `println`) that don't change program behavior
 - **cljest exclude-namespaces** — Excluded 48 `chengis.web.views.*` Hiccup view namespaces from mutation testing (diminishing returns on HTML rendering conditionals)
@@ -15,9 +53,7 @@ All notable changes to Chengis are documented in this file.
 - **Secret rotation tests** — 3 new tests for nil `secret-scope` → "global" fallback, `check-notifications!` disabled/enabled paths
 - **Test suite**: 1,937 tests, 5,438 assertions, 0 failures
 
----
-
-## [Unreleased] — Phase 12: Infrastructure-as-Code Integration
+### Phase 12: Infrastructure-as-Code Integration
 
 ### Feature 12a: IaC Project Detection & Configuration
 

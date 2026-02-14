@@ -1,6 +1,7 @@
 (ns chengis.distributed.dispatcher-test
   (:require [clojure.test :refer :all]
             [chengis.distributed.agent-registry :as agent-reg]
+            [chengis.distributed.agent-http :as agent-http]
             [chengis.distributed.dispatcher :as dispatcher]))
 
 (use-fixtures :each
@@ -80,8 +81,8 @@
   (testing "successful HTTP dispatch returns :remote with agent-id"
     (agent-reg/register-agent! {:name "good-agent" :url "http://good:9090"
                                  :labels #{} :max-builds 5})
-    (with-redefs [org.httpkit.client/post
-                  (fn [_url _opts]
+    (with-redefs [agent-http/post!
+                  (fn [_agent-id _agent-url _path _body _headers]
                     (let [p (promise)]
                       (deliver p {:status 200 :body "{\"ok\":true}"})
                       p))]
@@ -95,8 +96,8 @@
   (testing "HTTP failure with fallback-local=true returns :local"
     (agent-reg/register-agent! {:name "bad-agent" :url "http://bad:9090"
                                  :labels #{} :max-builds 5})
-    (with-redefs [org.httpkit.client/post
-                  (fn [_url _opts]
+    (with-redefs [agent-http/post!
+                  (fn [_agent-id _agent-url _path _body _headers]
                     (let [p (promise)]
                       (deliver p {:status 500 :body "{\"error\":\"fail\"}"})
                       p))]
@@ -110,8 +111,8 @@
   (testing "HTTP failure with fallback-local=false returns :failed"
     (agent-reg/register-agent! {:name "failing-agent" :url "http://fail:9090"
                                  :labels #{} :max-builds 5})
-    (with-redefs [org.httpkit.client/post
-                  (fn [_url _opts]
+    (with-redefs [agent-http/post!
+                  (fn [_agent-id _agent-url _path _body _headers]
                     (let [p (promise)]
                       (deliver p {:status 503 :body "{}"})
                       p))]
@@ -125,8 +126,8 @@
   (testing "exception during dispatch returns :failed with error message"
     (agent-reg/register-agent! {:name "except-agent" :url "http://except:9090"
                                  :labels #{} :max-builds 5})
-    (with-redefs [org.httpkit.client/post
-                  (fn [_url _opts]
+    (with-redefs [agent-http/post!
+                  (fn [_agent-id _agent-url _path _body _headers]
                     (throw (Exception. "Connection refused")))]
       (let [system {:config {:distributed {:enabled true
                                             :dispatch {:fallback-local false}}}}
@@ -158,8 +159,8 @@
     (let [agents (agent-reg/list-agents)
           agent (first agents)
           initial-builds (:current-builds agent)]
-      (with-redefs [org.httpkit.client/post
-                    (fn [_url _opts]
+      (with-redefs [agent-http/post!
+                    (fn [_agent-id _agent-url _path _body _headers]
                       (let [p (promise)]
                         (deliver p {:status 200 :body "{}"})
                         p))]

@@ -45,7 +45,12 @@
                                 ;; conditionals in rendering have diminishing returns —
                                 ;; testing every `when` in every view is not cost-effective.
                                 #"chengis\.web\.views\..*"]}
-  :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+  :jvm-opts ["--enable-native-access=ALL-UNNAMED"
+             "-Xmx512m" "-Xms256m"
+             "-XX:+UseG1GC" "-XX:MaxGCPauseMillis=200"
+             ;; core.async thread pool size — configurable via CHENGIS_ASYNC_POOL_SIZE env
+             "-Dclojure.core.async.pool-size=16"]
+  :global-vars {*warn-on-reflection* true}
   :main chengis.core
   :target-path "target/%s"
   :profiles {:uberjar {:aot :all

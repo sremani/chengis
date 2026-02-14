@@ -302,26 +302,44 @@
   "Get build statistics for a job (or all jobs if job-id is nil).
    When :org-id is provided, scopes to that organization.
    Accepts a job-id string (backward compat) or an options map {:job-id :org-id}.
-   Returns {:total N :success N :failure N :aborted N :success-rate 0.85}"
+   Uses SQL aggregation instead of loading all builds into memory.
+   Returns {:total N :success N :failure N :aborted N :running N :queued N :success-rate 0.85}"
   ([ds] (get-build-stats ds {}))
   ([ds opts-or-job-id]
    (let [opts (if (or (nil? opts-or-job-id) (string? opts-or-job-id))
                 {:job-id opts-or-job-id}
                 opts-or-job-id)
          {:keys [job-id org-id]} opts
-         builds (cond
-                  job-id (list-builds ds {:job-id job-id :org-id org-id})
-                  :else  (list-builds ds (if org-id {:org-id org-id} {})))
-         total (count builds)
-         success (count (filter #(= :success (:status %)) builds))
-         failure (count (filter #(= :failure (:status %)) builds))
-         aborted (count (filter #(= :aborted (:status %)) builds))
-         success-rate (if (pos? total) (double (/ success total)) 0.0)]
+         conditions (cond-> []
+                      job-id (conj [:= :job-id job-id])
+                      org-id (conj [:= :org-id org-id]))
+         where (when (seq conditions)
+                 (if (= 1 (count conditions))
+                   (first conditions)
+                   (into [:and] conditions)))
+         query (cond-> {:select [[[:count :*] :total]
+                                  [[:sum [:case [:= :status "success"] 1 :else 0]] :success]
+                                  [[:sum [:case [:= :status "failure"] 1 :else 0]] :failure]
+                                  [[:sum [:case [:= :status "aborted"] 1 :else 0]] :aborted]
+                                  [[:sum [:case [:= :status "running"] 1 :else 0]] :running]
+                                  [[:sum [:case [:= :status "queued"] 1 :else 0]] :queued]]
+                         :from :builds}
+                 where (assoc :where where))
+         result (jdbc/execute-one! ds (sql/format query)
+                  {:builder-fn rs/as-unqualified-kebab-maps})
+         total (or (:total result) 0)
+         success (or (:success result) 0)
+         failure (or (:failure result) 0)
+         aborted (or (:aborted result) 0)
+         running (or (:running result) 0)
+         queued (or (:queued result) 0)]
      {:total total
       :success success
       :failure failure
       :aborted aborted
-      :success-rate success-rate})))
+      :running running
+      :queued queued
+      :success-rate (if (pos? total) (double (/ success total)) 0.0)})))
 
 (defn get-recent-build-history
   "Get the last N builds for a job (or all jobs), for chart rendering.

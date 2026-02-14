@@ -14,7 +14,7 @@
 ;; Map of client-IP → {:tokens N :last-refill-ns long}
 (defonce buckets* (atom {}))
 
-(defn- now-nanos []
+(defn- now-nanos ^long []
   (System/nanoTime))
 
 (defn- refill-tokens
@@ -63,18 +63,68 @@
 
 (defonce last-cleanup-ns* (atom (now-nanos)))
 
-(defn- maybe-cleanup-stale!
-  "Periodically remove stale IP entries from the buckets atom."
+(defn- cleanup-stale-buckets!
+  "Remove stale IP entries from the buckets atom.
+   Called both by the background timer and opportunistically per-request."
   []
   (let [now (now-nanos)]
-    (when (> (- now @last-cleanup-ns*) cleanup-interval-ns)
-      (reset! last-cleanup-ns* now)
+    (reset! last-cleanup-ns* now)
+    (let [before (count @buckets*)]
       (swap! buckets*
         (fn [bkts]
           (into {}
             (filter (fn [[_ip {:keys [last-refill-ns]}]]
                       (< (- now last-refill-ns) stale-threshold-ns))
-                    bkts)))))))
+                    bkts))))
+      (let [after (count @buckets*)
+            removed (- before after)]
+        (when (pos? removed)
+          (log/debug "Rate-limit cleanup: removed" removed "stale buckets," after "remaining"))))))
+
+(defn- maybe-cleanup-stale!
+  "Periodically remove stale IP entries from the buckets atom (request-driven)."
+  []
+  (let [now (now-nanos)]
+    (when (> (- now @last-cleanup-ns*) cleanup-interval-ns)
+      (cleanup-stale-buckets!))))
+
+;; ---------------------------------------------------------------------------
+;; Background cleanup timer
+;; ---------------------------------------------------------------------------
+
+(defonce ^:private cleanup-thread* (atom nil))
+
+(defn start-cleanup-timer!
+  "Start a background daemon thread that periodically cleans up stale rate-limit
+   buckets. This ensures memory is reclaimed even when no requests arrive (e.g.,
+   after a traffic spike subsides). The thread runs every cleanup-interval-ns."
+  []
+  (when-not @cleanup-thread*
+    (let [interval-ms (long (/ cleanup-interval-ns 1e6))
+          ^Thread t (Thread.
+                      ^Runnable
+                      (fn []
+                        (log/info "Rate-limit cleanup timer started (interval:" interval-ms "ms)")
+                        (while (not (.isInterrupted (Thread/currentThread)))
+                          (try
+                            (Thread/sleep interval-ms)
+                            (cleanup-stale-buckets!)
+                            (catch InterruptedException _
+                              (.interrupt (Thread/currentThread)))
+                            (catch Exception e
+                              (log/warn "Rate-limit cleanup error:" (.getMessage e))))))
+                      "chengis-rate-limit-cleanup")]
+      (.setDaemon t true)
+      (.start t)
+      (reset! cleanup-thread* t))))
+
+(defn stop-cleanup-timer!
+  "Stop the background rate-limit cleanup timer."
+  []
+  (when-let [^Thread t @cleanup-thread*]
+    (.interrupt t)
+    (reset! cleanup-thread* nil)
+    (log/info "Rate-limit cleanup timer stopped")))
 
 ;; ---------------------------------------------------------------------------
 ;; Client IP extraction

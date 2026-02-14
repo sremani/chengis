@@ -14,6 +14,40 @@
            [java.util Base64]))
 
 ;; ---------------------------------------------------------------------------
+;; User cache — avoids a DB hit on every authenticated request.
+;; Entries expire after 5 seconds. Keyed by user-id.
+;; ---------------------------------------------------------------------------
+
+(def ^:private ^:const user-cache-ttl-ms 5000)
+
+;; Short-lived cache: {user-id {:user <db-row> :expires-at <epoch-ms>}}
+(defonce ^:private user-cache (atom {}))
+
+(defn- fetch-and-cache-user
+  "Fetch user from DB and put in cache. Returns user or nil."
+  [ds user-id]
+  (when-let [user (user-store/get-user ds user-id)]
+    (swap! user-cache assoc user-id
+           {:user user :expires-at (+ (System/currentTimeMillis) user-cache-ttl-ms)})
+    user))
+
+(defn- get-user-cached
+  "Fetch user from cache or DB. Returns the DB user map or nil.
+   Cache entries are invalidated immediately on user mutations via the
+   user-store/set-on-user-mutated! callback."
+  [ds user-id]
+  (let [now (System/currentTimeMillis)
+        cached (get @user-cache user-id)]
+    (if (and cached (< now (:expires-at cached)))
+      (:user cached)
+      (fetch-and-cache-user ds user-id))))
+
+(defn invalidate-user-cache!
+  "Remove a user from the auth cache (e.g. after role change or deactivation)."
+  [user-id]
+  (swap! user-cache dissoc user-id))
+
+;; ---------------------------------------------------------------------------
 ;; Input validation
 ;; ---------------------------------------------------------------------------
 
@@ -269,7 +303,7 @@
   (when-let [session-user (get-in req [:session :user])]
     (if-let [user-id (:id session-user)]
       ;; Verify user is active and session version matches the DB
-      (if-let [db-user (user-store/get-user ds user-id)]
+      (if-let [db-user (get-user-cached ds user-id)]
         (cond
           ;; User deactivated — reject
           (and (some? (:active db-user)) (zero? (:active db-user)))
@@ -299,7 +333,7 @@
   (when-let [claims (verify-jwt token config ds)]
     ;; Validate session-version against DB to enforce password-change invalidation
     (let [jwt-version (or (:session-version claims) 0)]
-      (if-let [db-user (when (:user-id claims) (user-store/get-user ds (:user-id claims)))]
+      (if-let [db-user (when (:user-id claims) (get-user-cached ds (:user-id claims)))]
         (cond
           ;; User deactivated — reject
           (and (some? (:active db-user)) (zero? (:active db-user)))
@@ -343,6 +377,8 @@
    (they use handler-level check-auth with a shared secret instead).
    Uses a flat cond structure for readability."
   [handler system]
+  ;; Register cache invalidation callback so user mutations immediately evict stale entries.
+  (user-store/set-on-user-mutated! invalidate-user-cache!)
   (let [config (:config system)
         ds (:db system)
         registry (:metrics system)

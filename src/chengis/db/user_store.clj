@@ -10,6 +10,25 @@
   (:import [java.time Instant]))
 
 ;; ---------------------------------------------------------------------------
+;; Post-mutation hook — auth cache invalidation
+;; ---------------------------------------------------------------------------
+
+;; Callback invoked after user mutations (password change, deactivation, role change).
+;; Set by auth middleware to invalidate its user cache. Receives user-id.
+(defonce ^:private on-user-mutated-fn (atom nil))
+
+(defn set-on-user-mutated!
+  "Register a callback to be invoked after user mutations. Called with user-id."
+  [f]
+  (reset! on-user-mutated-fn f))
+
+(defn- notify-user-mutated!
+  "Notify that a user was mutated (for cache invalidation)."
+  [user-id]
+  (when-let [f @on-user-mutated-fn]
+    (try (f user-id) (catch Exception _))))
+
+;; ---------------------------------------------------------------------------
 ;; Password hashing
 ;; ---------------------------------------------------------------------------
 
@@ -109,7 +128,8 @@
     (jdbc/execute-one! ds
       (sql/format {:update :users
                    :set updates
-                   :where [:= :id user-id]}))))
+                   :where [:= :id user-id]}))
+    (notify-user-mutated! user-id)))
 
 (defn update-password!
   "Update a user's password and bump session_version to invalidate active sessions."
@@ -119,7 +139,8 @@
                  :set {:password-hash (hash-password new-password)
                        :session-version [:+ :session-version 1]
                        :updated-at [:raw "CURRENT_TIMESTAMP"]}
-                 :where [:= :id user-id]})))
+                 :where [:= :id user-id]}))
+  (notify-user-mutated! user-id))
 
 (defn delete-user!
   "Soft-delete a user by setting active=0 and bumping session_version
@@ -130,7 +151,8 @@
                  :set {:active 0
                        :session-version [:+ :session-version 1]
                        :updated-at [:raw "CURRENT_TIMESTAMP"]}
-                 :where [:= :id user-id]})))
+                 :where [:= :id user-id]}))
+  (notify-user-mutated! user-id))
 
 (defn count-users
   "Count total users."
@@ -145,14 +167,22 @@
 ;; API Tokens
 ;; ---------------------------------------------------------------------------
 
+(def ^:private ^:const token-prefix-length
+  "Number of leading plaintext characters stored as a lookup prefix.
+   12 chars from a base-36 UUID gives ~62 bits of entropy — collisions
+   are astronomically unlikely, so prefix lookup returns at most 1 row."
+  12)
+
 (defn create-api-token!
   "Create an API token for a user. Returns the plaintext token (only shown once).
-   The token hash is stored in the database.
+   The token hash is stored in the database along with a short prefix for
+   O(1) index-based lookup instead of O(n) bcrypt scanning.
    Optional :scopes — a seq of scope strings like [\"build:trigger\" \"build:read\"].
    Nil scopes means full user access (backward compatible)."
   [ds {:keys [user-id name expires-at scopes]}]
   (let [id (util/generate-id)
         plaintext-token (str (util/generate-id) (util/generate-id))  ; 72-char token
+        token-prefix (subs plaintext-token 0 token-prefix-length)
         token-hash (hashers/derive plaintext-token {:alg :bcrypt+sha512})
         scopes-json (when (seq scopes)
                       (json/write-str scopes))
@@ -160,6 +190,7 @@
                      :user-id user-id
                      :name name
                      :token-hash token-hash
+                     :token-prefix token-prefix
                      :expires-at expires-at}
               scopes-json (assoc :scopes scopes-json))]
     (jdbc/execute-one! ds
@@ -189,18 +220,36 @@
         false))))
 
 (defn find-api-token-user
-  "Find the user associated with an API token by checking the token against stored hashes.
+  "Find the user associated with an API token.
+   Uses a prefix-based index to narrow the search to at most 1-2 rows,
+   then verifies with a single bcrypt check. Falls back to O(n) scan
+   for legacy tokens without a prefix (created before migration 076).
    Returns the user map (with :token-scopes attached) if found, not expired, and not revoked.
-   :token-scopes is nil for full-access tokens, or a set of scope strings.
-   Note: This is O(n) over non-revoked tokens — acceptable for typical token counts."
+   :token-scopes is nil for full-access tokens, or a set of scope strings."
   [ds plaintext-token]
-  (let [tokens (jdbc/execute! ds
-                 (sql/format {:select [:api-tokens/id :api-tokens/user-id :api-tokens/token-hash
-                                       :api-tokens/expires-at :api-tokens/revoked-at :api-tokens/scopes]
-                              :from :api-tokens
-                              :where [:is :api-tokens/revoked-at nil]})
-                 {:builder-fn rs/as-unqualified-kebab-maps})]
-    (when-let [match (first (filter #(hashers/check plaintext-token (:token-hash %)) tokens))]
+  (let [prefix (when (>= (count plaintext-token) token-prefix-length)
+                 (subs plaintext-token 0 token-prefix-length))
+        ;; Try prefix-based lookup first (O(1) — hits the idx_api_tokens_prefix index)
+        candidates (if prefix
+                     (jdbc/execute! ds
+                       (sql/format {:select [:id :user-id :token-hash :expires-at :revoked-at :scopes]
+                                    :from :api-tokens
+                                    :where [:and
+                                            [:is :revoked-at nil]
+                                            [:= :token-prefix prefix]]})
+                       {:builder-fn rs/as-unqualified-kebab-maps})
+                     [])
+        ;; Fallback: if no prefix match, scan legacy tokens (those without prefix set)
+        candidates (if (seq candidates)
+                     candidates
+                     (jdbc/execute! ds
+                       (sql/format {:select [:id :user-id :token-hash :expires-at :revoked-at :scopes]
+                                    :from :api-tokens
+                                    :where [:and
+                                            [:is :revoked-at nil]
+                                            [:is :token-prefix nil]]})
+                       {:builder-fn rs/as-unqualified-kebab-maps}))]
+    (when-let [match (first (filter #(hashers/check plaintext-token (:token-hash %)) candidates))]
       ;; Check expiration
       (if (token-expired? match)
         (do (log/debug "API token expired:" (:id match))
