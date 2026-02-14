@@ -13,7 +13,28 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+
+    - name: Install Leiningen
+      uses: DeLaGuardo/setup-clojure@13.5
+      with:
+        lein: 2.11.2
+
+    - name: Cache Maven dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('project.clj') }}
+        restore-keys: |
+          ${{ runner.os }}-maven-
+
     - name: Install dependencies
       run: lein deps
+
     - name: Run tests
       run: lein test
