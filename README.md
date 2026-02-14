@@ -1304,6 +1304,13 @@ chengis/
         log_stream.clj      # Chunked log viewer with htmx infinite scroll
         iac.clj             # IaC dashboard and project management views
         iac_plans.clj       # IaC plan visualization views
+    seed/                   # Simulation data seeder (4 files)
+      simulation.clj        # Seeder entry point + orchestration
+      cleanup.clj           # Data cleanup entry point
+      sim/
+        data.clj            # Static data: jobs, users, commit messages
+        generators.clj      # PRNG time/status/git metadata generators
+        inserters.clj       # Raw SQL inserts with backdated timestamps
     config.clj              # Configuration loading + env var overrides
     logging.clj             # Structured logging setup
     metrics.clj             # Prometheus metrics registry
@@ -1399,6 +1406,63 @@ lein test 2>&1 | tee test-output.log
 ```
 
 Current test suite: **1,937 tests, 5,438 assertions, 0 failures**
+
+## Demo Data (Simulation Seeder)
+
+Chengis includes a simulation seeder that populates the database with 90 days of realistic CI/CD activity — builds, stages, logs, webhooks, approvals, and audit trails across 8 projects and 8 team members. This is useful for demoing the GUI or developing against realistic data.
+
+### Where is the data stored?
+
+The seeder writes to the database configured in `resources/config.edn`. By default this is **`chengis.db`** (a SQLite file in the project root). If you've configured PostgreSQL, the seeder writes there instead.
+
+### Seed demo data
+
+```bash
+# Seed with default PRNG seed (42) — deterministic, same data every time
+lein run -m chengis.seed.simulation
+
+# Seed with a custom PRNG seed for different-but-realistic data
+lein run -m chengis.seed.simulation 12345
+```
+
+The seeder will:
+1. Run pending migrations
+2. Clear all existing data from the database
+3. Insert ~1,400 builds with stages, steps, logs, webhooks, approvals, and audit entries
+4. Print a summary of all inserted records
+
+Then start the server to see the data in the UI:
+
+```bash
+lein run serve
+# Open http://localhost:8080
+```
+
+### What gets seeded
+
+| Entity | Approximate Count |
+|--------|-------------------|
+| Users | 8 |
+| Jobs | 8 |
+| Builds | ~1,400 |
+| Build Stages | ~7,000 |
+| Build Steps | ~9,000 |
+| Build Logs | ~6,000 |
+| Webhook Events | ~900 |
+| Audit Logs | ~1,500 |
+| Approval Gates | ~150 |
+
+The 8 simulated projects cover Java/Spring, React/Node, Go, Python/Airflow, Python/FastAPI, Swift/Xcode, Terraform, and Ruby/Jekyll — each with realistic build frequencies, success rates, and failure patterns.
+
+### Clean up seed data
+
+To remove all seed data and return to an empty database:
+
+```bash
+lein run -m chengis.seed.cleanup
+```
+
+This deletes all rows from: users, jobs, builds, build stages/steps/logs, webhook events, audit logs, and approval gates. It prints row counts before and after cleanup.
 
 Test coverage spans:
 - DSL parsing and pipeline construction
