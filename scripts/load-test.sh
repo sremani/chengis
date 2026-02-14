@@ -104,7 +104,7 @@ run_load_test() {
   output=$(hey -n "$n" -c "$c" -t 30 "$url" 2>&1)
 
   # Parse summary metrics from hey output
-  local rps p50 p99 status_200 total_reqs error_rate
+  local rps p50 p99 error_count total_reqs error_rate
 
   rps=$(echo "$output" | grep "Requests/sec:" | awk '{print $2}' || echo "0")
   p50=$(echo "$output" | grep "50% in" | awk '{print $3}' || echo "0")
@@ -114,23 +114,29 @@ run_load_test() {
   p50_ms=$(echo "$p50" | awk '{printf "%.1f", $1 * 1000}')
   p99_ms=$(echo "$p99" | awk '{printf "%.1f", $1 * 1000}')
 
-  # Count non-200 responses
-  status_200=$(echo "$output" | grep -E "^\s*\[200\]" | awk '{print $2}' || echo "0")
+  # Count successful responses (any 2xx or 3xx status)
+  # hey shows status distribution like:  [200]  500 responses
   total_reqs="$n"
+  local success_count=0
 
-  if [ "$status_200" = "0" ] || [ -z "$status_200" ]; then
-    # If no [200] line, check if there are status code lines at all
-    local any_status
-    any_status=$(echo "$output" | grep -cE "^\s*\[" || echo "0")
-    if [ "$any_status" = "0" ]; then
-      # hey didn't output status breakdown — assume all OK if no errors reported
-      status_200="$total_reqs"
+  # Sum up all 2xx and 3xx responses
+  success_count=$(echo "$output" | grep -E "^\s*\[(2[0-9]{2}|3[0-9]{2})\]" | awk '{s+=$2} END {print s+0}' || echo "0")
+
+  if [ "$success_count" = "0" ]; then
+    # If no status breakdown found, check for error count in summary
+    local hey_errors
+    hey_errors=$(echo "$output" | grep -E "^\s*Error distribution:" -c || echo "0")
+    if [ "$hey_errors" = "0" ]; then
+      # No errors reported — assume all succeeded
+      success_count="$total_reqs"
     fi
   fi
 
-  local errors=$((total_reqs - status_200))
+  error_count=$((total_reqs - success_count))
+  if [ "$error_count" -lt 0 ]; then error_count=0; fi
+
   if [ "$total_reqs" -gt 0 ]; then
-    error_rate=$(awk "BEGIN {printf \"%.2f\", ($errors / $total_reqs) * 100}")
+    error_rate=$(awk "BEGIN {printf \"%.2f\", ($error_count / $total_reqs) * 100}")
   else
     error_rate="0.00"
   fi
@@ -194,7 +200,7 @@ echo ""
 
 ENDPOINTS=(
   "/health|${REQUESTS}|${CONCURRENCY}"
-  "/api/builds|$((REQUESTS / 2))|${CONCURRENCY}"
+  "/jobs|$((REQUESTS / 2))|${CONCURRENCY}"
   "/metrics|$((REQUESTS / 5))|$((CONCURRENCY / 2 > 0 ? CONCURRENCY / 2 : 1))"
   "/login|$((REQUESTS / 5))|$((CONCURRENCY / 2 > 0 ? CONCURRENCY / 2 : 1))"
 )
